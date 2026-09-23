@@ -4,7 +4,7 @@ android {
     namespace = "com.avacoffee.app"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.avacoffee.app"
+        applicationId "com.avacoffee.k300"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

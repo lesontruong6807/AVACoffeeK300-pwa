@@ -141,7 +141,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
               className="w-24 h-24 rounded-2xl shadow-md border-2 border-coffee-accent/40 object-cover mb-4" 
             />
             <h1 className="text-2xl font-black text-coffee-dark tracking-wider">AVA COFFEE</h1>
-            <p className="text-xs text-coffee-medium font-semibold uppercase tracking-wider mt-1">Chi nhánh Hóc Môn</p>
+            <p className="text-xs text-coffee-medium font-semibold uppercase tracking-wider mt-1">Chi nhánh K300</p>
             <p className="text-xs text-coffee-medium font-semibold uppercase tracking-wider mt-1">POS & Quản Lý Cửa Hàng</p>
           </div>
 
@@ -258,7 +258,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
           </div>
           <div>
             <h1 className="font-extrabold text-lg tracking-wide leading-tight">AVA Coffee</h1>
-            <p className="text-xs text-coffee-accent font-medium">Chi nhánh Hóc Môn</p>
+            <p className="text-xs text-coffee-accent font-medium">Chi nhánh K300</p>
           </div>
         </div>
 
@@ -314,7 +314,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
           </div>
           <div>
             <span className="font-extrabold text-base leading-none block">AVA Coffee</span>
-            <span className="text-[10px] text-coffee-accent font-semibold block leading-none mt-0.5">Hóc Môn</span>
+            <span className="text-[10px] text-coffee-accent font-semibold block leading-none mt-0.5">K300</span>
           </div>
         </div>
         <div className="flex items-center space-x-3">

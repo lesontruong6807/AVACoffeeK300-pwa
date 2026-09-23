@@ -1020,7 +1020,7 @@ export interface StoreSettings {
 
 export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   store_name: 'AVA COFFEE',
-  store_address: 'Hóc Môn, TP. Hồ Chí Minh',
+  store_address: 'K300, Tân Bình, TP. Hồ Chí Minh',
   store_phone: '0909 123 456',
   bill_footer: 'AVA COFFEE XIN CẢM ƠN QUÝ KHÁCH !\nCHÚC QUÝ KHÁCH NGON MIỆNG',
   printer_ip: '192.168.1.232',
@@ -3286,7 +3286,7 @@ export const db = {
           thoi_gian_thuc_ra: payload.check_out_time,
           vi_do: 10.8872,
           kinh_do: 106.5932,
-          dia_chi: 'AVA Coffee Hóc Môn (Quản lý chấm ngoài giờ)',
+          dia_chi: 'AVA Coffee K300 (Quản lý chấm ngoài giờ)',
           trang_thai: 'Đã duyệt',
           ghi_chu_vao: noteText,
           ghi_chu_ra: noteText
@@ -3314,7 +3314,7 @@ export const db = {
         real_check_out_time: payload.check_out_time,
         latitude: 10.8872,
         longitude: 106.5932,
-        location_address: 'AVA Coffee Hóc Môn (Quản lý chấm ngoài giờ)',
+        location_address: 'AVA Coffee K300 (Quản lý chấm ngoài giờ)',
         status: 'Đã duyệt' as const,
         ghi_chu_vao: noteText,
         ghi_chu_ra: noteText,

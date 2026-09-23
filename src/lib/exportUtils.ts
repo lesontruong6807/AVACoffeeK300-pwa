@@ -937,7 +937,7 @@ export function exportFullDatabaseToExcel(backupData: any) {
     ['THÔNG TIN CỬA HÀNG & BẢN SAO LƯU DỮ LIỆU - AVA COFFEE'],
     ['Ngày xuất sao lưu', new Date(backupData.export_date || Date.now()).toLocaleString('vi-VN')],
     ['Tên cửa hàng', settings.store_name || 'AVA COFFEE'],
-    ['Địa chỉ', settings.store_address || 'Hóc Môn, TP. Hồ Chí Minh'],
+    ['Địa chỉ', settings.store_address || 'K300, Tân Bình, TP. Hồ Chí Minh'],
     ['Hotline / Điện thoại', settings.store_phone || ''],
     ['IP Máy in bill', `${settings.printer_ip || '192.168.1.232'}:${settings.printer_port || 9100}`],
     ['Ghi chú chân bill', settings.bill_footer || '']

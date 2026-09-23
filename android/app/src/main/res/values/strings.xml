@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">AVA Coffee Hóc Môn</string>
-    <string name="title_activity_main">AVA Coffee Hóc Môn</string>
-    <string name="package_name">com.avacoffee.app</string>
-    <string name="custom_url_scheme">com.avacoffee.app</string>
+    <string name="app_name">AVA Coffee K300</string>
+    <string name="title_activity_main">AVA Coffee K300</string>
+    <string name="package_name">com.avacoffee.k300</string>
+    <string name="custom_url_scheme">com.avacoffee.k300</string>
 </resources>

@@ -89,7 +89,7 @@ export default function AdminPage() {
 
   // Cài đặt Cửa hàng & Máy in LAN/Wi-Fi
   const [cfgStoreName, setCfgStoreName] = useState('AVA COFFEE');
-  const [cfgStoreAddress, setCfgStoreAddress] = useState('Hóc Môn, TP. Hồ Chí Minh');
+  const [cfgStoreAddress, setCfgStoreAddress] = useState('K300, Tân Bình, TP. Hồ Chí Minh');
   const [cfgStorePhone, setCfgStorePhone] = useState('0909 123 456');
   const [cfgBillFooter, setCfgBillFooter] = useState('AVA COFFEE XIN CẢM ƠN QUÝ KHÁCH !\nCHÚC QUÝ KHÁCH NGON MIỆNG');
   const [cfgPrinterIp, setCfgPrinterIp] = useState('192.168.1.232');
@@ -280,7 +280,7 @@ export default function AdminPage() {
       setStoreSettings(settings);
       if (settings) {
         setCfgStoreName(settings.store_name || 'AVA COFFEE');
-        setCfgStoreAddress(settings.store_address || 'Hóc Môn, TP. Hồ Chí Minh');
+        setCfgStoreAddress(settings.store_address || 'K300, Tân Bình, TP. Hồ Chí Minh');
         setCfgStorePhone(settings.store_phone || '0909 123 456');
         setCfgBillFooter(settings.bill_footer || 'AVA COFFEE XIN CẢM ƠN QUÝ KHÁCH !\nCHÚC QUÝ KHÁCH NGON MIỆNG');
         setCfgPrinterIp(settings.printer_ip || '192.168.1.232');
@@ -4717,7 +4717,7 @@ export default function AdminPage() {
                     type="text"
                     value={cfgStoreAddress}
                     onChange={(e) => setCfgStoreAddress(e.target.value)}
-                    placeholder="VD: Hóc Môn, TP. Hồ Chí Minh"
+                    placeholder="VD: K300, Tân Bình, TP. Hồ Chí Minh"
                     className="w-full h-11 px-4 bg-[#FAF6F0] rounded-xl text-xs font-bold text-coffee-dark border border-coffee-light/60 focus:ring-1 focus:ring-coffee-primary"
                   />
                 </div>
