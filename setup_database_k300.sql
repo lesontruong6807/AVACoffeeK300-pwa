@@ -1,5 +1,5 @@
 -- ==============================================================================
--- DATABASE SCHEMA & MASTER SEED DATA CHO AVA COFFEE - CHI NHÁNH HÓC MÔN
+-- DATABASE SCHEMA & MASTER SEED DATA CHO AVA COFFEE - CHI NHÁNH K300
 -- Phiên bản: Chuẩn hóa 100% theo hệ thống AVA Coffee (Cập nhật 09/2026)
 -- Bao gồm: Bạc xỉu kem muối, Topping Kem muối, Trân châu trắng, Sữa lắc, Trà tắc,...
 -- ==============================================================================
