@@ -90,6 +90,42 @@ export default function PosPage() {
     }
   };
 
+  // Tự động đồng bộ giỏ hàng sang màn hình phụ 11.6 inch cho khách xem trực tiếp
+  useEffect(() => {
+    const syncToCustomer = async () => {
+      try {
+        const { syncCustomerDisplay } = await import('@/lib/tauriPOS');
+        if (cart.length > 0) {
+          const total = cart.reduce((s, i) => s + i.subtotal, 0);
+          const discountAmount = discountType === 'percent' ? (total * discountValue) / 100 : discountValue;
+          const finalTotal = Math.max(0, total - discountAmount);
+
+          await syncCustomerDisplay({
+            tableName: selectedTable?.table_name || 'Bàn chưa chọn',
+            staffName: currentUser?.full_name || '',
+            items: cart.map(i => ({
+              name: i.name,
+              price: i.price,
+              quantity: i.quantity,
+              subtotal: i.subtotal
+            })),
+            discount: discountAmount,
+            totalAmount: finalTotal,
+            orderStatus: 'ordering'
+          });
+        } else {
+          await syncCustomerDisplay({
+            tableName: selectedTable?.table_name || '',
+            items: [],
+            totalAmount: 0,
+            orderStatus: 'idle'
+          });
+        }
+      } catch (e) {}
+    };
+    syncToCustomer();
+  }, [cart, selectedTable, discountType, discountValue, currentUser]);
+
   useEffect(() => {
     async function loadData() {
       // 1. Đọc dữ liệu từ cache trước để hiển thị ngay lập tức (Offline-first / Fast Load 0ms)
@@ -495,15 +531,30 @@ export default function PosPage() {
 
   return (
     <div className="w-full space-y-6">
-      {/* Nút Quay về Trang chủ */}
+      {/* Nút Quay về Trang chủ & Nút Màn hình phụ */}
       {!selectedTable && (
-        <Link 
-          href="/"
-          className="inline-flex items-center space-x-2 px-4 py-2 bg-white border border-coffee-light text-coffee-primary rounded-xl text-xs font-bold hover:bg-coffee-light transition shadow-sm w-fit"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Về Trang chủ</span>
-        </Link>
+        <div className="flex items-center justify-between">
+          <Link 
+            href="/"
+            className="inline-flex items-center space-x-2 px-4 py-2 bg-white border border-coffee-light text-coffee-primary rounded-xl text-xs font-bold hover:bg-coffee-light transition shadow-sm w-fit"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Về Trang chủ</span>
+          </Link>
+
+          <button
+            type="button"
+            onClick={async () => {
+              const { openCustomerDisplayWindow } = await import('@/lib/tauriPOS');
+              await openCustomerDisplayWindow();
+            }}
+            className="inline-flex items-center space-x-1.5 px-3.5 py-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs font-bold hover:bg-amber-100 transition shadow-sm"
+            title="Mở cửa sổ hiển thị hóa đơn và VietQR trên màn hình phụ 11.6 inch"
+          >
+            <Eye className="w-3.5 h-3.5 text-amber-600" />
+            <span>Màn hình phụ (11.6&quot;)</span>
+          </button>
+        </div>
       )}
 
       {/* TÊN BÀN ĐANG ĐƯỢC CHỌN (BREADCRUMB) */}

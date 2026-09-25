@@ -196,6 +196,26 @@ export default function PaymentPage() {
     try {
       await db.payOrder(targetOrder.id, method);
       toast.success(`Thanh toán thành công qua phương thức: ${method}`);
+
+      // Nếu chạy trên Desktop Windows: Tự động kích mở két tiền khi thanh toán tiền mặt
+      if (method === 'Tiền mặt') {
+        try {
+          const { kickCashDrawer } = await import('@/lib/tauriPOS');
+          await kickCashDrawer();
+        } catch (kdErr) {}
+      }
+
+      // Cập nhật trạng thái hoàn tất lên màn hình phụ của khách
+      try {
+        const { syncCustomerDisplay } = await import('@/lib/tauriPOS');
+        await syncCustomerDisplay({
+          tableName: targetOrder.tables?.table_name || '',
+          items: [],
+          totalAmount: targetOrder.total_amount,
+          paymentMethod: method,
+          orderStatus: 'paid'
+        });
+      } catch (dispErr) {}
     } catch (e) {
       console.error('Lỗi thanh toán:', e);
       toast.error('Gặp lỗi khi xử lý thanh toán.');

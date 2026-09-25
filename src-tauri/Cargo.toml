@@ -1,0 +1,21 @@
+[package]
+name = "ava-coffee-k300"
+version = "0.1.0"
+description = "Hệ thống POS & Quản lý bán hàng AVA Coffee K300"
+authors = ["AVA Coffee Team"]
+edition = "2021"
+
+[lib]
+name = "ava_coffee_k300_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+# Sử dụng trực tiếp Win32 winspool.drv API cho in nhiệt siêu nhẹ không phụ thuộc

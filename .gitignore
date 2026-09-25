@@ -43,3 +43,6 @@ next-env.d.ts
 # git portable
 /.git-portable/
 /MinGit/
+
+# tauri
+src-tauri/target/

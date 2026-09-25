@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "tauri": "tauri",
+    "tauri:build": "npm run build && tauri build"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
@@ -14,6 +16,7 @@
     "@capacitor/core": "^8.4.2",
     "@devioarts/capacitor-tcpclient": "^0.2.1",
     "@supabase/supabase-js": "^2.110.8",
+    "@tauri-apps/api": "^2.11.1",
     "canvas-confetti": "^1.9.4",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
@@ -26,6 +29,7 @@
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",
     "@tailwindcss/postcss": "^4",
+    "@tauri-apps/cli": "^2.11.5",
     "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^20",
     "@types/react": "^19",

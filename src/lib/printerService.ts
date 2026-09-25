@@ -235,7 +235,26 @@ export async function printOrderDirect(
   const targetIP = printerIP || storeSettings.printer_ip || '192.168.1.232';
   const targetPort = port || storeSettings.printer_port || 9100;
 
-  // If not running in native Capacitor platform, do not try to open TCP connection
+  // 1. Kiểm tra môi trường Desktop Tauri (Windows POS máy in USB / Spooler)
+  try {
+    const { isTauriEnvironment, silentPrintEscPos } = await import('@/lib/tauriPOS');
+    if (isTauriEnvironment()) {
+      console.log('[Tauri Desktop Mode] Initiating Silent ESC/POS printing...');
+      const receiptBytes = buildReceiptBytes(orderData, storeSettings);
+      const res = await silentPrintEscPos(receiptBytes);
+      if (!res.success) {
+        throw new Error(res.message || 'Lỗi in ngầm máy in Windows POS');
+      }
+      console.log('[Tauri Desktop Mode] Print sent successfully.');
+      return;
+    }
+  } catch (tauriErr) {
+    if ((tauriErr as any)?.message?.includes('Lỗi in ngầm')) {
+      throw tauriErr;
+    }
+  }
+
+  // 2. If not running in native Capacitor platform, do not try to open TCP connection
   if (!Capacitor.isNativePlatform()) {
     console.log('[Web/Browser Dev Mode] Skipping TCP socket print. Order data:', orderData);
     return;
@@ -282,6 +301,48 @@ export async function printOrderDirect(
 
 // In thử kết nối máy in (Test Ticket)
 export async function printTestTicket(settings?: Partial<StoreSettings>): Promise<{ success: boolean; isWeb?: boolean; message: string }> {
+  // Kiểm tra môi trường Desktop Tauri
+  try {
+    const { isTauriEnvironment, silentPrintEscPos } = await import('@/lib/tauriPOS');
+    if (isTauriEnvironment()) {
+      const currentSettings = { ...db.getStoreSettingsSync(), ...settings };
+      const builder = new EscPosBuilder();
+      const divider = '-'.repeat(RECEIPT_WIDTH);
+      builder.alignCenter()
+        .fontSizeDouble()
+        .bold(true)
+        .line(removeDiacritics(currentSettings.store_name || 'AVA COFFEE K300'))
+        .fontSizeNormal()
+        .bold(false)
+        .line(divider)
+        .bold(true)
+        .line('*** TEST MAY IN WINDOWS POS (TAURI) ***')
+        .bold(false)
+        .line(`May in: USB / Windows Spooler`)
+        .line(`Gio: ${formatShortReceiptTime(new Date())}`)
+        .line(divider)
+        .bold(true)
+        .line('IN NGAM THANH CONG 100%!')
+        .bold(false)
+        .line(divider)
+        .feed(2)
+        .cut();
+
+      const res = await silentPrintEscPos(builder.getBuffer());
+      if (res.success) {
+        return {
+          success: true,
+          message: 'In test thành công trên máy in Windows POS (Tauri Silent Print)!'
+        };
+      } else {
+        return {
+          success: false,
+          message: res.message || 'Lỗi in test máy in'
+        };
+      }
+    }
+  } catch (e) {}
+
   // Kiểm tra môi trường Web: Trình duyệt web không thể mở TCP socket trực tiếp
   if (!Capacitor.isNativePlatform()) {
     return {
