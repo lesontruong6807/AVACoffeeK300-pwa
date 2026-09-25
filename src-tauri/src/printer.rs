@@ -66,7 +66,7 @@ mod win32_spooler {
 
         pub fn EndPagePrinter(hPrinter: isize) -> i32;
 
-        pub fn EndDocPrinterW(hPrinter: isize) -> i32;
+        pub fn EndDocPrinter(hPrinter: isize) -> i32;
 
         pub fn ClosePrinter(hPrinter: isize) -> i32;
 
@@ -197,7 +197,7 @@ mod win32_spooler {
             let mut written = 0u32;
             WritePrinter(h_printer, data.as_ptr(), data.len() as u32, &mut written);
             EndPagePrinter(h_printer);
-            EndDocPrinterW(h_printer);
+            EndDocPrinter(h_printer);
             ClosePrinter(h_printer);
         }
 
