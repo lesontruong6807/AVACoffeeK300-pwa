@@ -1,5 +1,7 @@
 @echo off
 chcp 65001 >nul
+set PATH=%USERPROFILE%\.cargo\bin;%PATH%
+
 echo ========================================================
 echo   AVA COFFEE K300 - BUILD DESKTOP WINDOWS POS (TAURI v2)
 echo   Target: May POS CPOS 603 (Windows 10 64-bit)
