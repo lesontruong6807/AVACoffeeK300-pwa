@@ -26,6 +26,9 @@ import {
   CreditCard,
   DollarSign,
   ArrowRightLeft,
+  ArrowRight,
+  Scissors,
+  GitMerge,
   X,
   Eye,
   Maximize2,
@@ -176,6 +179,20 @@ export default function PosPage() {
   const [transferTargetId, setTransferTargetId] = useState<string>('');
   const [transferring, setTransferring] = useState(false);
 
+  // Trạng thái Gộp bàn (Table Merge)
+  const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
+  const [selectedSourceTableIds, setSelectedSourceTableIds] = useState<string[]>([]);
+  const [merging, setMerging] = useState(false);
+
+  // Trạng thái Tách hóa đơn (Split Bill)
+  const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
+  const [splitCart, setSplitCart] = useState<CartItem[]>([]);
+  const [splitRemainingCart, setSplitRemainingCart] = useState<CartItem[]>([]);
+  const [splitActionType, setSplitActionType] = useState<'pay_now' | 'move_table'>('pay_now');
+  const [splitTargetTableId, setSplitTargetTableId] = useState<string>('');
+  const [splitPaymentMethod, setSplitPaymentMethod] = useState<'Tiền mặt' | 'Chuyển khoản'>('Tiền mặt');
+  const [splitting, setSplitting] = useState(false);
+
   // Tải danh sách đơn đã làm xong của bếp trong ngày & SĐT MoMo từ LocalStorage
   useEffect(() => {
     try {
@@ -233,6 +250,276 @@ export default function PosPage() {
       toast.error('Gặp lỗi khi chuyển bàn');
     } finally {
       setTransferring(false);
+    }
+  };
+
+  // Xử lý Gộp bàn phục vụ
+  const handleConfirmMerge = async () => {
+    if (!selectedTable || selectedSourceTableIds.length === 0 || !existingOrder?.id) return;
+    setMerging(true);
+    try {
+      const res = await db.mergeTables(selectedTable.id, selectedSourceTableIds, existingOrder.id);
+      setCart(res.items);
+      setIsMergeModalOpen(false);
+      setSelectedSourceTableIds([]);
+      toast.success(`Đã gộp thành công các bàn vào ${selectedTable.table_name}!`);
+      await refreshData();
+    } catch (e) {
+      console.error('Lỗi gộp bàn:', e);
+      toast.error('Gặp lỗi khi gộp bàn');
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  // Mở modal tách bill
+  const handleOpenSplitModal = () => {
+    setSplitRemainingCart(JSON.parse(JSON.stringify(cart)));
+    setSplitCart([]);
+    setSplitActionType('pay_now');
+    setSplitTargetTableId('');
+    setIsSplitModalOpen(true);
+  };
+
+  // Chuyển 1 số lượng món sang hóa đơn tách
+  const handleMoveItemToSplit = (idx: number) => {
+    const item = splitRemainingCart[idx];
+    if (!item) return;
+
+    // Giảm ở bên còn lại
+    const updatedRemaining = [...splitRemainingCart];
+    if (item.quantity > 1) {
+      updatedRemaining[idx] = {
+        ...item,
+        quantity: item.quantity - 1,
+        subtotal: (item.quantity - 1) * item.price
+      };
+    } else {
+      updatedRemaining.splice(idx, 1);
+    }
+    setSplitRemainingCart(updatedRemaining);
+
+    // Tăng ở bên tách
+    const updatedSplit = [...splitCart];
+    const existingSplitIdx = updatedSplit.findIndex(
+      i => i.product_id === item.product_id && (i.notes || '') === (item.notes || '')
+    );
+    if (existingSplitIdx >= 0) {
+      const spItem = updatedSplit[existingSplitIdx];
+      updatedSplit[existingSplitIdx] = {
+        ...spItem,
+        quantity: spItem.quantity + 1,
+        subtotal: (spItem.quantity + 1) * spItem.price
+      };
+    } else {
+      updatedSplit.push({
+        ...item,
+        quantity: 1,
+        subtotal: item.price
+      });
+    }
+    setSplitCart(updatedSplit);
+  };
+
+  // Chuyển tất cả số lượng của món sang hóa đơn tách
+  const handleMoveAllToSplit = (idx: number) => {
+    const item = splitRemainingCart[idx];
+    if (!item) return;
+
+    const updatedRemaining = splitRemainingCart.filter((_, i) => i !== idx);
+    setSplitRemainingCart(updatedRemaining);
+
+    const updatedSplit = [...splitCart];
+    const existingSplitIdx = updatedSplit.findIndex(
+      i => i.product_id === item.product_id && (i.notes || '') === (item.notes || '')
+    );
+    if (existingSplitIdx >= 0) {
+      const spItem = updatedSplit[existingSplitIdx];
+      updatedSplit[existingSplitIdx] = {
+        ...spItem,
+        quantity: spItem.quantity + item.quantity,
+        subtotal: (spItem.quantity + item.quantity) * spItem.price
+      };
+    } else {
+      updatedSplit.push({ ...item });
+    }
+    setSplitCart(updatedSplit);
+  };
+
+  // Trả 1 số lượng món từ hóa đơn tách về hóa đơn gốc
+  const handleReturnItemFromSplit = (idx: number) => {
+    const item = splitCart[idx];
+    if (!item) return;
+
+    // Giảm ở bên tách
+    const updatedSplit = [...splitCart];
+    if (item.quantity > 1) {
+      updatedSplit[idx] = {
+        ...item,
+        quantity: item.quantity - 1,
+        subtotal: (item.quantity - 1) * item.price
+      };
+    } else {
+      updatedSplit.splice(idx, 1);
+    }
+    setSplitCart(updatedSplit);
+
+    // Tăng ở bên gốc
+    const updatedRemaining = [...splitRemainingCart];
+    const existingRemainingIdx = updatedRemaining.findIndex(
+      i => i.product_id === item.product_id && (i.notes || '') === (item.notes || '')
+    );
+    if (existingRemainingIdx >= 0) {
+      const rmItem = updatedRemaining[existingRemainingIdx];
+      updatedRemaining[existingRemainingIdx] = {
+        ...rmItem,
+        quantity: rmItem.quantity + 1,
+        subtotal: (rmItem.quantity + 1) * rmItem.price
+      };
+    } else {
+      updatedRemaining.push({
+        ...item,
+        quantity: 1,
+        subtotal: item.price
+      });
+    }
+    setSplitRemainingCart(updatedRemaining);
+  };
+
+  // Trả toàn bộ món từ hóa đơn tách về hóa đơn gốc
+  const handleReturnAllFromSplit = (idx: number) => {
+    const item = splitCart[idx];
+    if (!item) return;
+
+    const updatedSplit = splitCart.filter((_, i) => i !== idx);
+    setSplitCart(updatedSplit);
+
+    const updatedRemaining = [...splitRemainingCart];
+    const existingRemainingIdx = updatedRemaining.findIndex(
+      i => i.product_id === item.product_id && (i.notes || '') === (item.notes || '')
+    );
+    if (existingRemainingIdx >= 0) {
+      const rmItem = updatedRemaining[existingRemainingIdx];
+      updatedRemaining[existingRemainingIdx] = {
+        ...rmItem,
+        quantity: rmItem.quantity + item.quantity,
+        subtotal: (rmItem.quantity + item.quantity) * rmItem.price
+      };
+    } else {
+      updatedRemaining.push({ ...item });
+    }
+    setSplitRemainingCart(updatedRemaining);
+  };
+
+  // Xác nhận Tách hóa đơn
+  const handleConfirmSplit = async () => {
+    if (splitCart.length === 0 || splitting) return;
+    setSplitting(true);
+
+    try {
+      const splitTotal = splitCart.reduce((s, i) => s + i.subtotal, 0);
+      const remainingTotal = splitRemainingCart.reduce((s, i) => s + i.subtotal, 0);
+
+      if (splitActionType === 'pay_now') {
+        // 1. Tạo đơn mới và thanh toán ngay phần tách
+        const newOrder = await db.createOrder({
+          table_id: selectedTable?.id || 'tb_mangve',
+          staff_id: currentUser?.id || 'admin',
+          total_amount: splitTotal,
+          discount: 0,
+          notes: `Tách từ ${selectedTable?.table_name || 'Bàn'}`,
+          items: splitCart
+        });
+
+        if (newOrder?.id) {
+          await db.payOrder(newOrder.id, splitPaymentMethod);
+          try {
+            await printOrderDirect({
+              tableName: `${selectedTable?.table_name || 'Khách'} (Tách bill)`,
+              staffName: currentUser?.full_name || 'Admin',
+              orderId: newOrder.id,
+              items: splitCart.map(i => ({ name: i.name, quantity: i.quantity, price: i.price, subtotal: i.subtotal })),
+              totalAmount: splitTotal,
+              discount: 0,
+              notes: 'Hóa đơn tách'
+            });
+            await kickCashDrawer();
+          } catch (_) {}
+        }
+
+        // 2. Cập nhật phần còn lại cho bàn gốc
+        if (splitRemainingCart.length === 0) {
+          if (existingOrder?.id) {
+            await db.payOrder(existingOrder.id, 'Tiền mặt');
+          }
+          handleClearCart();
+          setExistingOrder(null);
+          setSelectedTable(null);
+          setViewMode('tables');
+          toast.success(`Đã thanh toán hóa đơn tách! ${selectedTable?.table_name || 'Bàn'} đã được dọn sạch.`);
+        } else {
+          if (existingOrder?.id) {
+            await db.syncUnpaidOrder(existingOrder.id, {
+              total_amount: remainingTotal,
+              discount: discountAmount,
+              notes: orderNotes.trim(),
+              items: splitRemainingCart
+            });
+          }
+          setCart(splitRemainingCart);
+          toast.success(`Đã thanh toán hóa đơn tách! ${selectedTable?.table_name || 'Bàn'} còn lại ${remainingTotal.toLocaleString('vi-VN')} đ.`);
+        }
+
+      } else {
+        // Chuyển phần tách sang bàn trống khác
+        if (!splitTargetTableId) {
+          toast.error('Vui lòng chọn bàn muốn chuyển đến');
+          setSplitting(false);
+          return;
+        }
+
+        const targetT = tables.find(t => t.id === splitTargetTableId);
+        // Tạo đơn mới cho bàn đích
+        await db.createOrder({
+          table_id: splitTargetTableId,
+          staff_id: currentUser?.id || 'admin',
+          total_amount: splitTotal,
+          discount: 0,
+          notes: `Tách từ ${selectedTable?.table_name || 'Bàn'}`,
+          items: splitCart
+        });
+
+        // Cập nhật bàn gốc
+        if (splitRemainingCart.length === 0) {
+          if (existingOrder?.id) {
+            await db.payOrder(existingOrder.id, 'Tiền mặt');
+          }
+          handleClearCart();
+          setExistingOrder(null);
+          setSelectedTable(null);
+          setViewMode('tables');
+          toast.success(`Đã chuyển toàn bộ sang ${targetT?.table_name || 'Bàn mới'}!`);
+        } else {
+          if (existingOrder?.id) {
+            await db.syncUnpaidOrder(existingOrder.id, {
+              total_amount: remainingTotal,
+              discount: discountAmount,
+              notes: orderNotes.trim(),
+              items: splitRemainingCart
+            });
+          }
+          setCart(splitRemainingCart);
+          toast.success(`Đã tách các món sang ${targetT?.table_name || 'Bàn mới'}!`);
+        }
+      }
+
+      setIsSplitModalOpen(false);
+      await refreshData();
+    } catch (e) {
+      console.error('Lỗi tách hóa đơn:', e);
+      toast.error('Gặp lỗi khi tách hóa đơn');
+    } finally {
+      setSplitting(false);
     }
   };
 
@@ -916,18 +1203,22 @@ export default function PosPage() {
           1. TOP NAVIGATION HEADER
       ───────────────────────────────────────────────────────────── */}
       <header className="h-14 bg-white border-b border-gray-200 px-3 flex items-center justify-between shrink-0 shadow-xs z-30">
-        {/* NÚT QUAY LẠI TRANG CHỦ (BÊN TRÁI NHẤT) + SƠ ĐỒ BÀN + ĐƠN CHƯA TT */}
+        {/* NÚT QUAY LẠI TRANG CHỦ (BÊN TRÁI NHẤT - CHỈ HIỆN KHI Ở SƠ ĐỒ BÀN, ẨN KHI Ở CHỌN MÓN ĐỂ TRÁNH BẤM NHẦM) */}
         <div className="flex items-center space-x-2 shrink-0">
-          <Link
-            href="/"
-            className="px-2.5 py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs font-bold transition cursor-pointer flex items-center space-x-1"
-            title="Quay lại Trang chủ Quản lý"
-          >
-            <ArrowLeft className="w-4 h-4 text-gray-800" />
-            <span className="hidden sm:inline">Trang chủ</span>
-          </Link>
+          {viewMode === 'tables' && (
+            <>
+              <Link
+                href="/"
+                className="px-2.5 py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs font-bold transition cursor-pointer flex items-center space-x-1"
+                title="Quay lại Trang chủ Quản lý"
+              >
+                <ArrowLeft className="w-4 h-4 text-gray-800" />
+                <span className="hidden sm:inline">Trang chủ</span>
+              </Link>
 
-          <div className="h-5 w-px bg-gray-200 mx-0.5" />
+              <div className="h-5 w-px bg-gray-200 mx-0.5" />
+            </>
+          )}
 
           <button
             onClick={() => setViewMode(prev => prev === 'tables' ? 'menu' : 'tables')}
@@ -1239,17 +1530,48 @@ export default function PosPage() {
                 </div>
               </div>
 
-              {existingOrder && selectedTable?.table_name !== 'Khách mang về' && (
-                <button
-                  type="button"
-                  onClick={() => setIsTransferModalOpen(true)}
-                  className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold flex items-center space-x-1.5 cursor-pointer transition shadow-2xs"
-                  title="Chuyển toàn bộ món sang bàn khác"
-                >
-                  <ArrowRightLeft className="w-3.5 h-3.5 text-amber-700" />
-                  <span>Đổi bàn</span>
-                </button>
-              )}
+              {/* CÁC THAO TÁC BÀN CẢM ỨNG: TÁCH BILL, GỘP BÀN, ĐỔI BÀN */}
+              <div className="flex items-center space-x-1">
+                {/* NÚT TÁCH BILL (Hiện khi có từ 2 món trở lên hoặc có món số lượng > 1) */}
+                {cart.length > 0 && (cart.length >= 2 || cart.some(i => i.quantity > 1)) && (
+                  <button
+                    type="button"
+                    onClick={handleOpenSplitModal}
+                    className="px-2 py-1 bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-300 rounded-lg text-[11px] font-bold flex items-center space-x-1 cursor-pointer transition shadow-2xs active:scale-95"
+                    title="Tách các món thành hóa đơn riêng"
+                  >
+                    <Scissors className="w-3 h-3 text-sky-700" />
+                    <span>Tách</span>
+                  </button>
+                )}
+
+                {existingOrder && selectedTable?.table_name !== 'Khách mang về' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedSourceTableIds([]);
+                        setIsMergeModalOpen(true);
+                      }}
+                      className="px-2 py-1 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-300 rounded-lg text-[11px] font-bold flex items-center space-x-1 cursor-pointer transition shadow-2xs active:scale-95"
+                      title="Gộp các bàn đang phục vụ khác vào bàn này"
+                    >
+                      <GitMerge className="w-3 h-3 text-purple-700" />
+                      <span>Gộp</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsTransferModalOpen(true)}
+                      className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-[11px] font-bold flex items-center space-x-1 cursor-pointer transition shadow-2xs active:scale-95"
+                      title="Chuyển toàn bộ món sang bàn khác"
+                    >
+                      <ArrowRightLeft className="w-3 h-3 text-amber-700" />
+                      <span>Đổi</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* DANH SÁCH MÓN ĐÃ CHỌN (CART TABLE) */}
@@ -1712,6 +2034,372 @@ export default function PosPage() {
                   </>
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          3.6 MODAL GỘP BÀN (TABLE MERGE)
+      ───────────────────────────────────────────────────────────── */}
+      {isMergeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-gray-200 animate-scaleIn">
+            <div className="p-4 bg-purple-50 border-b border-purple-200 flex items-center justify-between">
+              <div>
+                <h3 className="font-extrabold text-base text-purple-950 flex items-center space-x-1.5">
+                  <GitMerge className="w-4 h-4 text-purple-700" />
+                  <span>Gộp bàn vào {selectedTable?.table_name || 'Bàn'}</span>
+                </h3>
+                <p className="text-[11px] text-purple-800">
+                  Chọn một hoặc nhiều bàn đang phục vụ khác để gộp chung hóa đơn
+                </p>
+              </div>
+              <button 
+                onClick={() => {
+                  setIsMergeModalOpen(false);
+                  setSelectedSourceTableIds([]);
+                }}
+                className="p-1.5 hover:bg-purple-100 text-purple-700 rounded-lg transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="text-xs font-bold text-gray-700">
+                Chạm để chọn các bàn muốn gộp:
+              </div>
+
+              {/* Danh sách các bàn đang phục vụ có thể gộp */}
+              <div className="grid grid-cols-2 gap-2.5 max-h-64 overflow-y-auto p-1">
+                {tables
+                  .filter(t => t.id !== selectedTable?.id && t.table_name !== 'Khách mang về' && t.status === 'Đang phục vụ')
+                  .sort((a, b) => a.table_name.localeCompare(b.table_name, 'vi', { numeric: true }))
+                  .map(sourceTable => {
+                    const isSelected = selectedSourceTableIds.includes(sourceTable.id);
+                    const matchedUnpaid = unpaidOrders.find(o => o.table_id === sourceTable.id);
+
+                    return (
+                      <button
+                        key={sourceTable.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedSourceTableIds(prev => 
+                            prev.includes(sourceTable.id)
+                              ? prev.filter(id => id !== sourceTable.id)
+                              : [...prev, sourceTable.id]
+                          );
+                        }}
+                        className={`p-3 rounded-2xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                          isSelected
+                            ? 'bg-purple-600 text-white border-purple-600 shadow-md ring-2 ring-purple-300'
+                            : 'bg-gray-50 hover:bg-purple-50 text-gray-900 border-gray-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-black text-sm">{sourceTable.table_name}</span>
+                          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-black border ${
+                            isSelected ? 'bg-white text-purple-700 border-white' : 'border-gray-300 bg-white'
+                          }`}>
+                            {isSelected ? '✓' : ''}
+                          </span>
+                        </div>
+                        {matchedUnpaid && (
+                          <div className={`text-xs font-bold mt-1 ${isSelected ? 'text-purple-100' : 'text-[#4A3525]'}`}>
+                            {Number(matchedUnpaid.total_amount || 0).toLocaleString('vi-VN')} đ
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+              </div>
+
+              {tables.filter(t => t.id !== selectedTable?.id && t.table_name !== 'Khách mang về' && t.status === 'Đang phục vụ').length === 0 && (
+                <div className="py-8 text-center text-gray-500 text-xs italic bg-gray-50 rounded-xl border border-gray-200">
+                  Hiện không có bàn nào khác đang phục vụ để gộp.
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMergeModalOpen(false);
+                  setSelectedSourceTableIds([]);
+                }}
+                className="px-4 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold text-xs rounded-xl hover:bg-gray-100 transition cursor-pointer"
+              >
+                Hủy
+              </button>
+
+              <button
+                type="button"
+                disabled={selectedSourceTableIds.length === 0 || merging}
+                onClick={handleConfirmMerge}
+                className="px-6 py-2.5 bg-purple-700 hover:bg-purple-800 text-white font-black text-xs rounded-xl shadow-md transition disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
+              >
+                {merging ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Đang gộp bàn...</span>
+                  </>
+                ) : (
+                  <>
+                    <GitMerge className="w-4 h-4" />
+                    <span>Xác nhận gộp ({selectedSourceTableIds.length} bàn)</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          3.7 MODAL TÁCH HÓA ĐƠN (SPLIT BILL)
+      ───────────────────────────────────────────────────────────── */}
+      {isSplitModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] shadow-2xl flex flex-col overflow-hidden border border-gray-200 animate-scaleIn">
+            {/* Header Modal */}
+            <div className="p-4 bg-sky-50 border-b border-sky-200 flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="font-extrabold text-base text-sky-950 flex items-center space-x-2">
+                  <Scissors className="w-4 h-4 text-sky-700" />
+                  <span>Tách Hóa Đơn - {selectedTable?.table_name || 'Bàn'}</span>
+                </h3>
+                <p className="text-[11px] text-sky-800">
+                  Chạm nút sang phải để chuyển món sang hóa đơn tách mới
+                </p>
+              </div>
+              <button 
+                onClick={() => setIsSplitModalOpen(false)}
+                className="p-1.5 hover:bg-sky-100 text-sky-700 rounded-lg transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Hai cột danh sách món: Cột trái Giữ lại | Cột phải Tách ra */}
+            <div className="flex-1 grid grid-cols-2 divide-x divide-gray-200 overflow-hidden min-h-[350px]">
+              {/* CỘT TRÁI: HÓA ĐƠN GỐC (GIỮ LẠI) */}
+              <div className="p-4 flex flex-col overflow-hidden bg-gray-50/50">
+                <div className="flex items-center justify-between pb-2 border-b border-gray-200 mb-2 shrink-0">
+                  <span className="font-black text-xs text-gray-800 uppercase">
+                    1. Giữ lại ở {selectedTable?.table_name || 'Bàn'}
+                  </span>
+                  <span className="text-xs font-black text-[#4A3525]">
+                    {splitRemainingCart.reduce((s, i) => s + i.subtotal, 0).toLocaleString('vi-VN')} đ
+                  </span>
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                  {splitRemainingCart.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center p-6 text-center text-gray-400">
+                      <p className="text-xs font-bold text-gray-500">Toàn bộ món đã được chuyển sang hóa đơn tách</p>
+                    </div>
+                  ) : (
+                    splitRemainingCart.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="p-2.5 bg-white border border-gray-200 rounded-xl flex items-center justify-between shadow-2xs"
+                      >
+                        <div className="flex-1 pr-2">
+                          <p className="font-extrabold text-xs text-gray-900 leading-tight">{item.name}</p>
+                          <p className="text-[10px] text-gray-500 font-semibold">
+                            {item.price.toLocaleString('vi-VN')} đ × {item.quantity} = {item.subtotal.toLocaleString('vi-VN')} đ
+                          </p>
+                        </div>
+
+                        <div className="flex items-center space-x-1 shrink-0">
+                          {item.quantity > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleMoveItemToSplit(idx)}
+                              className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-900 font-black text-xs rounded-lg transition cursor-pointer active:scale-90"
+                              title="Tách 1 phần"
+                            >
+                              -1 →
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleMoveAllToSplit(idx)}
+                            className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white font-black text-xs rounded-lg transition cursor-pointer active:scale-90 shadow-2xs"
+                            title="Tách toàn bộ món này"
+                          >
+                            Hết →
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* CỘT PHẢI: HÓA ĐƠN TÁCH MỚI */}
+              <div className="p-4 flex flex-col overflow-hidden bg-sky-50/20">
+                <div className="flex items-center justify-between pb-2 border-b border-sky-200 mb-2 shrink-0">
+                  <span className="font-black text-xs text-sky-950 uppercase">
+                    2. Món tách ra ({splitCart.reduce((s, i) => s + i.quantity, 0)} món)
+                  </span>
+                  <span className="text-xs font-black text-sky-900">
+                    {splitCart.reduce((s, i) => s + i.subtotal, 0).toLocaleString('vi-VN')} đ
+                  </span>
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                  {splitCart.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center p-6 text-center text-gray-400">
+                      <Scissors className="w-8 h-8 opacity-30 text-sky-600 mb-2" />
+                      <p className="text-xs font-bold text-gray-500">Chưa có món nào được chọn để tách</p>
+                      <p className="text-[10px] text-gray-400">Nhấn nút "→" bên trái để chuyển món sang đây</p>
+                    </div>
+                  ) : (
+                    splitCart.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="p-2.5 bg-white border border-sky-200 rounded-xl flex items-center justify-between shadow-2xs"
+                      >
+                        <div className="flex items-center space-x-1 shrink-0 pr-2">
+                          <button
+                            type="button"
+                            onClick={() => handleReturnItemFromSplit(idx)}
+                            className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-black text-xs rounded-lg transition cursor-pointer active:scale-90"
+                            title="Trả lại 1 phần"
+                          >
+                            ← 1
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleReturnAllFromSplit(idx)}
+                            className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 font-black text-xs rounded-lg transition cursor-pointer active:scale-90"
+                            title="Trả lại toàn bộ"
+                          >
+                            ← Hết
+                          </button>
+                        </div>
+
+                        <div className="flex-1 text-right">
+                          <p className="font-extrabold text-xs text-gray-900 leading-tight">{item.name}</p>
+                          <p className="text-[10px] text-sky-800 font-bold">
+                            SL: {item.quantity} | {item.subtotal.toLocaleString('vi-VN')} đ
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* TÙY CHỌN ĐÍCH ĐẾN CHO PHẦN TÁCH */}
+                <div className="pt-3 border-t border-sky-200 shrink-0 space-y-2">
+                  <div className="text-[11px] font-black text-gray-700 uppercase">Hướng xử lý phần tách:</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSplitActionType('pay_now')}
+                      className={`py-2 px-2.5 rounded-xl border text-center transition font-bold text-xs flex items-center justify-center space-x-1.5 cursor-pointer ${
+                        splitActionType === 'pay_now'
+                          ? 'bg-[#4A3525] text-white border-[#4A3525] shadow-xs'
+                          : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      <CreditCard className="w-3.5 h-3.5" />
+                      <span>Thanh toán ngay</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setSplitActionType('move_table')}
+                      className={`py-2 px-2.5 rounded-xl border text-center transition font-bold text-xs flex items-center justify-center space-x-1.5 cursor-pointer ${
+                        splitActionType === 'move_table'
+                          ? 'bg-[#4A3525] text-white border-[#4A3525] shadow-xs'
+                          : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      <ArrowRightLeft className="w-3.5 h-3.5" />
+                      <span>Chuyển sang bàn khác</span>
+                    </button>
+                  </div>
+
+                  {splitActionType === 'pay_now' ? (
+                    <div className="flex items-center space-x-2 pt-1">
+                      <span className="text-xs font-semibold text-gray-600">Hình thức:</span>
+                      <button
+                        type="button"
+                        onClick={() => setSplitPaymentMethod('Tiền mặt')}
+                        className={`px-3 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                          splitPaymentMethod === 'Tiền mặt' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-gray-700'
+                        }`}
+                      >
+                        Tiền mặt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSplitPaymentMethod('Chuyển khoản')}
+                        className={`px-3 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                          splitPaymentMethod === 'Chuyển khoản' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-gray-700'
+                        }`}
+                      >
+                        Chuyển khoản
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="pt-1">
+                      <select
+                        value={splitTargetTableId}
+                        onChange={(e) => setSplitTargetTableId(e.target.value)}
+                        className="w-full h-8 px-2.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-800 focus:outline-none focus:border-sky-500"
+                      >
+                        <option value="">-- Chọn bàn trống để chuyển phần tách sang --</option>
+                        {tables
+                          .filter(t => t.id !== selectedTable?.id && t.status === 'Trống')
+                          .map(t => (
+                            <option key={t.id} value={t.id}>{t.table_name}</option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer Modal */}
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between shrink-0">
+              <div className="text-xs text-gray-500 font-semibold">
+                Tổng thanh toán phần tách: <span className="font-black text-[#4A3525] text-sm">{splitCart.reduce((s, i) => s + i.subtotal, 0).toLocaleString('vi-VN')} đ</span>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsSplitModalOpen(false)}
+                  className="px-4 py-2 bg-white border border-gray-300 text-gray-700 font-bold text-xs rounded-xl hover:bg-gray-100 transition cursor-pointer"
+                >
+                  Hủy
+                </button>
+
+                <button
+                  type="button"
+                  disabled={splitCart.length === 0 || splitting || (splitActionType === 'move_table' && !splitTargetTableId)}
+                  onClick={handleConfirmSplit}
+                  className="px-6 py-2 bg-sky-700 hover:bg-sky-800 text-white font-black text-xs rounded-xl shadow-md transition disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
+                >
+                  {splitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Đang xử lý...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>{splitActionType === 'pay_now' ? 'Xác nhận & Thu tiền ngay' : 'Xác nhận tách bàn'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

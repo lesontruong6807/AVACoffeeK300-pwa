@@ -1990,6 +1990,142 @@ export const db = {
     return true;
   },
 
+  // Gộp Bàn: Gộp một hoặc nhiều bàn đang phục vụ vào bàn đích
+  async mergeTables(targetTableId: string, sourceTableIds: string[], targetOrderId: string) {
+    if (isSupabaseConfigured && supabase) {
+      // 1. Lấy thông tin các món hiện tại của bàn đích
+      const { data: targetDetail } = await supabase
+        .from('hoadondetail')
+        .select('*')
+        .eq('idhoadon', targetOrderId);
+      
+      const targetItems = (targetDetail || []).map((i: any) => ({
+        product_id: i.idsp,
+        name: i.ten_san_pham,
+        don_vi_tinh: i.don_vi_tinh,
+        price: Number(i.don_gia || 0),
+        quantity: Number(i.so_luong || 1),
+        subtotal: Number(i.thanh_tien || 0),
+        notes: i.ghi_chu || ''
+      }));
+
+      // 2. Với mỗi bàn nguồn, tìm đơn chưa thanh toán và lấy chi tiết
+      for (const sourceId of sourceTableIds) {
+        const { data: sourceOrders } = await supabase
+          .from('hoadon')
+          .select('id')
+          .eq('id_ban', sourceId)
+          .neq('trang_thai_thanh_toan', 'Đã thanh toán')
+          .neq('trang_thai_thanh_toan', 'Đã hủy')
+          .order('ngay_tao', { ascending: false });
+
+        if (sourceOrders && sourceOrders.length > 0) {
+          for (const sOrder of sourceOrders) {
+            const { data: sDetails } = await supabase
+              .from('hoadondetail')
+              .select('*')
+              .eq('idhoadon', sOrder.id);
+
+            if (sDetails) {
+              for (const sItem of sDetails) {
+                const existing = targetItems.find(
+                  (ti: any) => ti.product_id === sItem.idsp && (ti.notes || '') === (sItem.ghi_chu || '')
+                );
+                if (existing) {
+                  existing.quantity += Number(sItem.so_luong || 1);
+                  existing.subtotal += Number(sItem.thanh_tien || 0);
+                } else {
+                  targetItems.push({
+                    product_id: sItem.idsp,
+                    name: sItem.ten_san_pham,
+                    don_vi_tinh: sItem.don_vi_tinh,
+                    price: Number(sItem.don_gia || 0),
+                    quantity: Number(sItem.so_luong || 1),
+                    subtotal: Number(sItem.thanh_tien || 0),
+                    notes: sItem.ghi_chu || ''
+                  });
+                }
+              }
+            }
+
+            // Đóng đơn nguồn vì đã gộp vào bàn đích
+            await supabase
+              .from('hoadon')
+              .update({
+                trang_thai_thanh_toan: 'Đã hủy',
+                ghi_chu: `Đã gộp vào đơn #${targetOrderId.slice(0, 8)}`
+              })
+              .eq('id', sOrder.id);
+          }
+        }
+
+        // Trả bàn nguồn về Trống
+        await supabase
+          .from('danhsachban')
+          .update({ trang_thai: 'Trống' })
+          .eq('id', sourceId);
+      }
+
+      // 3. Tính lại tổng tiền và cập nhật lại bàn đích
+      const totalAmount = targetItems.reduce((sum: number, i: any) => sum + (Number(i.subtotal) || 0), 0);
+      await this.syncUnpaidOrder(targetOrderId, {
+        total_amount: totalAmount,
+        items: targetItems
+      });
+
+      broadcastRealtimeEvent('order_update');
+      broadcastRealtimeEvent('table_update');
+      return { totalAmount, items: targetItems };
+    }
+
+    // Mock DB Fallback
+    const orders = mockDb.getOrders();
+    const tables = mockDb.getTables();
+    const targetOrder = orders.find(o => o.id === targetOrderId);
+    const allOrderItems = mockDb.getOrderItems();
+
+    let targetItems = allOrderItems.filter(i => i.order_id === targetOrderId).map(i => ({
+      product_id: i.product_id,
+      name: i.name,
+      price: i.price,
+      quantity: i.quantity,
+      subtotal: i.subtotal,
+      notes: i.notes || ''
+    }));
+
+    for (const sourceId of sourceTableIds) {
+      const sourceOrder = orders.find(o => o.table_id === sourceId && o.payment_status !== 'Đã thanh toán' && o.payment_status !== 'Đã hủy');
+      if (sourceOrder) {
+        const sourceItems = allOrderItems.filter(i => i.order_id === sourceOrder.id);
+        for (const sItem of sourceItems) {
+          const existing = targetItems.find(ti => ti.product_id === sItem.product_id && (ti.notes || '') === (sItem.notes || ''));
+          if (existing) {
+            existing.quantity += sItem.quantity;
+            existing.subtotal += sItem.subtotal;
+          } else {
+            targetItems.push({ ...sItem });
+          }
+        }
+        sourceOrder.payment_status = 'Đã hủy';
+        sourceOrder.notes = `Đã gộp vào đơn #${targetOrderId.slice(0, 8)}`;
+      }
+      const sT = tables.find(t => t.id === sourceId);
+      if (sT && sT.table_name !== 'Khách mang về') {
+        sT.status = 'Trống';
+      }
+    }
+
+    const totalAmount = targetItems.reduce((sum, i) => sum + (Number(i.subtotal) || 0), 0);
+    if (targetOrder) {
+      targetOrder.total_amount = totalAmount;
+    }
+    mockDb.setOrders(orders);
+    mockDb.setTables(tables);
+    broadcastRealtimeEvent('order_update');
+    broadcastRealtimeEvent('table_update');
+    return { totalAmount, items: targetItems };
+  },
+
   async getOrders() {
     if (isSupabaseConfigured && supabase) {
       let allOrders: any[] = [];
