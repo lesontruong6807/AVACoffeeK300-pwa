@@ -225,6 +225,33 @@ export default function MainLayout({ children }: MainLayoutProps) {
     );
   }
 
+  const isPosScreen = pathname === '/pos' || pathname.startsWith('/pos');
+
+  if (isPosScreen) {
+    return (
+      <div className="w-full h-screen overflow-hidden bg-[#FAF6F0] text-coffee-dark font-sans select-none">
+        {children}
+        {/* Floating Toast Notification */}
+        {toastMessage && (
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] animate-fade-in transition-all duration-300 pointer-events-none">
+            <div className={`px-5 py-3 rounded-2xl shadow-xl border text-xs font-black flex items-center space-x-2.5 backdrop-blur-md ${
+              toastType === 'success' 
+                ? 'bg-emerald-50/95 border-emerald-200 text-emerald-900 shadow-emerald-100/50' 
+                : toastType === 'error'
+                ? 'bg-red-50/95 border-red-200 text-red-900 shadow-red-100/50'
+                : 'bg-blue-50/95 border-blue-200 text-blue-900 shadow-blue-100/50'
+            }`}>
+              <span className="text-sm">
+                {toastType === 'success' ? '✅' : toastType === 'error' ? '❌' : 'ℹ️'}
+              </span>
+              <span>{toastMessage}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const handleUserChange = (user: any) => {
     setCurrentUser(user);
     setUser(user);
