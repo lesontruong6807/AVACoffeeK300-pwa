@@ -125,7 +125,11 @@ export default function MainLayout({ children }: MainLayoutProps) {
     );
   }
 
-  const isCustomerDisplay = pathname === '/customer-display' || pathname.startsWith('/customer-display');
+  const isCustomerDisplay = 
+    pathname === '/customer-display' || 
+    pathname.startsWith('/customer-display') ||
+    pathname.includes('customer-display') ||
+    (typeof window !== 'undefined' && (window.location.pathname.includes('customer-display') || window.location.href.includes('customer-display')));
   if (isCustomerDisplay) {
     return <>{children}</>;
   }

@@ -240,18 +240,18 @@ export default function CustomerDisplayPage() {
                 <div className="flex flex-col items-center">
                   <p className="text-xs font-bold text-amber-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                     <QrCode className="w-4 h-4 text-amber-400" />
-                    Quét VietQR chuyển khoản
+                    Quét mã thanh toán (MoMo / VietQR)
                   </p>
                   <div className="p-2 bg-white rounded-xl shadow-md">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={order.qrCodeUrl}
-                      alt="VietQR thanh toan"
+                      alt="QR thanh toan"
                       className="w-44 h-44 object-contain rounded-lg"
                     />
                   </div>
-                  <p className="text-[11px] text-amber-200/60 font-semibold mt-2">
-                    Mở app ngân hàng bất kỳ để quét mã
+                  <p className="text-[11px] text-amber-200/80 font-semibold mt-2">
+                    Mở App MoMo hoặc Ngân hàng để quét
                   </p>
                 </div>
               ) : (

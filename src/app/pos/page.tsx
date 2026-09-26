@@ -346,18 +346,32 @@ export default function PosPage() {
     const syncToSecondaryDisplay = async () => {
       try {
         const activeQr = transferTab === 'momo' ? momoQrUrl : vietQrUrl;
-        if (cart.length > 0) {
+        const hasCart = cart.length > 0;
+        const hasExisting = !hasCart && existingOrderItems.length > 0;
+
+        if (hasCart || hasExisting) {
+          const itemsToDisplay = hasCart
+            ? cart.map(i => ({
+                name: i.name,
+                price: i.price,
+                quantity: i.quantity,
+                subtotal: i.subtotal
+              }))
+            : existingOrderItems.map(i => ({
+                name: i.products?.name || i.ten_san_pham || 'Món',
+                price: i.unit_price || 0,
+                quantity: i.quantity || 1,
+                subtotal: i.subtotal || 0
+              }));
+
+          const totalToDisplay = hasCart ? finalTotalAmount : (existingOrder?.total_amount || 0);
+
           await syncCustomerDisplay({
             tableName: selectedTable?.table_name || 'Bàn chưa chọn',
             staffName: currentUser?.full_name || '',
-            items: cart.map(i => ({
-              name: i.name,
-              price: i.price,
-              quantity: i.quantity,
-              subtotal: i.subtotal
-            })),
-            discount: discountAmount,
-            totalAmount: finalTotalAmount,
+            items: itemsToDisplay,
+            discount: hasCart ? discountAmount : (existingOrder?.discount || 0),
+            totalAmount: totalToDisplay,
             paymentMethod: paymentMethod,
             qrCodeUrl: paymentMethod === 'Chuyển khoản' ? activeQr : undefined,
             orderStatus: 'ordering'
@@ -373,7 +387,7 @@ export default function PosPage() {
       } catch (_) {}
     };
     syncToSecondaryDisplay();
-  }, [cart, selectedTable, discountAmount, finalTotalAmount, currentUser, paymentMethod, transferTab, momoQrUrl, vietQrUrl]);
+  }, [cart, existingOrder, existingOrderItems, selectedTable, discountAmount, finalTotalAmount, currentUser, paymentMethod, transferTab, momoQrUrl, vietQrUrl]);
 
   // THAO TÁC 1-CHẠM THÊM MÓN VÀO GIỎ HÀNG (FAST TOUCH)
   const handleAddToCart = (product: any) => {
@@ -675,6 +689,31 @@ export default function PosPage() {
         console.warn('In bill hoặc mở két tiền:', printErr);
       }
 
+      // Đồng bộ trạng thái đã thanh toán sang màn hình phụ
+      try {
+        await syncCustomerDisplay({
+          tableName: selectedTable?.table_name || 'Khách mang về',
+          staffName: currentUser?.full_name || '',
+          items: (cart.length > 0 ? cart : existingOrderItems).map((i: any) => ({
+            name: i.name || i.products?.name || i.ten_san_pham || 'Món',
+            quantity: i.quantity || 1,
+            price: i.price || i.unit_price || 0,
+            subtotal: i.subtotal || 0
+          })),
+          discount: discountAmount || existingOrder?.discount || 0,
+          totalAmount: finalTotalAmount || existingOrder?.total_amount || 0,
+          paymentMethod: paymentMethod,
+          orderStatus: 'paid'
+        });
+        setTimeout(() => {
+          syncCustomerDisplay({
+            items: [],
+            totalAmount: 0,
+            orderStatus: 'idle'
+          });
+        }, 4000);
+      } catch (_) {}
+
       // Hiệu ứng pháo hoa chúc mừng
       confetti({
         particleCount: 120,
@@ -889,9 +928,9 @@ export default function PosPage() {
         </div>
 
         {/* CAROUSEL CÁC HÓA ĐƠN HÌNH CHỮ NHẬT BỰ */}
-        <div className="flex items-center space-x-3 overflow-x-auto pb-1 no-scrollbar min-h-[142px]">
+        <div className="flex items-center space-x-3 overflow-x-auto pb-1.5 no-scrollbar min-h-[168px]">
           {pendingKitchenOrders.length === 0 ? (
-            <div className="w-full py-6 flex items-center justify-center space-x-2 text-xs font-bold text-gray-400 bg-white/70 rounded-2xl border border-dashed border-gray-200">
+            <div className="w-full py-8 flex items-center justify-center space-x-2 text-xs font-bold text-gray-400 bg-white/80 rounded-2xl border border-dashed border-gray-200">
               <CheckCircle2 className="w-5 h-5 text-emerald-500" />
               <span>Tuyệt vời! Hiện tại đã pha chế xong tất cả các đơn hàng. Đơn mới sẽ xuất hiện tại đây.</span>
             </div>
@@ -907,9 +946,9 @@ export default function PosPage() {
                 <div
                   key={order.id}
                   onClick={() => setSelectedKitchenTicket(order)}
-                  className={`w-64 sm:w-72 h-[138px] p-3 rounded-2xl border bg-white flex flex-col justify-between shrink-0 shadow-sm hover:shadow-md transition-all cursor-pointer relative ${
+                  className={`w-72 sm:w-84 md:w-96 min-w-[280px] h-[162px] p-3.5 rounded-2xl border-2 bg-white flex flex-col justify-between shrink-0 shadow-sm hover:shadow-lg transition-all cursor-pointer relative ${
                     isUrgent
-                      ? 'border-red-400 ring-2 ring-red-200'
+                      ? 'border-red-400 ring-2 ring-red-200/80 bg-red-50/20'
                       : isPaid
                       ? 'border-emerald-300 ring-1 ring-emerald-100'
                       : 'border-amber-300 ring-1 ring-amber-100'
@@ -918,50 +957,50 @@ export default function PosPage() {
                     backgroundImage: 'linear-gradient(to bottom, #FFFFFF, #FFFDF9)'
                   }}
                 >
-                  {/* TIÊU ĐỀ VÉ: BÀN + TRẠNG THÁI THANH TOÁN */}
-                  <div className="flex items-center justify-between pb-1.5 border-b border-dashed border-gray-200">
-                    <div className="flex items-center space-x-1.5">
-                      <span className="text-sm font-black text-[#4A3525] uppercase tracking-tight">
+                  {/* TIÊU ĐỀ VÉ: BÀN + THỜI GIAN + TRẠNG THÁI THANH TOÁN */}
+                  <div className="flex items-center justify-between pb-2 border-b border-dashed border-gray-200">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-base font-black text-[#4A3525] uppercase tracking-tight">
                         {tableName}
                       </span>
-                      <span className="text-[10px] text-gray-500 font-medium">
-                        • {minutesAgo}p
+                      <span className="text-xs text-gray-500 font-semibold bg-gray-100 px-2 py-0.5 rounded-md">
+                        {minutesAgo}p trước
                       </span>
                     </div>
 
-                    <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider ${
+                    <span className={`text-[10px] sm:text-[11px] px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider border ${
                       isPaid 
-                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
-                        : 'bg-amber-100 text-amber-900 border border-amber-300'
+                        ? 'bg-emerald-100 text-emerald-900 border-emerald-400' 
+                        : 'bg-amber-100 text-amber-950 border-amber-400'
                     }`}>
-                      {isPaid ? 'ĐÃ TT' : 'CHƯA TT'}
+                      {isPaid ? '✓ ĐÃ THANH TOÁN' : '⏳ CHƯA THANH TOÁN'}
                     </span>
                   </div>
 
                   {/* DANH SÁCH MÓN ĂN HIỂN THỊ RÕ RÀNG */}
-                  <div className="flex-1 overflow-y-auto space-y-1 py-1 pr-1 custom-scrollbar text-xs">
+                  <div className="flex-1 overflow-y-auto space-y-1.5 py-1.5 pr-1 custom-scrollbar text-xs sm:text-[13px]">
                     {order.order_items && order.order_items.length > 0 ? (
                       order.order_items.map((item: any, i: number) => (
-                        <div key={i} className="flex justify-between items-start text-xs leading-tight">
-                          <span className="font-bold text-gray-900 truncate flex-1">
+                        <div key={i} className="flex justify-between items-start leading-snug">
+                          <span className="font-extrabold text-gray-950 truncate flex-1">
                             {item.name}
                             {item.notes && (
-                              <span className="block text-[10px] text-amber-800 italic font-normal">
+                              <span className="block text-[11px] text-amber-800 italic font-medium">
                                 📝 {item.notes}
                               </span>
                             )}
                           </span>
-                          <span className="font-black text-[#4A3525] ml-2 shrink-0">
+                          <span className="font-black text-[#4A3525] bg-[#FAF6F0] border border-[#8C6A5C]/30 px-2 py-0.5 rounded-lg text-xs sm:text-sm ml-2 shrink-0">
                             x{item.quantity}
                           </span>
                         </div>
                       ))
                     ) : (
-                      <p className="text-[11px] text-gray-400 italic">Đơn #{order.id.slice(0, 6)}</p>
+                      <p className="text-xs text-gray-400 italic">Đơn #{order.id.slice(0, 6)}</p>
                     )}
 
                     {order.notes && (
-                      <p className="text-[10px] text-amber-900 bg-amber-50 p-1 rounded-md border border-amber-200 font-semibold">
+                      <p className="text-xs text-amber-950 bg-amber-50 p-1.5 rounded-lg border border-amber-200 font-semibold">
                         Ghi chú: {order.notes}
                       </p>
                     )}
@@ -970,10 +1009,10 @@ export default function PosPage() {
                   {/* NÚT BẤM "ĐÃ LÀM XONG" BỰ DỄ BẤM */}
                   <button
                     onClick={(e) => handleMarkKitchenOrderDone(order.id, e)}
-                    className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-black text-xs rounded-xl shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer mt-1"
+                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition flex items-center justify-center space-x-2 cursor-pointer mt-1"
                   >
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
-                    <span>✓ ĐÃ LÀM XONG</span>
+                    <Check className="w-4 h-4 stroke-[3]" />
+                    <span>✓ ĐÃ LÀM XONG (CHẠM VÀO ĐÂY)</span>
                   </button>
                 </div>
               );
