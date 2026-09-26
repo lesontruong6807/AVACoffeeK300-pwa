@@ -42,6 +42,14 @@ export default function CustomerDisplayPage() {
 
   // Lắng nghe dữ liệu từ Tauri Event & BroadcastChannel
   useEffect(() => {
+    // 0. Đọc ngay dữ liệu đang có từ localStorage
+    try {
+      const cached = localStorage.getItem('ava_customer_display_data');
+      if (cached) {
+        setOrder(JSON.parse(cached));
+      }
+    } catch (_) {}
+
     // 1. BroadcastChannel (cho web đa tab)
     let channel: BroadcastChannel | null = null;
     try {

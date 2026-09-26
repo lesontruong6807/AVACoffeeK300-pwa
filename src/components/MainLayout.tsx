@@ -125,6 +125,11 @@ export default function MainLayout({ children }: MainLayoutProps) {
     );
   }
 
+  const isCustomerDisplay = pathname === '/customer-display' || pathname.startsWith('/customer-display');
+  if (isCustomerDisplay) {
+    return <>{children}</>;
+  }
+
   // MÀN HÌNH ĐĂNG NHẬP BẮT BUỘC NẾU CHƯA CÓ SESSION
   if (!currentUser) {
     return (

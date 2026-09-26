@@ -44,7 +44,9 @@ import {
   QrCode,
   LayoutGrid,
   ShoppingBag,
-  Save
+  Save,
+  Volume2,
+  PhoneCall
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -152,6 +154,10 @@ export default function PosPage() {
   const [completedKitchenOrderIds, setCompletedKitchenOrderIds] = useState<string[]>([]);
   const [selectedKitchenTicket, setSelectedKitchenTicket] = useState<any>(null);
 
+  // Cấu hình Loa MoMo / Số điện thoại MoMo
+  const [momoPhone, setMomoPhone] = useState<string>('0909123456');
+  const [transferTab, setTransferTab] = useState<'momo' | 'vietqr'>('momo');
+
   // Modal states
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
   const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
@@ -161,11 +167,11 @@ export default function PosPage() {
   const [submittingPayment, setSubmittingPayment] = useState(false);
   const [savingOrder, setSavingOrder] = useState(false);
   const isSavingRef = useRef(false);
-  const [paymentMethod, setPaymentMethod] = useState<'Tiền mặt' | 'Chuyển khoản'>('Tiền mặt');
+  const [paymentMethod, setPaymentMethod] = useState<'Tiền mặt' | 'Chuyển khoản'>('Chuyển khoản');
   const [customerCashGiven, setCustomerCashGiven] = useState<number>(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Tải danh sách đơn đã làm xong của bếp trong ngày từ LocalStorage
+  // Tải danh sách đơn đã làm xong của bếp trong ngày & SĐT MoMo từ LocalStorage
   useEffect(() => {
     try {
       const todayKey = new Date().toLocaleDateString('en-CA');
@@ -173,8 +179,20 @@ export default function PosPage() {
       if (storedDone) {
         setCompletedKitchenOrderIds(JSON.parse(storedDone));
       }
+      const savedMomo = localStorage.getItem('ava_momo_phone');
+      if (savedMomo) {
+        setMomoPhone(savedMomo);
+      }
     } catch (_) {}
   }, []);
+
+  // Lưu SĐT MoMo
+  const handleSaveMomoPhone = (phone: string) => {
+    setMomoPhone(phone);
+    try {
+      localStorage.setItem('ava_momo_phone', phone);
+    } catch (_) {}
+  };
 
   // Đánh dấu đơn bếp đã làm xong và tự động biến mất
   const handleMarkKitchenOrderDone = (orderId: string, e?: React.MouseEvent) => {
@@ -307,10 +325,27 @@ export default function PosPage() {
     return Math.max(0, totalCartAmount - discountAmount);
   }, [totalCartAmount, discountAmount]);
 
+  // Tạo URL mã QR MoMo và VietQR
+  const momoQrUrl = useMemo(() => {
+    if (finalTotalAmount <= 0) return '';
+    const cleanPhone = momoPhone.trim().replace(/\s+/g, '');
+    // Chuỗi mã QR tiêu chuẩn chuyển tiền MoMo
+    const momoData = `2|99|${cleanPhone}|||0|0|${finalTotalAmount}|AVA Coffee K300|transfer_myqr`;
+    return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(momoData)}`;
+  }, [momoPhone, finalTotalAmount]);
+
+  const vietQrUrl = useMemo(() => {
+    if (finalTotalAmount <= 0) return '';
+    const cleanPhone = momoPhone.trim().replace(/\s+/g, '');
+    // Napas BIN 970422 là tài khoản MoMo / MB Bank liên kết
+    return `https://img.vietqr.io/image/970422-${cleanPhone}-compact2.png?amount=${finalTotalAmount}&addInfo=AVAK300`;
+  }, [momoPhone, finalTotalAmount]);
+
   // Đồng bộ giỏ hàng sang Màn hình phụ 11.6 inch cho khách
   useEffect(() => {
     const syncToSecondaryDisplay = async () => {
       try {
+        const activeQr = transferTab === 'momo' ? momoQrUrl : vietQrUrl;
         if (cart.length > 0) {
           await syncCustomerDisplay({
             tableName: selectedTable?.table_name || 'Bàn chưa chọn',
@@ -323,6 +358,8 @@ export default function PosPage() {
             })),
             discount: discountAmount,
             totalAmount: finalTotalAmount,
+            paymentMethod: paymentMethod,
+            qrCodeUrl: paymentMethod === 'Chuyển khoản' ? activeQr : undefined,
             orderStatus: 'ordering'
           });
         } else {
@@ -336,7 +373,7 @@ export default function PosPage() {
       } catch (_) {}
     };
     syncToSecondaryDisplay();
-  }, [cart, selectedTable, discountAmount, finalTotalAmount, currentUser]);
+  }, [cart, selectedTable, discountAmount, finalTotalAmount, currentUser, paymentMethod, transferTab, momoQrUrl, vietQrUrl]);
 
   // THAO TÁC 1-CHẠM THÊM MÓN VÀO GIỎ HÀNG (FAST TOUCH)
   const handleAddToCart = (product: any) => {
@@ -567,7 +604,7 @@ export default function PosPage() {
   };
 
   // ─────────────────────────────────────────────────────────────
-  // LỰA CHỌN 2: THANH TOÁN LUÔN (TIỀN MẶT / CHUYỂN KHOẢN VIETQR)
+  // LỰA CHỌN 2: THANH TOÁN LUÔN (TIỀN MẶT / CHUYỂN KHOẢN VIETQR / MOMO)
   // ─────────────────────────────────────────────────────────────
   const handleProcessPayment = async () => {
     if (submittingPayment) return;
@@ -714,8 +751,8 @@ export default function PosPage() {
   if (loading) {
     return (
       <div className="w-full h-screen flex flex-col items-center justify-center bg-[#FAF6F0] space-y-4">
-        <Loader2 className="w-12 h-12 text-[#6B5B95] animate-spin" />
-        <p className="text-sm font-bold text-gray-700">Đang chuẩn bị màn hình POS CPOS 603...</p>
+        <Loader2 className="w-12 h-12 text-[#4A3525] animate-spin" />
+        <p className="text-sm font-bold text-[#4A3525]">Đang chuẩn bị màn hình POS CPOS 603...</p>
       </div>
     );
   }
@@ -724,17 +761,17 @@ export default function PosPage() {
     <div className="w-full h-screen flex flex-col bg-[#F4F5F7] text-gray-900 select-none overflow-hidden font-sans">
       
       {/* ─────────────────────────────────────────────────────────────
-          1. TOP NAVIGATION & KITCHEN LIVE QUEUE BAR (HIỆN TRÊN CẢ 2 GIAO DIỆN)
+          1. TOP NAVIGATION HEADER
       ───────────────────────────────────────────────────────────── */}
       <header className="h-14 bg-white border-b border-gray-200 px-3 flex items-center justify-between shrink-0 shadow-xs z-30">
-        {/* Nút Tab: Bàn | Đăng ký | Đơn hàng */}
+        {/* Nút Tab: Sơ đồ bàn | Đăng ký | Đơn chưa TT */}
         <div className="flex items-center space-x-1.5 shrink-0">
           <button
             onClick={() => setViewMode(prev => prev === 'tables' ? 'menu' : 'tables')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 border cursor-pointer ${
               viewMode === 'tables'
-                ? 'bg-[#6B5B95] text-white border-[#6B5B95] shadow-xs'
-                : 'bg-white hover:bg-gray-100 text-gray-700 border-gray-200'
+                ? 'bg-[#4A3525] text-white border-[#4A3525] shadow-xs'
+                : 'bg-white hover:bg-[#FAF6F0] text-[#4A3525] border-gray-200'
             }`}
           >
             <LayoutGrid className="w-3.5 h-3.5" />
@@ -751,12 +788,12 @@ export default function PosPage() {
               onClick={() => setViewMode('menu')}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 border cursor-pointer transition ${
                 viewMode === 'menu'
-                  ? 'bg-purple-50 text-[#6B5B95] border-[#6B5B95]'
+                  ? 'bg-[#F5EFE6] text-[#4A3525] border-[#4A3525]'
                   : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
               }`}
             >
               <span>Bàn:</span>
-              <span className="font-bold text-[#6B5B95]">{selectedTable.table_name}</span>
+              <span className="font-bold text-[#4A3525]">{selectedTable.table_name}</span>
             </div>
           )}
 
@@ -771,65 +808,10 @@ export default function PosPage() {
           </button>
         </div>
 
-        {/* THANH HÓA ĐƠN NHỎ BẾP / PHA CHẾ (KITCHEN QUEUE TICKETS) */}
-        <div className="flex-1 mx-3 overflow-x-auto no-scrollbar flex items-center space-x-2 py-1">
-          {pendingKitchenOrders.length === 0 ? (
-            <div className="text-[11px] text-gray-400 italic flex items-center space-x-1 px-2">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Không có đơn chờ làm</span>
-            </div>
-          ) : (
-            pendingKitchenOrders.map((order) => {
-              const orderTime = new Date(order.created_at);
-              const minutesAgo = Math.floor((Date.now() - orderTime.getTime()) / 60000);
-              const isUrgent = minutesAgo >= 10;
-              const tableName = order.tables?.table_name || 'Khách mang về';
-              const isPaid = order.payment_status === 'Đã thanh toán';
-
-              // Tóm tắt món
-              const itemsSummary = order.order_items && order.order_items.length > 0
-                ? order.order_items.slice(0, 2).map((i: any) => `${i.quantity}x ${i.name}`).join(', ')
-                : '';
-
-              return (
-                <div
-                  key={order.id}
-                  onClick={() => setSelectedKitchenTicket(order)}
-                  className={`shrink-0 flex items-center space-x-2 px-2.5 py-1 rounded-lg text-xs border cursor-pointer transition-all hover:scale-[1.02] shadow-2xs ${
-                    isUrgent 
-                      ? 'bg-red-50 border-red-300 text-red-900 animate-pulse'
-                      : isPaid
-                      ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950'
-                      : 'bg-amber-50/90 border-amber-300 text-amber-950'
-                  }`}
-                  title="Chạm để xem chi tiết hoặc bấm 'Xong' để đơn biến mất"
-                >
-                  <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-black uppercase ${
-                    isPaid ? 'bg-emerald-200 text-emerald-900' : 'bg-amber-200 text-amber-900'
-                  }`}>
-                    {isPaid ? 'Đã TT' : 'Chưa TT'}
-                  </span>
-
-                  <span className="font-extrabold">{tableName}</span>
-                  {itemsSummary && (
-                    <span className="text-[10px] text-gray-600 max-w-[120px] truncate hidden md:inline">
-                      ({itemsSummary})
-                    </span>
-                  )}
-                  <span className="text-[10px] text-gray-500 font-medium">{minutesAgo}p</span>
-
-                  <button
-                    onClick={(e) => handleMarkKitchenOrderDone(order.id, e)}
-                    className="p-1 hover:bg-emerald-500 hover:text-white bg-emerald-100 text-emerald-800 rounded-md transition font-black text-[10px] flex items-center space-x-0.5 cursor-pointer"
-                    title="Đã pha chế xong • Đơn tự biến mất"
-                  >
-                    <Check className="w-3 h-3" />
-                    <span>Xong</span>
-                  </button>
-                </div>
-              );
-            })
-          )}
+        {/* Thông tin nhanh số lượng đơn chờ pha chế */}
+        <div className="flex items-center space-x-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-lg text-xs font-bold text-amber-900">
+          <UtensilsCrossed className="w-3.5 h-3.5 text-amber-700" />
+          <span>Hóa đơn chờ pha chế ({pendingKitchenOrders.length})</span>
         </div>
 
         {/* Ô Tìm kiếm & Tiện ích bên phải */}
@@ -841,7 +823,7 @@ export default function PosPage() {
               placeholder="Tìm kiếm sản phẩm..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full h-8 bg-gray-50 pl-8 pr-7 rounded-lg text-xs border border-gray-200 focus:outline-none focus:border-[#6B5B95] text-gray-800 placeholder-gray-400 transition"
+              className="w-full h-8 bg-gray-50 pl-8 pr-7 rounded-lg text-xs border border-gray-200 focus:outline-none focus:border-[#4A3525] text-gray-800 placeholder-gray-400 transition"
             />
             {searchTerm && (
               <button 
@@ -879,15 +861,129 @@ export default function PosPage() {
             <ArrowLeft className="w-3.5 h-3.5" />
           </Link>
 
-          {/* Avatar User */}
-          <div className="w-7 h-7 rounded-full bg-[#6B5B95] text-white flex items-center justify-center font-bold text-xs shadow-xs">
+          {/* Avatar User Nâu Cà Phê */}
+          <div className="w-7 h-7 rounded-full bg-[#4A3525] text-white flex items-center justify-center font-bold text-xs shadow-xs">
             {currentUser?.full_name ? currentUser.full_name.charAt(0).toUpperCase() : 'M'}
           </div>
         </div>
       </header>
 
       {/* ─────────────────────────────────────────────────────────────
-          2. NỘI DUNG CHÍNH (SƠ ĐỒ BÀN HOẶC GIAO DIỆN BÁN HÀNG)
+          2. THANH HÓA ĐƠN BẾP (KITCHEN QUEUE BAR) - HÌNH CHỮ NHẬT BỰ DỄ NHÌN, DỄ BẤM
+      ───────────────────────────────────────────────────────────── */}
+      <section className="bg-[#FAF6F0] border-b border-amber-200/80 px-3 py-2 shrink-0 z-20 shadow-xs">
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center space-x-2">
+            <span className="text-xs font-black text-[#4A3525] uppercase tracking-wide flex items-center space-x-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+              <span>Hóa đơn cần pha chế</span>
+            </span>
+            <span className="text-[10px] text-gray-500 font-medium">
+              (Chạm "ĐÃ XONG" để đơn tự biến mất khỏi danh sách)
+            </span>
+          </div>
+
+          <span className="text-[11px] font-bold text-amber-800">
+            {pendingKitchenOrders.length} đơn đang chờ
+          </span>
+        </div>
+
+        {/* CAROUSEL CÁC HÓA ĐƠN HÌNH CHỮ NHẬT BỰ */}
+        <div className="flex items-center space-x-3 overflow-x-auto pb-1 no-scrollbar min-h-[142px]">
+          {pendingKitchenOrders.length === 0 ? (
+            <div className="w-full py-6 flex items-center justify-center space-x-2 text-xs font-bold text-gray-400 bg-white/70 rounded-2xl border border-dashed border-gray-200">
+              <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+              <span>Tuyệt vời! Hiện tại đã pha chế xong tất cả các đơn hàng. Đơn mới sẽ xuất hiện tại đây.</span>
+            </div>
+          ) : (
+            pendingKitchenOrders.map((order) => {
+              const orderTime = new Date(order.created_at);
+              const minutesAgo = Math.floor((Date.now() - orderTime.getTime()) / 60000);
+              const isUrgent = minutesAgo >= 10;
+              const tableName = order.tables?.table_name || 'Khách mang về';
+              const isPaid = order.payment_status === 'Đã thanh toán';
+
+              return (
+                <div
+                  key={order.id}
+                  onClick={() => setSelectedKitchenTicket(order)}
+                  className={`w-64 sm:w-72 h-[138px] p-3 rounded-2xl border bg-white flex flex-col justify-between shrink-0 shadow-sm hover:shadow-md transition-all cursor-pointer relative ${
+                    isUrgent
+                      ? 'border-red-400 ring-2 ring-red-200'
+                      : isPaid
+                      ? 'border-emerald-300 ring-1 ring-emerald-100'
+                      : 'border-amber-300 ring-1 ring-amber-100'
+                  }`}
+                  style={{
+                    backgroundImage: 'linear-gradient(to bottom, #FFFFFF, #FFFDF9)'
+                  }}
+                >
+                  {/* TIÊU ĐỀ VÉ: BÀN + TRẠNG THÁI THANH TOÁN */}
+                  <div className="flex items-center justify-between pb-1.5 border-b border-dashed border-gray-200">
+                    <div className="flex items-center space-x-1.5">
+                      <span className="text-sm font-black text-[#4A3525] uppercase tracking-tight">
+                        {tableName}
+                      </span>
+                      <span className="text-[10px] text-gray-500 font-medium">
+                        • {minutesAgo}p
+                      </span>
+                    </div>
+
+                    <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase tracking-wider ${
+                      isPaid 
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' 
+                        : 'bg-amber-100 text-amber-900 border border-amber-300'
+                    }`}>
+                      {isPaid ? 'ĐÃ TT' : 'CHƯA TT'}
+                    </span>
+                  </div>
+
+                  {/* DANH SÁCH MÓN ĂN HIỂN THỊ RÕ RÀNG */}
+                  <div className="flex-1 overflow-y-auto space-y-1 py-1 pr-1 custom-scrollbar text-xs">
+                    {order.order_items && order.order_items.length > 0 ? (
+                      order.order_items.map((item: any, i: number) => (
+                        <div key={i} className="flex justify-between items-start text-xs leading-tight">
+                          <span className="font-bold text-gray-900 truncate flex-1">
+                            {item.name}
+                            {item.notes && (
+                              <span className="block text-[10px] text-amber-800 italic font-normal">
+                                📝 {item.notes}
+                              </span>
+                            )}
+                          </span>
+                          <span className="font-black text-[#4A3525] ml-2 shrink-0">
+                            x{item.quantity}
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-[11px] text-gray-400 italic">Đơn #{order.id.slice(0, 6)}</p>
+                    )}
+
+                    {order.notes && (
+                      <p className="text-[10px] text-amber-900 bg-amber-50 p-1 rounded-md border border-amber-200 font-semibold">
+                        Ghi chú: {order.notes}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* NÚT BẤM "ĐÃ LÀM XONG" BỰ DỄ BẤM */}
+                  <button
+                    onClick={(e) => handleMarkKitchenOrderDone(order.id, e)}
+                    className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-black text-xs rounded-xl shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer mt-1"
+                  >
+                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    <span>✓ ĐÃ LÀM XONG</span>
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </section>
+
+      {/* ─────────────────────────────────────────────────────────────
+          3. NỘI DUNG CHÍNH (SƠ ĐỒ BÀN HOẶC GIAO DIỆN BÁN HÀNG)
       ───────────────────────────────────────────────────────────── */}
       {viewMode === 'tables' ? (
         /* GIAO DIỆN SƠ ĐỒ BÀN (MẶC ĐỊNH KHI MỞ APP) */
@@ -902,7 +998,7 @@ export default function PosPage() {
             {selectedTable && (
               <button
                 onClick={() => setViewMode('menu')}
-                className="px-4 py-2 bg-[#6B5B95] hover:bg-[#584980] text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer"
+                className="px-4 py-2 bg-[#4A3525] hover:bg-[#382513] text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer"
               >
                 <span>Vào gọi món: {selectedTable.table_name}</span>
                 <span>→</span>
@@ -928,11 +1024,11 @@ export default function PosPage() {
                     onClick={() => handleSelectTable(table)}
                     className={`h-36 p-4 rounded-2xl border text-left flex flex-col justify-between transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer ${
                       isTakeaway
-                        ? 'bg-purple-50/70 border-purple-300 ring-2 ring-purple-200'
+                        ? 'bg-[#FAF6F0] border-[#8C6A5C] ring-2 ring-[#8C6A5C]/40'
                         : isOccupied
                         ? 'bg-amber-50/90 border-amber-300 shadow-xs'
                         : selectedTable?.id === table.id
-                        ? 'bg-blue-50/70 border-blue-400 shadow-xs'
+                        ? 'bg-[#F5EFE6] border-[#4A3525] shadow-xs'
                         : 'bg-white border-gray-200'
                     }`}
                   >
@@ -953,7 +1049,7 @@ export default function PosPage() {
                     <div>
                       <h4 className="font-black text-lg text-gray-800 tracking-tight">{table.table_name}</h4>
                       {isOccupied && unpaidMatch ? (
-                        <p className="text-xs font-black text-[#6B5B95] mt-1">
+                        <p className="text-xs font-black text-[#4A3525] mt-1">
                           {Number(unpaidMatch.total_amount || 0).toLocaleString('vi-VN')} đ
                         </p>
                       ) : (
@@ -1013,13 +1109,13 @@ export default function PosPage() {
                       onClick={() => setSelectedCartIndex(idx)}
                       className={`flex items-center justify-between px-3 py-2.5 text-xs transition cursor-pointer select-none ${
                         isSelected 
-                          ? 'bg-[#EFE8F6] text-purple-950 font-semibold' 
+                          ? 'bg-[#F5EFE6] text-[#4A3525] font-semibold' 
                           : 'hover:bg-gray-50 text-gray-800'
                       }`}
                     >
                       <div className="flex items-center space-x-2.5 flex-1 min-w-0 pr-2">
                         <span className={`w-5 text-center font-extrabold text-xs shrink-0 ${
-                          isSelected ? 'text-[#6B5B95]' : 'text-gray-900'
+                          isSelected ? 'text-[#4A3525]' : 'text-gray-900'
                         }`}>
                           {item.quantity}
                         </span>
@@ -1110,7 +1206,7 @@ export default function PosPage() {
               </button>
               <button
                 onClick={handleNumpadSL}
-                className="h-10 bg-[#E8DAEF] hover:bg-[#D2B4DE] border border-[#D2B4DE] rounded-xl text-xs font-black text-[#512E5F] shadow-2xs transition cursor-pointer"
+                className="h-10 bg-[#EBD9CC] hover:bg-[#DEC5B3] border border-[#D4B8A5] rounded-xl text-xs font-black text-[#5A3825] shadow-2xs transition cursor-pointer"
                 title="Thay đổi số lượng"
               >
                 SL
@@ -1206,7 +1302,7 @@ export default function PosPage() {
                 <button
                   disabled={savingOrder || cart.length === 0}
                   onClick={handleSaveOrderLater}
-                  className="py-2.5 px-2 bg-amber-600 hover:bg-amber-700 active:scale-[0.98] text-white rounded-xl font-bold text-xs shadow-xs transition flex items-center justify-center space-x-1 cursor-pointer disabled:opacity-50"
+                  className="py-3 px-2 bg-[#8C6A5C] hover:bg-[#725346] active:scale-[0.98] text-white rounded-xl font-bold text-xs shadow-xs transition flex items-center justify-center space-x-1 cursor-pointer disabled:opacity-50"
                   title="Lưu đơn hàng vào bàn, gửi bếp pha chế, thanh toán sau"
                 >
                   {savingOrder ? (
@@ -1217,7 +1313,7 @@ export default function PosPage() {
                   <span>Lưu (TT sau)</span>
                 </button>
 
-                {/* LỰA CHỌN 2: THANH TOÁN NGAY */}
+                {/* LỰA CHỌN 2: THANH TOÁN NGAY (MÀU NÂU CÀ PHÊ CHỦ ĐẠO) */}
                 <button
                   onClick={() => {
                     if (cart.length === 0 && (!existingOrderItems || existingOrderItems.length === 0)) {
@@ -1226,7 +1322,7 @@ export default function PosPage() {
                     }
                     setIsPayModalOpen(true);
                   }}
-                  className="py-2.5 px-2 bg-[#6B5B95] hover:bg-[#584980] active:scale-[0.98] text-white rounded-xl font-black text-xs shadow-md transition flex items-center justify-center space-x-1 cursor-pointer"
+                  className="py-3 px-2 bg-[#4A3525] hover:bg-[#382513] active:scale-[0.98] text-white rounded-xl font-black text-xs shadow-md transition flex items-center justify-center space-x-1 cursor-pointer"
                   title="Thanh toán ngay bằng Tiền mặt / Chuyển khoản"
                 >
                   <CreditCard className="w-3.5 h-3.5" />
@@ -1276,7 +1372,7 @@ export default function PosPage() {
                       color: color.text
                     }}
                     className={`px-4 py-2 rounded-xl text-xs font-bold transition shrink-0 border cursor-pointer ${
-                      isSelected ? 'shadow-xs ring-2 ring-purple-400' : 'hover:opacity-90'
+                      isSelected ? 'shadow-xs ring-2 ring-amber-600' : 'hover:opacity-90'
                     }`}
                   >
                     {cat.name}
@@ -1367,11 +1463,11 @@ export default function PosPage() {
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          3. MODAL THANH TOÁN (TIỀN MẶT / CHUYỂN KHOẢN VIETQR)
+          4. MODAL THANH TOÁN (TIỀN MẶT / CHUYỂN KHOẢN VIETQR & LOA MOMO)
       ───────────────────────────────────────────────────────────── */}
       {isPayModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-gray-200 animate-scaleIn">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl overflow-hidden border border-gray-200 animate-scaleIn">
             <div className="p-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
               <div>
                 <h3 className="font-extrabold text-base text-gray-900">
@@ -1391,9 +1487,9 @@ export default function PosPage() {
 
             <div className="p-5 space-y-4">
               {/* Tổng tiền cần thanh toán */}
-              <div className="bg-purple-50/70 border border-purple-200 p-4 rounded-2xl flex items-center justify-between">
-                <span className="text-xs font-bold text-purple-950 uppercase tracking-wide">Tổng tiền cần thu:</span>
-                <span className="text-2xl font-black text-[#6B5B95]">
+              <div className="bg-[#FAF6F0] border border-[#4A3525]/20 p-4 rounded-2xl flex items-center justify-between">
+                <span className="text-xs font-bold text-[#4A3525] uppercase tracking-wide">Tổng tiền cần thu:</span>
+                <span className="text-2xl font-black text-[#4A3525]">
                   {finalTotalAmount.toLocaleString('vi-VN')} đ
                 </span>
               </div>
@@ -1405,7 +1501,7 @@ export default function PosPage() {
                   onClick={() => setPaymentMethod('Tiền mặt')}
                   className={`p-3.5 rounded-2xl border text-center transition font-bold text-xs flex flex-col items-center justify-center space-y-1.5 cursor-pointer ${
                     paymentMethod === 'Tiền mặt'
-                      ? 'bg-[#6B5B95] text-white border-[#6B5B95] shadow-xs'
+                      ? 'bg-[#4A3525] text-white border-[#4A3525] shadow-xs'
                       : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
                   }`}
                 >
@@ -1418,23 +1514,92 @@ export default function PosPage() {
                   onClick={() => setPaymentMethod('Chuyển khoản')}
                   className={`p-3.5 rounded-2xl border text-center transition font-bold text-xs flex flex-col items-center justify-center space-y-1.5 cursor-pointer ${
                     paymentMethod === 'Chuyển khoản'
-                      ? 'bg-[#6B5B95] text-white border-[#6B5B95] shadow-xs'
+                      ? 'bg-[#4A3525] text-white border-[#4A3525] shadow-xs'
                       : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
                   }`}
                 >
                   <QrCode className="w-5 h-5" />
-                  <span>Chuyển khoản (VietQR)</span>
+                  <span>Chuyển khoản (MoMo / VietQR)</span>
                 </button>
               </div>
 
-              {/* Nếu là Chuyển khoản -> Gợi ý mã QR */}
+              {/* NẾU LÀ CHUYỂN KHOẢN -> HỖ TRỢ LOA MOMO & VIETQR */}
               {paymentMethod === 'Chuyển khoản' && (
-                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-center space-y-2">
-                  <p className="text-xs font-bold text-blue-900">
-                    Mã VietQR đã tự động đồng bộ sang màn hình phụ 11.6 inch cho khách quét
-                  </p>
-                  <p className="text-[11px] text-blue-700">
-                    Khách chuyển xong, thu ngân bấm "Xác nhận & In bill" bên dưới
+                <div className="p-4 bg-pink-50/60 border border-pink-200 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-1.5">
+                      <Volume2 className="w-4 h-4 text-pink-700" />
+                      <span className="text-xs font-black text-pink-950 uppercase">
+                        Quét mã Loa MoMo / Ngân hàng
+                      </span>
+                    </div>
+
+                    <div className="flex bg-white rounded-lg p-0.5 border border-pink-200 text-[10px] font-bold">
+                      <button
+                        type="button"
+                        onClick={() => setTransferTab('momo')}
+                        className={`px-2.5 py-1 rounded-md transition ${
+                          transferTab === 'momo' ? 'bg-pink-600 text-white shadow-xs' : 'text-gray-600'
+                        }`}
+                      >
+                        Loa MoMo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTransferTab('vietqr')}
+                        className={`px-2.5 py-1 rounded-md transition ${
+                          transferTab === 'vietqr' ? 'bg-pink-600 text-white shadow-xs' : 'text-gray-600'
+                        }`}
+                      >
+                        VietQR
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* SĐT Loa MoMo */}
+                  <div className="flex items-center space-x-2">
+                    <span className="text-xs font-semibold text-gray-600 shrink-0">SĐT MoMo:</span>
+                    <input
+                      type="text"
+                      value={momoPhone}
+                      onChange={(e) => handleSaveMomoPhone(e.target.value)}
+                      placeholder="Nhập số điện thoại MoMo..."
+                      className="flex-1 h-8 px-2.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-800 focus:outline-none focus:border-pink-500"
+                    />
+                  </div>
+
+                  {/* Hiển thị mã QR tương ứng */}
+                  <div className="flex flex-col items-center justify-center p-2 bg-white rounded-xl border border-pink-100 shadow-2xs">
+                    {transferTab === 'momo' ? (
+                      momoQrUrl ? (
+                        <div className="flex flex-col items-center space-y-1">
+                          <img
+                            src={momoQrUrl}
+                            alt="Mã QR MoMo"
+                            className="w-36 h-36 object-contain rounded-lg"
+                          />
+                          <p className="text-[10px] text-pink-800 font-bold">
+                            Mã MoMo chuẩn: Khách quét app MoMo sẽ báo Loa MoMo
+                          </p>
+                        </div>
+                      ) : null
+                    ) : (
+                      vietQrUrl ? (
+                        <div className="flex flex-col items-center space-y-1">
+                          <img
+                            src={vietQrUrl}
+                            alt="Mã VietQR"
+                            className="w-36 h-36 object-contain rounded-lg"
+                          />
+                          <p className="text-[10px] text-blue-800 font-bold">
+                            Mã VietQR: Mọi ngân hàng (MB, VCB, Techcom...) đều quét được
+                          </p>
+                        </div>
+                      ) : null
+                    )}
+                  </div>
+                  <p className="text-[10px] text-gray-500 text-center italic">
+                    Mã QR đã tự động đồng bộ sang màn hình phụ 11.6 inch cho khách quét
                   </p>
                 </div>
               )}
@@ -1453,7 +1618,7 @@ export default function PosPage() {
                 type="button"
                 disabled={submittingPayment}
                 onClick={handleProcessPayment}
-                className="px-6 py-2.5 bg-[#6B5B95] hover:bg-[#584980] text-white font-black text-xs rounded-xl shadow-md transition disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
+                className="px-6 py-2.5 bg-[#4A3525] hover:bg-[#382513] text-white font-black text-xs rounded-xl shadow-md transition disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
               >
                 {submittingPayment ? (
                   <>
@@ -1473,7 +1638,7 @@ export default function PosPage() {
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          4. MODAL CHI TIẾT VÉ BẾP / BARISTA TICKET MODAL
+          5. MODAL CHI TIẾT VÉ BẾP / BARISTA TICKET MODAL
       ───────────────────────────────────────────────────────────── */}
       {selectedKitchenTicket && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1517,11 +1682,11 @@ export default function PosPage() {
                           <p className="text-[10px] text-amber-800 italic">📝 {item.notes}</p>
                         )}
                       </div>
-                      <span className="font-black text-[#6B5B95]">x {item.quantity}</span>
+                      <span className="font-black text-[#4A3525]">x {item.quantity}</span>
                     </div>
                   ))
                 ) : (
-                  <p className="text-gray-500 italic">Đơn đã lưu trong hệ thống.</p>
+                  <p className="text-gray-500 italic">Đơn #{selectedKitchenTicket.id.slice(0, 8)}</p>
                 )}
                 {selectedKitchenTicket.notes && (
                   <p className="text-amber-800 font-medium pt-1 border-t border-gray-200">
@@ -1554,7 +1719,7 @@ export default function PosPage() {
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          5. MODAL GHI CHÚ ĐƠN HÀNG
+          6. MODAL GHI CHÚ ĐƠN HÀNG
       ───────────────────────────────────────────────────────────── */}
       {isNotesModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1565,7 +1730,7 @@ export default function PosPage() {
               placeholder="Ví dụ: Ít đường, mang về, thêm đá..."
               value={orderNotes}
               onChange={(e) => setOrderNotes(e.target.value)}
-              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-800 focus:outline-none focus:border-[#6B5B95]"
+              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-800 focus:outline-none focus:border-[#4A3525]"
             />
             {/* Gợi ý nhanh */}
             <div className="flex flex-wrap gap-1.5">
@@ -1583,7 +1748,7 @@ export default function PosPage() {
             <div className="flex justify-end space-x-2 pt-2">
               <button
                 onClick={() => setIsNotesModalOpen(false)}
-                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow transition cursor-pointer"
+                className="px-4 py-2 bg-[#4A3525] text-white text-xs font-bold rounded-xl shadow transition cursor-pointer"
               >
                 Lưu ghi chú
               </button>
@@ -1593,7 +1758,7 @@ export default function PosPage() {
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          6. MODAL GIẢM GIÁ
+          7. MODAL GIẢM GIÁ
       ───────────────────────────────────────────────────────────── */}
       {isDiscountModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1604,7 +1769,7 @@ export default function PosPage() {
                 type="button"
                 onClick={() => setDiscountType('percent')}
                 className={`py-2 rounded-xl text-xs font-bold transition border cursor-pointer ${
-                  discountType === 'percent' ? 'bg-[#6B5B95] text-white border-[#6B5B95]' : 'bg-gray-100 text-gray-700'
+                  discountType === 'percent' ? 'bg-[#4A3525] text-white border-[#4A3525]' : 'bg-gray-100 text-gray-700'
                 }`}
               >
                 Phần trăm (%)
@@ -1613,7 +1778,7 @@ export default function PosPage() {
                 type="button"
                 onClick={() => setDiscountType('amount')}
                 className={`py-2 rounded-xl text-xs font-bold transition border cursor-pointer ${
-                  discountType === 'amount' ? 'bg-[#6B5B95] text-white border-[#6B5B95]' : 'bg-gray-100 text-gray-700'
+                  discountType === 'amount' ? 'bg-[#4A3525] text-white border-[#4A3525]' : 'bg-gray-100 text-gray-700'
                 }`}
               >
                 Số tiền (VNĐ)
@@ -1625,7 +1790,7 @@ export default function PosPage() {
               placeholder={discountType === 'percent' ? "Nhập % giảm (ví dụ: 10)" : "Nhập số tiền giảm"}
               value={discountValue || ''}
               onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value)))}
-              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-800 focus:outline-none focus:border-[#6B5B95]"
+              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-800 focus:outline-none focus:border-[#4A3525]"
             />
             <div className="grid grid-cols-4 gap-1.5">
               {[5, 10, 15, 20].map(p => (
@@ -1633,7 +1798,7 @@ export default function PosPage() {
                   key={p}
                   type="button"
                   onClick={() => { setDiscountType('percent'); setDiscountValue(p); }}
-                  className="py-1.5 bg-purple-50 hover:bg-purple-100 text-[#6B5B95] font-black text-xs rounded-lg border border-purple-200 cursor-pointer"
+                  className="py-1.5 bg-[#FAF6F0] hover:bg-[#F5EFE6] text-[#4A3525] font-black text-xs rounded-lg border border-[#D4B8A5] cursor-pointer"
                 >
                   {p}%
                 </button>
@@ -1650,7 +1815,7 @@ export default function PosPage() {
               <button
                 type="button"
                 onClick={() => setIsDiscountModalOpen(false)}
-                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
+                className="px-4 py-2 bg-[#4A3525] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
               >
                 Áp dụng
               </button>
@@ -1660,7 +1825,7 @@ export default function PosPage() {
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          7. MODAL THÔNG TIN KHÁCH HÀNG
+          8. MODAL THÔNG TIN KHÁCH HÀNG
       ───────────────────────────────────────────────────────────── */}
       {isCustomerModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1671,13 +1836,13 @@ export default function PosPage() {
               placeholder="Tên khách hàng / Số điện thoại..."
               value={customerName}
               onChange={(e) => setCustomerName(e.target.value)}
-              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-800 focus:outline-none focus:border-[#6B5B95]"
+              className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-800 focus:outline-none focus:border-[#4A3525]"
             />
             <div className="flex justify-end space-x-2 pt-2">
               <button
                 type="button"
                 onClick={() => setIsCustomerModalOpen(false)}
-                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
+                className="px-4 py-2 bg-[#4A3525] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
               >
                 Xác nhận
               </button>
@@ -1687,7 +1852,7 @@ export default function PosPage() {
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          8. DRAWER DANH SÁCH ĐƠN HÀNG CHƯA THANH TOÁN
+          9. DRAWER DANH SÁCH ĐƠN HÀNG CHƯA THANH TOÁN
       ───────────────────────────────────────────────────────────── */}
       {isUnpaidOrdersDrawerOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex justify-end">
@@ -1722,13 +1887,13 @@ export default function PosPage() {
                       }
                       setIsUnpaidOrdersDrawerOpen(false);
                     }}
-                    className="p-3.5 bg-gray-50 hover:bg-purple-50/50 border border-gray-200 rounded-2xl cursor-pointer transition space-y-1.5"
+                    className="p-3.5 bg-gray-50 hover:bg-[#FAF6F0] border border-gray-200 rounded-2xl cursor-pointer transition space-y-1.5"
                   >
                     <div className="flex justify-between items-center">
                       <span className="font-extrabold text-sm text-gray-900">
                         {order.tables?.table_name || 'Khách mang về'}
                       </span>
-                      <span className="font-black text-sm text-[#6B5B95]">
+                      <span className="font-black text-sm text-[#4A3525]">
                         {Number(order.total_amount).toLocaleString('vi-VN')} đ
                       </span>
                     </div>
