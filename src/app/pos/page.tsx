@@ -41,7 +41,10 @@ import {
   Minus,
   Delete,
   MoreVertical,
-  QrCode
+  QrCode,
+  LayoutGrid,
+  ShoppingBag,
+  Save
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -119,12 +122,13 @@ export default function PosPage() {
   const [categories, setCategories] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
   const [unpaidOrders, setUnpaidOrders] = useState<any[]>([]);
+  const [recentOrders, setRecentOrders] = useState<any[]>([]);
   const [yesterdaySales, setYesterdaySales] = useState<{ [productId: string]: number }>({});
   const [loading, setLoading] = useState(true);
   const [currentUser, setCurrentUser] = useState<any>(null);
 
-  // Điều hướng hiển thị: 'menu' (gọi món) hoặc 'tables' (sơ đồ bàn)
-  const [viewMode, setViewMode] = useState<'menu' | 'tables'>('menu');
+  // MẶC ĐỊNH MỞ MÀN HÌNH CHỌN BÀN TRƯỚC (YÊU CẦU CỦA QUÁN)
+  const [viewMode, setViewMode] = useState<'tables' | 'menu'>('tables');
   const [selectedTable, setSelectedTable] = useState<any>(null);
 
   // Trạng thái giỏ hàng & sản phẩm
@@ -139,7 +143,6 @@ export default function PosPage() {
 
   // Buffer bàn phím số Numpad cảm ứng POS
   const [numpadBuffer, setNumpadBuffer] = useState<string>('');
-  const [numpadActiveMode, setNumpadActiveMode] = useState<'qty' | 'percent' | 'price'>('qty');
 
   // Đơn hàng đang phục vụ của bàn (nếu bàn đã có đơn trước đó)
   const [existingOrder, setExistingOrder] = useState<any>(null);
@@ -157,6 +160,7 @@ export default function PosPage() {
   const [isUnpaidOrdersDrawerOpen, setIsUnpaidOrdersDrawerOpen] = useState(false);
   const [submittingPayment, setSubmittingPayment] = useState(false);
   const [savingOrder, setSavingOrder] = useState(false);
+  const isSavingRef = useRef(false);
   const [paymentMethod, setPaymentMethod] = useState<'Tiền mặt' | 'Chuyển khoản'>('Tiền mặt');
   const [customerCashGiven, setCustomerCashGiven] = useState<number>(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -187,18 +191,21 @@ export default function PosPage() {
     toast.success('Đã hoàn thành pha chế đơn hàng!');
   };
 
-  // Làm mới dữ liệu bàn & đơn hàng
+  // Làm mới dữ liệu bàn, đơn chưa thanh toán & toàn bộ đơn gần đây (cả đã thanh toán và chưa thanh toán)
   const refreshData = async () => {
     try {
-      const [tablesData, unpaidData] = await Promise.all([
+      const [tablesData, unpaidData, recentData] = await Promise.all([
         db.getTables(),
-        db.getUnpaidOrders()
+        db.getUnpaidOrders(),
+        db.getRecentOrders(40)
       ]);
       setTables(tablesData);
       setUnpaidOrders(unpaidData);
+      setRecentOrders(recentData);
       try {
         localStorage.setItem('ava_pos_cache_tables', JSON.stringify(tablesData));
         localStorage.setItem('ava_pos_cache_unpaid', JSON.stringify(unpaidData));
+        localStorage.setItem('ava_pos_cache_recent_orders', JSON.stringify(recentData));
       } catch (_) {}
     } catch (e) {
       console.error('Lỗi làm mới dữ liệu POS:', e);
@@ -215,6 +222,7 @@ export default function PosPage() {
         const storedCategories = localStorage.getItem('ava_pos_cache_categories');
         const storedProducts = localStorage.getItem('ava_pos_cache_products');
         const storedUnpaid = localStorage.getItem('ava_pos_cache_unpaid');
+        const storedRecent = localStorage.getItem('ava_pos_cache_recent_orders');
         const storedYest = localStorage.getItem(`ava_pos_yest_sales_${todayDateKey}`);
 
         if (storedTables && storedCategories && storedProducts) {
@@ -223,38 +231,34 @@ export default function PosPage() {
           setCategories(JSON.parse(storedCategories));
           setProducts(JSON.parse(storedProducts));
           if (storedUnpaid) setUnpaidOrders(JSON.parse(storedUnpaid));
+          if (storedRecent) setRecentOrders(JSON.parse(storedRecent));
           if (storedYest) setYesterdaySales(JSON.parse(storedYest));
-          if (!selectedTable && parsedTables.length > 0) {
-            setSelectedTable(parsedTables[0]);
-          }
           setLoading(false);
         }
       } catch (_) {}
 
-      // 2. Tải dữ liệu mới nhất
+      // 2. Tải dữ liệu mới nhất từ database
       try {
-        const [tablesData, categoriesData, productsData, unpaidData] = await Promise.all([
+        const [tablesData, categoriesData, productsData, unpaidData, recentData] = await Promise.all([
           db.getTables(),
           db.getCategories(),
           db.getProducts(),
-          db.getUnpaidOrders()
+          db.getUnpaidOrders(),
+          db.getRecentOrders(40)
         ]);
 
         setTables(tablesData);
         setCategories(categoriesData);
         setProducts(productsData);
         setUnpaidOrders(unpaidData);
-
-        if (!selectedTable && tablesData.length > 0) {
-          const defaultTable = tablesData.find((t: any) => t.table_name === 'Khách mang về') || tablesData[0];
-          setSelectedTable(defaultTable);
-        }
+        setRecentOrders(recentData);
 
         try {
           localStorage.setItem('ava_pos_cache_tables', JSON.stringify(tablesData));
           localStorage.setItem('ava_pos_cache_categories', JSON.stringify(categoriesData));
           localStorage.setItem('ava_pos_cache_products', JSON.stringify(productsData));
           localStorage.setItem('ava_pos_cache_unpaid', JSON.stringify(unpaidData));
+          localStorage.setItem('ava_pos_cache_recent_orders', JSON.stringify(recentData));
         } catch (_) {}
 
         // Tải doanh số hôm qua
@@ -391,7 +395,6 @@ export default function PosPage() {
 
   // Xóa toàn bộ giỏ hàng
   const handleClearCart = () => {
-    if (cart.length === 0) return;
     setCart([]);
     setSelectedCartIndex(-1);
     setDiscountValue(0);
@@ -426,7 +429,6 @@ export default function PosPage() {
       handleUpdateQuantity(selectedCartIndex, 0);
       setNumpadBuffer('');
     } else {
-      // Nếu không gõ số, tăng thêm 1
       handleUpdateQuantity(selectedCartIndex, cart[selectedCartIndex].quantity + 1);
     }
   };
@@ -489,10 +491,10 @@ export default function PosPage() {
     }
   };
 
-  // CHỌN BÀN
+  // CHỌN BÀN TỪ SƠ ĐỒ BÀN
   const handleSelectTable = async (table: any) => {
     setSelectedTable(table);
-    setViewMode('menu');
+    setViewMode('menu'); // Chuyển sang màn hình chọn món
     setCart([]);
     setSelectedCartIndex(-1);
     setOrderNotes('');
@@ -524,7 +526,49 @@ export default function PosPage() {
     }
   };
 
-  // XÁC NHẬN THANH TOÁN (TIỀN MẶT / CHUYỂN KHOẢN)
+  // ─────────────────────────────────────────────────────────────
+  // LỰA CHỌN 1: LƯU ĐƠN (THANH TOÁN SAU) -> GỬI BẾP PHA CHẾ
+  // ─────────────────────────────────────────────────────────────
+  const handleSaveOrderLater = async () => {
+    if (savingOrder || isSavingRef.current) return;
+    if (!selectedTable || cart.length === 0) {
+      toast.info('Vui lòng chọn ít nhất 1 món để lưu đơn');
+      return;
+    }
+    isSavingRef.current = true;
+    setSavingOrder(true);
+
+    try {
+      const savedOrder = await db.createOrder({
+        table_id: selectedTable.id || 'tb_mangve',
+        staff_id: currentUser?.id || 'admin',
+        total_amount: finalTotalAmount,
+        discount: discountAmount,
+        notes: orderNotes.trim(),
+        items: cart
+      });
+
+      // Optimistic update: Thêm ngay đơn mới vào danh sách Bếp làm
+      if (savedOrder) {
+        setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
+      }
+
+      toast.success(`Đã lưu đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
+      handleClearCart();
+      setViewMode('tables'); // Quay về màn hình chọn bàn
+      await refreshData();
+    } catch (err) {
+      console.error('Lỗi lưu đơn:', err);
+      toast.error('Gặp lỗi khi lưu đơn hàng');
+    } finally {
+      isSavingRef.current = false;
+      setSavingOrder(false);
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────
+  // LỰA CHỌN 2: THANH TOÁN LUÔN (TIỀN MẶT / CHUYỂN KHOẢN VIETQR)
+  // ─────────────────────────────────────────────────────────────
   const handleProcessPayment = async () => {
     if (submittingPayment) return;
     setSubmittingPayment(true);
@@ -544,6 +588,8 @@ export default function PosPage() {
         });
         if (savedOrder?.id) {
           orderIdToPay = savedOrder.id;
+          // Thêm đơn vào hàng đợi bếp
+          setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
         }
       }
 
@@ -555,6 +601,9 @@ export default function PosPage() {
 
       // 2. Xác nhận thanh toán trong Database
       await db.payOrder(orderIdToPay, paymentMethod);
+
+      // Cập nhật trạng thái đơn trong danh sách gần đây
+      setRecentOrders(prev => prev.map(o => o.id === orderIdToPay ? { ...o, payment_status: 'Đã thanh toán' } : o));
 
       // 3. In hóa đơn nhiệt câm K80 và mở két tiền tự động
       try {
@@ -596,11 +645,12 @@ export default function PosPage() {
         origin: { y: 0.6 }
       });
 
-      toast.success(`Thanh toán thành công ${selectedTable?.table_name}!`);
+      toast.success(`Thanh toán thành công ${selectedTable?.table_name}! Đã gửi bếp pha chế.`);
       setIsPayModalOpen(false);
       handleClearCart();
       setExistingOrder(null);
       setExistingOrderItems([]);
+      setViewMode('tables'); // Trả về giao diện chọn bàn
       await refreshData();
     } catch (e) {
       console.error('Lỗi khi thanh toán:', e);
@@ -643,10 +693,10 @@ export default function PosPage() {
       });
   }, [products, searchTerm, selectedCategoryId, yesterdaySales]);
 
-  // DANH SÁCH HÓA ĐƠN CHỜ PHA CHẾ TRÊN THANH ĐỈNH (KITCHEN QUEUE TICKETS)
+  // DANH SÁCH HÓA ĐƠN CHỜ PHA CHẾ (CẢ ĐÃ THANH TOÁN HOẶC CHƯA THANH TOÁN ĐỀU PHẢI HIỆN CHO BẾP LÀM)
   const pendingKitchenOrders = useMemo(() => {
-    return unpaidOrders.filter(order => !completedKitchenOrderIds.includes(order.id));
-  }, [unpaidOrders, completedKitchenOrderIds]);
+    return recentOrders.filter(order => !completedKitchenOrderIds.includes(order.id));
+  }, [recentOrders, completedKitchenOrderIds]);
 
   // Toggle Fullscreen
   const toggleFullscreen = () => {
@@ -674,21 +724,21 @@ export default function PosPage() {
     <div className="w-full h-screen flex flex-col bg-[#F4F5F7] text-gray-900 select-none overflow-hidden font-sans">
       
       {/* ─────────────────────────────────────────────────────────────
-          1. TOP NAVIGATION & KITCHEN LIVE QUEUE BAR
+          1. TOP NAVIGATION & KITCHEN LIVE QUEUE BAR (HIỆN TRÊN CẢ 2 GIAO DIỆN)
       ───────────────────────────────────────────────────────────── */}
       <header className="h-14 bg-white border-b border-gray-200 px-3 flex items-center justify-between shrink-0 shadow-xs z-30">
         {/* Nút Tab: Bàn | Đăng ký | Đơn hàng */}
         <div className="flex items-center space-x-1.5 shrink-0">
           <button
             onClick={() => setViewMode(prev => prev === 'tables' ? 'menu' : 'tables')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 border ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 border cursor-pointer ${
               viewMode === 'tables'
                 ? 'bg-[#6B5B95] text-white border-[#6B5B95] shadow-xs'
                 : 'bg-white hover:bg-gray-100 text-gray-700 border-gray-200'
             }`}
           >
-            <Users className="w-3.5 h-3.5" />
-            <span>Bàn</span>
+            <LayoutGrid className="w-3.5 h-3.5" />
+            <span>Sơ đồ bàn</span>
             {tables.filter(t => t.status === 'Đang phục vụ').length > 0 && (
               <span className="ml-1 px-1.5 py-0.2 bg-amber-500 text-white rounded-full text-[10px] font-black">
                 {tables.filter(t => t.status === 'Đang phục vụ').length}
@@ -696,18 +746,25 @@ export default function PosPage() {
             )}
           </button>
 
-          <div className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-xs font-semibold flex items-center space-x-1.5 border border-gray-200">
-            <span>Đăng ký</span>
-            <span className="font-bold text-[#6B5B95]">
-              {selectedTable ? selectedTable.table_name : 'Chưa chọn'}
-            </span>
-          </div>
+          {selectedTable && (
+            <div 
+              onClick={() => setViewMode('menu')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 border cursor-pointer transition ${
+                viewMode === 'menu'
+                  ? 'bg-purple-50 text-[#6B5B95] border-[#6B5B95]'
+                  : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
+              }`}
+            >
+              <span>Bàn:</span>
+              <span className="font-bold text-[#6B5B95]">{selectedTable.table_name}</span>
+            </div>
+          )}
 
           <button
             onClick={() => setIsUnpaidOrdersDrawerOpen(true)}
-            className="px-2.5 py-1.5 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 flex items-center space-x-1.5 transition"
+            className="px-2.5 py-1.5 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 flex items-center space-x-1.5 transition cursor-pointer"
           >
-            <span>Đơn hàng</span>
+            <span>Đơn chưa TT</span>
             <span className="px-1.5 py-0.2 bg-[#00A896] text-white rounded-full text-[10px] font-black">
               {unpaidOrders.length}
             </span>
@@ -727,6 +784,12 @@ export default function PosPage() {
               const minutesAgo = Math.floor((Date.now() - orderTime.getTime()) / 60000);
               const isUrgent = minutesAgo >= 10;
               const tableName = order.tables?.table_name || 'Khách mang về';
+              const isPaid = order.payment_status === 'Đã thanh toán';
+
+              // Tóm tắt món
+              const itemsSummary = order.order_items && order.order_items.length > 0
+                ? order.order_items.slice(0, 2).map((i: any) => `${i.quantity}x ${i.name}`).join(', ')
+                : '';
 
               return (
                 <div
@@ -735,15 +798,29 @@ export default function PosPage() {
                   className={`shrink-0 flex items-center space-x-2 px-2.5 py-1 rounded-lg text-xs border cursor-pointer transition-all hover:scale-[1.02] shadow-2xs ${
                     isUrgent 
                       ? 'bg-red-50 border-red-300 text-red-900 animate-pulse'
-                      : 'bg-amber-50/80 border-amber-300 text-amber-950'
+                      : isPaid
+                      ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950'
+                      : 'bg-amber-50/90 border-amber-300 text-amber-950'
                   }`}
-                  title="Bấm để xem chi tiết hoặc bấm 'Làm xong' để đơn biến mất"
+                  title="Chạm để xem chi tiết hoặc bấm 'Xong' để đơn biến mất"
                 >
+                  <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-black uppercase ${
+                    isPaid ? 'bg-emerald-200 text-emerald-900' : 'bg-amber-200 text-amber-900'
+                  }`}>
+                    {isPaid ? 'Đã TT' : 'Chưa TT'}
+                  </span>
+
                   <span className="font-extrabold">{tableName}</span>
+                  {itemsSummary && (
+                    <span className="text-[10px] text-gray-600 max-w-[120px] truncate hidden md:inline">
+                      ({itemsSummary})
+                    </span>
+                  )}
                   <span className="text-[10px] text-gray-500 font-medium">{minutesAgo}p</span>
+
                   <button
                     onClick={(e) => handleMarkKitchenOrderDone(order.id, e)}
-                    className="p-1 hover:bg-emerald-500 hover:text-white bg-emerald-100 text-emerald-800 rounded-md transition font-black text-[10px] flex items-center space-x-0.5"
+                    className="p-1 hover:bg-emerald-500 hover:text-white bg-emerald-100 text-emerald-800 rounded-md transition font-black text-[10px] flex items-center space-x-0.5 cursor-pointer"
                     title="Đã pha chế xong • Đơn tự biến mất"
                   >
                     <Check className="w-3 h-3" />
@@ -757,7 +834,7 @@ export default function PosPage() {
 
         {/* Ô Tìm kiếm & Tiện ích bên phải */}
         <div className="flex items-center space-x-2 shrink-0">
-          <div className="relative w-48 sm:w-64">
+          <div className="relative w-40 sm:w-56">
             <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
             <input
               type="text"
@@ -769,7 +846,7 @@ export default function PosPage() {
             {searchTerm && (
               <button 
                 onClick={() => setSearchTerm('')}
-                className="absolute right-2 top-2 text-gray-400 hover:text-gray-600"
+                className="absolute right-2 top-2 text-gray-400 hover:text-gray-600 cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -780,7 +857,7 @@ export default function PosPage() {
             onClick={async () => {
               await openCustomerDisplayWindow();
             }}
-            className="p-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 rounded-lg text-xs transition"
+            className="p-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 rounded-lg text-xs transition cursor-pointer"
             title="Mở màn hình phụ 11.6 inch cho khách xem"
           >
             <Eye className="w-3.5 h-3.5" />
@@ -788,7 +865,7 @@ export default function PosPage() {
 
           <button
             onClick={toggleFullscreen}
-            className="p-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs transition"
+            className="p-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs transition cursor-pointer"
             title="Bật/Tắt Toàn màn hình"
           >
             {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
@@ -796,7 +873,7 @@ export default function PosPage() {
 
           <Link
             href="/"
-            className="p-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs transition"
+            className="p-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs transition cursor-pointer"
             title="Về Trang chủ Quản lý"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
@@ -813,19 +890,24 @@ export default function PosPage() {
           2. NỘI DUNG CHÍNH (SƠ ĐỒ BÀN HOẶC GIAO DIỆN BÁN HÀNG)
       ───────────────────────────────────────────────────────────── */}
       {viewMode === 'tables' ? (
-        /* GIAO DIỆN SƠ ĐỒ BÀN */
-        <div className="flex-1 p-6 overflow-y-auto bg-gray-50">
-          <div className="flex items-center justify-between mb-5">
+        /* GIAO DIỆN SƠ ĐỒ BÀN (MẶC ĐỊNH KHI MỞ APP) */
+        <div className="flex-1 p-5 overflow-y-auto bg-gray-50">
+          <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-xl font-black text-gray-800">Sơ đồ bàn phục vụ</h2>
-              <p className="text-xs text-gray-500">Chạm vào bàn trống để gọi món mới, hoặc chạm vào bàn đang phục vụ để xem hóa đơn / thanh toán</p>
+              <p className="text-xs text-gray-500">
+                Chạm vào bàn trống để bắt đầu gọi món, hoặc chạm vào bàn đang phục vụ để xem hóa đơn / thêm món / thanh toán
+              </p>
             </div>
-            <button
-              onClick={() => setViewMode('menu')}
-              className="px-4 py-2 bg-[#6B5B95] hover:bg-[#584980] text-white text-xs font-bold rounded-xl shadow-xs transition"
-            >
-              Về màn hình gọi món
-            </button>
+            {selectedTable && (
+              <button
+                onClick={() => setViewMode('menu')}
+                className="px-4 py-2 bg-[#6B5B95] hover:bg-[#584980] text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer"
+              >
+                <span>Vào gọi món: {selectedTable.table_name}</span>
+                <span>→</span>
+              </button>
+            )}
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
@@ -837,22 +919,25 @@ export default function PosPage() {
               })
               .map(table => {
                 const isOccupied = table.status === 'Đang phục vụ';
+                const isTakeaway = table.table_name === 'Khách mang về';
                 const unpaidMatch = unpaidOrders.find(o => o.table_id === table.id);
 
                 return (
                   <button
                     key={table.id}
                     onClick={() => handleSelectTable(table)}
-                    className={`h-32 p-3.5 rounded-2xl border text-left flex flex-col justify-between transition-all hover:-translate-y-0.5 hover:shadow-md cursor-pointer ${
-                      isOccupied
+                    className={`h-36 p-4 rounded-2xl border text-left flex flex-col justify-between transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer ${
+                      isTakeaway
+                        ? 'bg-purple-50/70 border-purple-300 ring-2 ring-purple-200'
+                        : isOccupied
                         ? 'bg-amber-50/90 border-amber-300 shadow-xs'
                         : selectedTable?.id === table.id
-                        ? 'bg-purple-50/70 border-[#6B5B95] shadow-xs'
+                        ? 'bg-blue-50/70 border-blue-400 shadow-xs'
                         : 'bg-white border-gray-200'
                     }`}
                   >
                     <div className="flex items-center justify-between w-full">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
                         isOccupied 
                           ? 'bg-amber-100 text-amber-800' 
                           : 'bg-emerald-100 text-emerald-800'
@@ -866,11 +951,13 @@ export default function PosPage() {
                     </div>
 
                     <div>
-                      <h4 className="font-black text-base text-gray-800">{table.table_name}</h4>
-                      {isOccupied && unpaidMatch && (
-                        <p className="text-xs font-extrabold text-[#6B5B95] mt-0.5">
+                      <h4 className="font-black text-lg text-gray-800 tracking-tight">{table.table_name}</h4>
+                      {isOccupied && unpaidMatch ? (
+                        <p className="text-xs font-black text-[#6B5B95] mt-1">
                           {Number(unpaidMatch.total_amount || 0).toLocaleString('vi-VN')} đ
                         </p>
+                      ) : (
+                        <p className="text-[11px] text-gray-400 mt-1 font-medium">Chạm để gọi món</p>
                       )}
                     </div>
                   </button>
@@ -887,6 +974,28 @@ export default function PosPage() {
           ───────────────────────────────────────────────────────────── */}
           <div className="w-[320px] sm:w-[360px] md:w-[380px] bg-white border-r border-gray-200 flex flex-col shrink-0 z-20">
             
+            {/* TIÊU ĐỀ BÀN ĐANG CHỌN */}
+            <div className="px-3.5 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setViewMode('tables')}
+                  className="p-1 hover:bg-gray-200 rounded-lg text-gray-600 transition cursor-pointer"
+                  title="Quay lại sơ đồ bàn"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+                <span className="font-extrabold text-xs text-gray-800">
+                  {selectedTable?.table_name || 'Bàn chưa chọn'}
+                </span>
+              </div>
+
+              {existingOrder && (
+                <span className="text-[10px] px-2 py-0.5 bg-amber-100 text-amber-900 font-bold rounded-full">
+                  Đang phục vụ
+                </span>
+              )}
+            </div>
+
             {/* DANH SÁCH MÓN ĐÃ CHỌN (CART TABLE) */}
             <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
               {cart.length === 0 ? (
@@ -954,25 +1063,25 @@ export default function PosPage() {
             <div className="grid grid-cols-4 gap-1 p-2 bg-gray-50 border-t border-gray-200 shrink-0 text-[11px] font-bold text-gray-700">
               <button
                 onClick={() => setIsCustomerModalOpen(true)}
-                className="py-1.5 bg-white hover:bg-gray-100 border border-gray-200 rounded-lg flex flex-col items-center justify-center space-y-0.5 transition shadow-2xs"
+                className="py-1.5 bg-white hover:bg-gray-100 border border-gray-200 rounded-lg flex flex-col items-center justify-center space-y-0.5 transition shadow-2xs cursor-pointer"
               >
                 <span>Khách hàng</span>
               </button>
               <button
                 onClick={() => setIsNotesModalOpen(true)}
-                className="py-1.5 bg-white hover:bg-gray-100 border border-gray-200 rounded-lg flex flex-col items-center justify-center space-y-0.5 transition shadow-2xs"
+                className="py-1.5 bg-white hover:bg-gray-100 border border-gray-200 rounded-lg flex flex-col items-center justify-center space-y-0.5 transition shadow-2xs cursor-pointer"
               >
                 <span>Ghi chú</span>
               </button>
               <button
                 onClick={() => setIsDiscountModalOpen(true)}
-                className="py-1.5 bg-white hover:bg-gray-100 border border-gray-200 rounded-lg flex flex-col items-center justify-center space-y-0.5 transition shadow-2xs"
+                className="py-1.5 bg-white hover:bg-gray-100 border border-gray-200 rounded-lg flex flex-col items-center justify-center space-y-0.5 transition shadow-2xs cursor-pointer"
               >
                 <span>Giảm giá</span>
               </button>
               <button
                 onClick={() => setIsUnpaidOrdersDrawerOpen(true)}
-                className="py-1.5 bg-white hover:bg-gray-100 border border-gray-200 rounded-lg flex flex-col items-center justify-center space-y-0.5 transition shadow-2xs"
+                className="py-1.5 bg-white hover:bg-gray-100 border border-gray-200 rounded-lg flex flex-col items-center justify-center space-y-0.5 transition shadow-2xs cursor-pointer"
               >
                 <MoreVertical className="w-3.5 h-3.5" />
               </button>
@@ -983,25 +1092,25 @@ export default function PosPage() {
               {/* Hàng 1 */}
               <button
                 onClick={() => handleNumpadDigit('1')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 1
               </button>
               <button
                 onClick={() => handleNumpadDigit('2')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 2
               </button>
               <button
                 onClick={() => handleNumpadDigit('3')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 3
               </button>
               <button
                 onClick={handleNumpadSL}
-                className="h-11 bg-[#E8DAEF] hover:bg-[#D2B4DE] border border-[#D2B4DE] rounded-xl text-xs font-black text-[#512E5F] shadow-2xs transition"
+                className="h-10 bg-[#E8DAEF] hover:bg-[#D2B4DE] border border-[#D2B4DE] rounded-xl text-xs font-black text-[#512E5F] shadow-2xs transition cursor-pointer"
                 title="Thay đổi số lượng"
               >
                 SL
@@ -1010,25 +1119,25 @@ export default function PosPage() {
               {/* Hàng 2 */}
               <button
                 onClick={() => handleNumpadDigit('4')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 4
               </button>
               <button
                 onClick={() => handleNumpadDigit('5')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 5
               </button>
               <button
                 onClick={() => handleNumpadDigit('6')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 6
               </button>
               <button
                 onClick={handleNumpadPercent}
-                className="h-11 bg-[#EAECEE] hover:bg-[#D5D8DC] border border-[#D5D8DC] rounded-xl text-xs font-black text-[#2C3E50] shadow-2xs transition"
+                className="h-10 bg-[#EAECEE] hover:bg-[#D5D8DC] border border-[#D5D8DC] rounded-xl text-xs font-black text-[#2C3E50] shadow-2xs transition cursor-pointer"
                 title="Giảm giá %"
               >
                 %
@@ -1037,25 +1146,25 @@ export default function PosPage() {
               {/* Hàng 3 */}
               <button
                 onClick={() => handleNumpadDigit('7')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 7
               </button>
               <button
                 onClick={() => handleNumpadDigit('8')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 8
               </button>
               <button
                 onClick={() => handleNumpadDigit('9')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 9
               </button>
               <button
                 onClick={handleNumpadPrice}
-                className="h-11 bg-[#EAECEE] hover:bg-[#D5D8DC] border border-[#D5D8DC] rounded-xl text-xs font-bold text-[#2C3E50] shadow-2xs transition"
+                className="h-10 bg-[#EAECEE] hover:bg-[#D5D8DC] border border-[#D5D8DC] rounded-xl text-xs font-bold text-[#2C3E50] shadow-2xs transition cursor-pointer"
                 title="Đổi đơn giá"
               >
                 Giá
@@ -1064,51 +1173,73 @@ export default function PosPage() {
               {/* Hàng 4 */}
               <button
                 onClick={handleNumpadToggleSign}
-                className="h-11 bg-[#FEF3CD] hover:bg-[#FFE69C] border border-[#FFE69C] rounded-xl text-sm font-black text-[#725100] shadow-2xs transition"
+                className="h-10 bg-[#FEF3CD] hover:bg-[#FFE69C] border border-[#FFE69C] rounded-xl text-sm font-black text-[#725100] shadow-2xs transition cursor-pointer"
                 title="Giảm 1 số lượng"
               >
                 +/-
               </button>
               <button
                 onClick={() => handleNumpadDigit('0')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 0
               </button>
               <button
                 onClick={() => handleNumpadDigit(',')}
-                className="h-11 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition"
+                className="h-10 bg-white hover:bg-gray-100 active:bg-gray-200 border border-gray-200 rounded-xl text-base font-bold text-gray-800 shadow-2xs transition cursor-pointer"
               >
                 ,
               </button>
               <button
                 onClick={handleNumpadBackspace}
-                className="h-11 bg-[#FADBD8] hover:bg-[#F5B7B1] border border-[#F5B7B1] rounded-xl text-sm font-black text-[#78281F] shadow-2xs transition flex items-center justify-center"
+                className="h-10 bg-[#FADBD8] hover:bg-[#F5B7B1] border border-[#F5B7B1] rounded-xl text-sm font-black text-[#78281F] shadow-2xs transition flex items-center justify-center cursor-pointer"
                 title="Xóa lùi"
               >
                 <Delete className="w-4 h-4" />
               </button>
             </div>
 
-            {/* HÀNG NÚT DƯỚI CÙNG: MỚI & THANH TOÁN TÍM */}
-            <div className="p-2.5 bg-white border-t border-gray-200 grid grid-cols-3 gap-2 shrink-0">
+            {/* HÀNG NÚT THAO TÁC DƯỚI CÙNG: MỚI + 2 LỰA CHỌN (LƯU ĐƠN BẾP LÀM HOẶC THANH TOÁN NGAY) */}
+            <div className="p-2 bg-white border-t border-gray-200 flex flex-col space-y-1.5 shrink-0">
+              <div className="grid grid-cols-2 gap-2">
+                {/* LỰA CHỌN 1: LƯU ĐƠN (THANH TOÁN SAU / BẾP LÀM) */}
+                <button
+                  disabled={savingOrder || cart.length === 0}
+                  onClick={handleSaveOrderLater}
+                  className="py-2.5 px-2 bg-amber-600 hover:bg-amber-700 active:scale-[0.98] text-white rounded-xl font-bold text-xs shadow-xs transition flex items-center justify-center space-x-1 cursor-pointer disabled:opacity-50"
+                  title="Lưu đơn hàng vào bàn, gửi bếp pha chế, thanh toán sau"
+                >
+                  {savingOrder ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5" />
+                  )}
+                  <span>Lưu (TT sau)</span>
+                </button>
+
+                {/* LỰA CHỌN 2: THANH TOÁN NGAY */}
+                <button
+                  onClick={() => {
+                    if (cart.length === 0 && (!existingOrderItems || existingOrderItems.length === 0)) {
+                      toast.info('Vui lòng chọn ít nhất 1 món để thanh toán');
+                      return;
+                    }
+                    setIsPayModalOpen(true);
+                  }}
+                  className="py-2.5 px-2 bg-[#6B5B95] hover:bg-[#584980] active:scale-[0.98] text-white rounded-xl font-black text-xs shadow-md transition flex items-center justify-center space-x-1 cursor-pointer"
+                  title="Thanh toán ngay bằng Tiền mặt / Chuyển khoản"
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>Thanh toán ngay</span>
+                </button>
+              </div>
+
+              {/* NÚT XÓA GIỎ HÀNG */}
               <button
                 onClick={handleClearCart}
-                className="py-3 bg-white hover:bg-gray-100 border border-gray-300 rounded-xl font-bold text-xs text-gray-700 transition active:scale-95 shadow-2xs"
+                className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg font-bold text-[11px] text-gray-500 transition active:scale-98 cursor-pointer"
               >
-                Mới
-              </button>
-              <button
-                onClick={() => {
-                  if (cart.length === 0 && (!existingOrderItems || existingOrderItems.length === 0)) {
-                    toast.info('Vui lòng chọn ít nhất 1 món để thanh toán');
-                    return;
-                  }
-                  setIsPayModalOpen(true);
-                }}
-                className="col-span-2 py-3 bg-[#6B5B95] hover:bg-[#584980] active:scale-[0.98] text-white rounded-xl font-black text-sm shadow-md transition flex items-center justify-center space-x-1.5 cursor-pointer"
-              >
-                <span>Thanh toán</span>
+                Xóa giỏ hàng (Mới)
               </button>
             </div>
           </div>
@@ -1122,7 +1253,7 @@ export default function PosPage() {
             <div className="p-2.5 pb-1 overflow-x-auto no-scrollbar flex items-center space-x-2 shrink-0 bg-white border-b border-gray-200">
               <button
                 onClick={() => setSelectedCategoryId('all')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition shrink-0 border ${
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition shrink-0 border cursor-pointer ${
                   selectedCategoryId === 'all'
                     ? 'bg-gray-800 text-white border-gray-800 shadow-xs'
                     : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
@@ -1183,7 +1314,6 @@ export default function PosPage() {
                             loading="lazy"
                             className="max-h-full max-w-full object-contain pointer-events-none"
                             onError={(e) => {
-                              // Khi ảnh lỗi thì ẩn thẻ img và fallback sang icon
                               (e.target as HTMLElement).style.display = 'none';
                             }}
                           />
@@ -1253,7 +1383,7 @@ export default function PosPage() {
               </div>
               <button 
                 onClick={() => setIsPayModalOpen(false)}
-                className="p-1.5 hover:bg-gray-200 text-gray-500 rounded-lg transition"
+                className="p-1.5 hover:bg-gray-200 text-gray-500 rounded-lg transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1314,7 +1444,7 @@ export default function PosPage() {
               <button
                 type="button"
                 onClick={() => setIsPayModalOpen(false)}
-                className="px-4 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold text-xs rounded-xl hover:bg-gray-100 transition"
+                className="px-4 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold text-xs rounded-xl hover:bg-gray-100 transition cursor-pointer"
               >
                 Đóng
               </button>
@@ -1353,13 +1483,22 @@ export default function PosPage() {
                 <h3 className="font-extrabold text-base text-gray-900">
                   {selectedKitchenTicket.tables?.table_name || 'Khách mang về'}
                 </h3>
-                <p className="text-[10px] text-gray-500">
-                  Thời gian đặt: {new Date(selectedKitchenTicket.created_at).toLocaleTimeString('vi-VN')}
-                </p>
+                <div className="flex items-center space-x-2 mt-0.5">
+                  <span className={`text-[9px] px-2 py-0.2 rounded-full font-bold uppercase ${
+                    selectedKitchenTicket.payment_status === 'Đã thanh toán' 
+                      ? 'bg-emerald-100 text-emerald-800' 
+                      : 'bg-amber-100 text-amber-800'
+                  }`}>
+                    {selectedKitchenTicket.payment_status}
+                  </span>
+                  <span className="text-[10px] text-gray-500">
+                    {new Date(selectedKitchenTicket.created_at).toLocaleTimeString('vi-VN')}
+                  </span>
+                </div>
               </div>
               <button 
                 onClick={() => setSelectedKitchenTicket(null)}
-                className="p-1 hover:bg-gray-100 rounded-lg text-gray-500"
+                className="p-1 hover:bg-gray-100 rounded-lg text-gray-500 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1368,12 +1507,24 @@ export default function PosPage() {
             {/* Chi tiết đơn */}
             <div className="space-y-2">
               <p className="text-xs font-bold text-gray-700">Món cần pha chế:</p>
-              <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 text-xs space-y-1">
-                <p className="text-gray-800">
-                  Tổng tiền: <strong className="text-[#6B5B95]">{Number(selectedKitchenTicket.total_amount).toLocaleString('vi-VN')}đ</strong>
-                </p>
+              <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 text-xs space-y-2 max-h-48 overflow-y-auto">
+                {selectedKitchenTicket.order_items && selectedKitchenTicket.order_items.length > 0 ? (
+                  selectedKitchenTicket.order_items.map((item: any, i: number) => (
+                    <div key={i} className="flex justify-between items-center border-b border-gray-100 pb-1.5 last:border-0 last:pb-0">
+                      <div>
+                        <span className="font-bold text-gray-900">{item.name}</span>
+                        {item.notes && (
+                          <p className="text-[10px] text-amber-800 italic">📝 {item.notes}</p>
+                        )}
+                      </div>
+                      <span className="font-black text-[#6B5B95]">x {item.quantity}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-gray-500 italic">Đơn đã lưu trong hệ thống.</p>
+                )}
                 {selectedKitchenTicket.notes && (
-                  <p className="text-amber-800 font-medium">
+                  <p className="text-amber-800 font-medium pt-1 border-t border-gray-200">
                     📝 Ghi chú: {selectedKitchenTicket.notes}
                   </p>
                 )}
@@ -1383,7 +1534,7 @@ export default function PosPage() {
             <div className="flex items-center space-x-2 pt-2">
               <button
                 onClick={() => setSelectedKitchenTicket(null)}
-                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs rounded-xl transition"
+                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs rounded-xl transition cursor-pointer"
               >
                 Đóng
               </button>
@@ -1392,7 +1543,7 @@ export default function PosPage() {
                   handleMarkKitchenOrderDone(selectedKitchenTicket.id);
                   setSelectedKitchenTicket(null);
                 }}
-                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow transition flex items-center justify-center space-x-1"
+                className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow transition flex items-center justify-center space-x-1 cursor-pointer"
               >
                 <Check className="w-4 h-4" />
                 <span>Đã làm xong</span>
@@ -1423,7 +1574,7 @@ export default function PosPage() {
                   key={tag}
                   type="button"
                   onClick={() => setOrderNotes(prev => prev ? `${prev}, ${tag}` : tag)}
-                  className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-[10px] font-bold text-gray-700 transition"
+                  className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg text-[10px] font-bold text-gray-700 transition cursor-pointer"
                 >
                   +{tag}
                 </button>
@@ -1432,7 +1583,7 @@ export default function PosPage() {
             <div className="flex justify-end space-x-2 pt-2">
               <button
                 onClick={() => setIsNotesModalOpen(false)}
-                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow transition"
+                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow transition cursor-pointer"
               >
                 Lưu ghi chú
               </button>
@@ -1452,7 +1603,7 @@ export default function PosPage() {
               <button
                 type="button"
                 onClick={() => setDiscountType('percent')}
-                className={`py-2 rounded-xl text-xs font-bold transition border ${
+                className={`py-2 rounded-xl text-xs font-bold transition border cursor-pointer ${
                   discountType === 'percent' ? 'bg-[#6B5B95] text-white border-[#6B5B95]' : 'bg-gray-100 text-gray-700'
                 }`}
               >
@@ -1461,7 +1612,7 @@ export default function PosPage() {
               <button
                 type="button"
                 onClick={() => setDiscountType('amount')}
-                className={`py-2 rounded-xl text-xs font-bold transition border ${
+                className={`py-2 rounded-xl text-xs font-bold transition border cursor-pointer ${
                   discountType === 'amount' ? 'bg-[#6B5B95] text-white border-[#6B5B95]' : 'bg-gray-100 text-gray-700'
                 }`}
               >
@@ -1482,7 +1633,7 @@ export default function PosPage() {
                   key={p}
                   type="button"
                   onClick={() => { setDiscountType('percent'); setDiscountValue(p); }}
-                  className="py-1.5 bg-purple-50 hover:bg-purple-100 text-[#6B5B95] font-black text-xs rounded-lg border border-purple-200"
+                  className="py-1.5 bg-purple-50 hover:bg-purple-100 text-[#6B5B95] font-black text-xs rounded-lg border border-purple-200 cursor-pointer"
                 >
                   {p}%
                 </button>
@@ -1492,14 +1643,14 @@ export default function PosPage() {
               <button
                 type="button"
                 onClick={() => { setDiscountValue(0); setIsDiscountModalOpen(false); }}
-                className="px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 rounded-xl"
+                className="px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 rounded-xl cursor-pointer"
               >
                 Xóa giảm giá
               </button>
               <button
                 type="button"
                 onClick={() => setIsDiscountModalOpen(false)}
-                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow"
+                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
               >
                 Áp dụng
               </button>
@@ -1526,7 +1677,7 @@ export default function PosPage() {
               <button
                 type="button"
                 onClick={() => setIsCustomerModalOpen(false)}
-                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow"
+                className="px-4 py-2 bg-[#6B5B95] text-white text-xs font-bold rounded-xl shadow cursor-pointer"
               >
                 Xác nhận
               </button>
@@ -1548,7 +1699,7 @@ export default function PosPage() {
               </div>
               <button
                 onClick={() => setIsUnpaidOrdersDrawerOpen(false)}
-                className="p-1.5 hover:bg-gray-200 text-gray-500 rounded-lg"
+                className="p-1.5 hover:bg-gray-200 text-gray-500 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>

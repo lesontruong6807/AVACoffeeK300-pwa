@@ -1151,7 +1151,13 @@ const mapOrderToClient = (o: any) => {
     paid_at: o.ngay_thanh_toan,
     notes: orderNote,
     tables: o.danhsachban ? { table_name: o.danhsachban.ten_ban } : null,
-    users: o.nguoidung ? { full_name: o.nguoidung.ho_ten } : null
+    users: o.nguoidung ? { full_name: o.nguoidung.ho_ten } : null,
+    order_items: o.hoadondetail && Array.isArray(o.hoadondetail) ? o.hoadondetail.map((d: any) => ({
+      id: d.id,
+      name: d.ten_san_pham || 'Món',
+      quantity: d.so_luong || 1,
+      notes: d.ghi_chu || ''
+    })) : []
   };
 };
 
@@ -1820,6 +1826,37 @@ export const db = {
     const users = mockDb.getUsers();
     return orders
       .filter(o => o.payment_status === 'Chưa thanh toán')
+      .map(order => ({
+        ...order,
+        tables: tables.find(t => t.id === order.table_id) || null,
+        users: users.find(u => u.id === order.staff_id) || null
+      }))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  },
+
+  // Tải danh sách đơn hàng gần đây (cả đã thanh toán & chưa thanh toán) cho Bếp / Barista
+  async getRecentOrders(limit = 40) {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase
+        .from('hoadon')
+        .select(`
+          *,
+          danhsachban (ten_ban),
+          nguoidung (ho_ten),
+          hoadondetail (id, ghi_chu, idsp, so_luong, ten_san_pham)
+        `)
+        .order('ngay_tao', { ascending: false })
+        .limit(limit);
+
+      if (!error && data) {
+        return data.map(mapOrderToClient).filter(Boolean) as any[];
+      }
+    }
+    const orders = mockDb.getOrders();
+    const tables = mockDb.getTables();
+    const users = mockDb.getUsers();
+    return orders
+      .slice(0, limit)
       .map(order => ({
         ...order,
         tables: tables.find(t => t.id === order.table_id) || null,
