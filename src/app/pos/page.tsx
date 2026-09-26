@@ -171,6 +171,11 @@ export default function PosPage() {
   const [customerCashGiven, setCustomerCashGiven] = useState<number>(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Trạng thái chuyển bàn
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [transferTargetId, setTransferTargetId] = useState<string>('');
+  const [transferring, setTransferring] = useState(false);
+
   // Tải danh sách đơn đã làm xong của bếp trong ngày & SĐT MoMo từ LocalStorage
   useEffect(() => {
     try {
@@ -207,6 +212,68 @@ export default function PosPage() {
     });
 
     toast.success('Đã hoàn thành pha chế đơn hàng!');
+  };
+
+  // Xử lý chuyển bàn phục vụ
+  const handleConfirmTransfer = async () => {
+    if (!selectedTable || !transferTargetId || !existingOrder?.id) return;
+    setTransferring(true);
+    try {
+      await db.transferTable(selectedTable.id, transferTargetId, existingOrder.id);
+      const targetTable = tables.find(t => t.id === transferTargetId);
+      toast.success(`Đã chuyển toàn bộ món từ ${selectedTable.table_name} sang ${targetTable?.table_name || 'Bàn mới'}!`);
+      setIsTransferModalOpen(false);
+      setTransferTargetId('');
+      if (targetTable) {
+        setSelectedTable(targetTable);
+      }
+      await refreshData();
+    } catch (e) {
+      console.error('Lỗi chuyển bàn:', e);
+      toast.error('Gặp lỗi khi chuyển bàn');
+    } finally {
+      setTransferring(false);
+    }
+  };
+
+  // Thanh toán nhanh trực tiếp từ thẻ hóa đơn bếp
+  const handleQuickPayFromTicket = async (order: any) => {
+    const matchedTable = tables.find(t => t.id === order.table_id) || {
+      id: order.table_id || 'tb_mangve',
+      table_name: order.tables?.table_name || 'Khách mang về'
+    };
+    setSelectedTable(matchedTable);
+    setExistingOrder(order);
+
+    let items = order.order_items || [];
+    if (!items || items.length === 0) {
+      try {
+        items = await db.getOrderItems(order.id) || [];
+      } catch (_) {}
+    }
+
+    const formattedCart: CartItem[] = items.map((i: any) => ({
+      product_id: i.product_id || i.idsp || i.id,
+      name: i.name || i.ten_san_pham || 'Món',
+      price: Number(i.unit_price || i.don_gia || i.price || 0),
+      quantity: Number(i.quantity || i.so_luong || 1),
+      subtotal: Number(i.subtotal || i.thanh_tien || (Number(i.quantity || 1) * Number(i.unit_price || i.don_gia || i.price || 0))),
+      notes: i.ghi_chu || i.notes || ''
+    }));
+
+    setCart(formattedCart);
+    setDiscountValue(Number(order.discount || order.giam_gia || 0));
+    setOrderNotes(order.notes || '');
+    setCustomerCashGiven(Number(order.total_amount || 0));
+    setIsPayModalOpen(true);
+  };
+
+  // Quay lại Sơ đồ bàn an toàn (không để lại màu vàng trên bàn nếu chưa gọi món)
+  const handleBackToTables = () => {
+    setViewMode('tables');
+    if (!existingOrder && cart.length === 0) {
+      setSelectedTable(null);
+    }
   };
 
   // Làm mới dữ liệu bàn, đơn chưa thanh toán & toàn bộ đơn gần đây (cả đã thanh toán và chưa thanh toán)
@@ -545,35 +612,54 @@ export default function PosPage() {
   // CHỌN BÀN TỪ SƠ ĐỒ BÀN
   const handleSelectTable = async (table: any) => {
     setSelectedTable(table);
-    setViewMode('menu'); // Chuyển sang màn hình chọn món
-    setCart([]);
+    setViewMode('menu'); // Chuyển thẳng sang giao diện chọn món
     setSelectedCartIndex(-1);
-    setOrderNotes('');
-    setDiscountValue(0);
 
     const isOccupied = table.status === 'Đang phục vụ' && table.table_name !== 'Khách mang về';
     if (isOccupied) {
-      const cached = unpaidOrders.find(o => o.table_id === table.id);
-      if (cached) {
-        setExistingOrder(cached);
-      }
+      let orderObj: any = unpaidOrders.find(o => o.table_id === table.id);
+      let itemsList: any[] = [];
       try {
-        if (cached?.id) {
-          const items = await db.getOrderItems(cached.id);
-          setExistingOrderItems(items || []);
+        if (orderObj?.id) {
+          itemsList = await db.getOrderItems(orderObj.id) || [];
         } else {
           const res = await db.getUnpaidOrderByTableId(table.id);
           if (res) {
-            setExistingOrder(res.order);
-            setExistingOrderItems(res.items || []);
+            orderObj = res.order;
+            itemsList = res.items || [];
           }
         }
       } catch (e) {
         console.error('Lỗi tải đơn cũ của bàn:', e);
       }
+
+      setExistingOrder(orderObj || null);
+      setExistingOrderItems(itemsList);
+
+      // ĐỔ TOÀN BỘ MÓN CŨ VÀO GIỎ HÀNG ĐỂ THU NGÂN CÓ THỂ ORDER THÊM / XÓA BỚT / THANH TOÁN
+      const initialCart: CartItem[] = itemsList.map((item: any) => {
+        const unitPrice = Number(item.unit_price || item.don_gia || item.price || 0);
+        const qty = Number(item.quantity || item.so_luong || 1);
+        const subtotal = Number(item.subtotal || item.thanh_tien || (qty * unitPrice));
+        return {
+          product_id: item.product_id || item.idsp || item.id,
+          name: item.products?.name || item.ten_san_pham || item.name || 'Món',
+          price: unitPrice,
+          quantity: qty,
+          subtotal: subtotal,
+          notes: item.ghi_chu || item.notes || ''
+        };
+      });
+
+      setCart(initialCart);
+      setDiscountValue(Number(orderObj?.discount || orderObj?.giam_gia || 0));
+      setOrderNotes(orderObj?.notes || '');
     } else {
       setExistingOrder(null);
       setExistingOrderItems([]);
+      setCart([]);
+      setDiscountValue(0);
+      setOrderNotes('');
     }
   };
 
@@ -590,22 +676,37 @@ export default function PosPage() {
     setSavingOrder(true);
 
     try {
-      const savedOrder = await db.createOrder({
-        table_id: selectedTable.id || 'tb_mangve',
-        staff_id: currentUser?.id || 'admin',
-        total_amount: finalTotalAmount,
-        discount: discountAmount,
-        notes: orderNotes.trim(),
-        items: cart
-      });
+      if (existingOrder?.id) {
+        // Cập nhật đơn hàng đang phục vụ đã có sẵn
+        await db.syncUnpaidOrder(existingOrder.id, {
+          total_amount: finalTotalAmount,
+          discount: discountAmount,
+          notes: orderNotes.trim(),
+          items: cart
+        });
+        toast.success(`Đã cập nhật đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
+      } else {
+        const savedOrder = await db.createOrder({
+          table_id: selectedTable.id || 'tb_mangve',
+          staff_id: currentUser?.id || 'admin',
+          total_amount: finalTotalAmount,
+          discount: discountAmount,
+          notes: orderNotes.trim(),
+          items: cart
+        });
 
-      // Optimistic update: Thêm ngay đơn mới vào danh sách Bếp làm
-      if (savedOrder) {
-        setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
+        // Optimistic update: Thêm ngay đơn mới vào danh sách Bếp làm
+        if (savedOrder) {
+          setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
+        }
+
+        toast.success(`Đã lưu đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
       }
 
-      toast.success(`Đã lưu đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
       handleClearCart();
+      setExistingOrder(null);
+      setExistingOrderItems([]);
+      setSelectedTable(null);
       setViewMode('tables'); // Quay về màn hình chọn bàn
       await refreshData();
     } catch (err) {
@@ -627,8 +728,15 @@ export default function PosPage() {
     try {
       let orderIdToPay = existingOrder?.id;
 
-      // 1. Nếu có món mới trong giỏ hàng -> Lưu đơn trước
-      if (cart.length > 0) {
+      if (orderIdToPay) {
+        // Đồng bộ danh sách món mới nhất trước khi thanh toán
+        await db.syncUnpaidOrder(orderIdToPay, {
+          total_amount: finalTotalAmount,
+          discount: discountAmount,
+          notes: orderNotes.trim(),
+          items: cart
+        });
+      } else if (cart.length > 0) {
         const savedOrder = await db.createOrder({
           table_id: selectedTable?.id || 'tb_mangve',
           staff_id: currentUser?.id || 'admin',
@@ -639,7 +747,6 @@ export default function PosPage() {
         });
         if (savedOrder?.id) {
           orderIdToPay = savedOrder.id;
-          // Thêm đơn vào hàng đợi bếp
           setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
         }
       }
@@ -721,11 +828,12 @@ export default function PosPage() {
         origin: { y: 0.6 }
       });
 
-      toast.success(`Thanh toán thành công ${selectedTable?.table_name}! Đã gửi bếp pha chế.`);
+      toast.success(`Thanh toán thành công ${selectedTable?.table_name || 'đơn hàng'}! Đã gửi bếp pha chế.`);
       setIsPayModalOpen(false);
       handleClearCart();
       setExistingOrder(null);
       setExistingOrderItems([]);
+      setSelectedTable(null);
       setViewMode('tables'); // Trả về giao diện chọn bàn
       await refreshData();
     } catch (e) {
@@ -769,9 +877,14 @@ export default function PosPage() {
       });
   }, [products, searchTerm, selectedCategoryId, yesterdaySales]);
 
-  // DANH SÁCH HÓA ĐƠN CHỜ PHA CHẾ (CẢ ĐÃ THANH TOÁN HOẶC CHƯA THANH TOÁN ĐỀU PHẢI HIỆN CHO BẾP LÀM)
+  // DANH SÁCH HÓA ĐƠN CHỜ PHA CHẾ (CẢ ĐÃ THANH TOÁN HOẶC CHƯA THANH TOÁN ĐỀU PHẢI HIỆN CHO BẾP LÀM, LOẠI BỎ ĐƠN ĐÃ HỦY)
   const pendingKitchenOrders = useMemo(() => {
-    return recentOrders.filter(order => !completedKitchenOrderIds.includes(order.id));
+    return recentOrders.filter(order => 
+      !completedKitchenOrderIds.includes(order.id) &&
+      order.payment_status !== 'Đã hủy' &&
+      order.payment_status !== 'Chờ duyệt hủy' &&
+      (order as any).status !== 'cancelled'
+    );
   }, [recentOrders, completedKitchenOrderIds]);
 
   // Toggle Fullscreen
@@ -803,8 +916,19 @@ export default function PosPage() {
           1. TOP NAVIGATION HEADER
       ───────────────────────────────────────────────────────────── */}
       <header className="h-14 bg-white border-b border-gray-200 px-3 flex items-center justify-between shrink-0 shadow-xs z-30">
-        {/* Nút Tab: Sơ đồ bàn | Đăng ký | Đơn chưa TT */}
-        <div className="flex items-center space-x-1.5 shrink-0">
+        {/* NÚT QUAY LẠI TRANG CHỦ (BÊN TRÁI NHẤT) + SƠ ĐỒ BÀN + ĐƠN CHƯA TT */}
+        <div className="flex items-center space-x-2 shrink-0">
+          <Link
+            href="/"
+            className="px-2.5 py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs font-bold transition cursor-pointer flex items-center space-x-1"
+            title="Quay lại Trang chủ Quản lý"
+          >
+            <ArrowLeft className="w-4 h-4 text-gray-800" />
+            <span className="hidden sm:inline">Trang chủ</span>
+          </Link>
+
+          <div className="h-5 w-px bg-gray-200 mx-0.5" />
+
           <button
             onClick={() => setViewMode(prev => prev === 'tables' ? 'menu' : 'tables')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center space-x-1.5 border cursor-pointer ${
@@ -847,15 +971,9 @@ export default function PosPage() {
           </button>
         </div>
 
-        {/* Thông tin nhanh số lượng đơn chờ pha chế */}
-        <div className="flex items-center space-x-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-lg text-xs font-bold text-amber-900">
-          <UtensilsCrossed className="w-3.5 h-3.5 text-amber-700" />
-          <span>Hóa đơn chờ pha chế ({pendingKitchenOrders.length})</span>
-        </div>
-
         {/* Ô Tìm kiếm & Tiện ích bên phải */}
         <div className="flex items-center space-x-2 shrink-0">
-          <div className="relative w-40 sm:w-56">
+          <div className="relative w-36 sm:w-52 md:w-64">
             <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
             <input
               type="text"
@@ -892,14 +1010,6 @@ export default function PosPage() {
             {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </button>
 
-          <Link
-            href="/"
-            className="p-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs transition cursor-pointer"
-            title="Về Trang chủ Quản lý"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-          </Link>
-
           {/* Avatar User Nâu Cà Phê */}
           <div className="w-7 h-7 rounded-full bg-[#4A3525] text-white flex items-center justify-center font-bold text-xs shadow-xs">
             {currentUser?.full_name ? currentUser.full_name.charAt(0).toUpperCase() : 'M'}
@@ -908,197 +1018,194 @@ export default function PosPage() {
       </header>
 
       {/* ─────────────────────────────────────────────────────────────
-          2. THANH HÓA ĐƠN BẾP (KITCHEN QUEUE BAR) - HÌNH CHỮ NHẬT BỰ DỄ NHÌN, DỄ BẤM
-      ───────────────────────────────────────────────────────────── */}
-      <section className="bg-[#FAF6F0] border-b border-amber-200/80 px-3 py-2 shrink-0 z-20 shadow-xs">
-        <div className="flex items-center justify-between mb-1.5">
-          <div className="flex items-center space-x-2">
-            <span className="text-xs font-black text-[#4A3525] uppercase tracking-wide flex items-center space-x-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-              <span>Hóa đơn cần pha chế</span>
-            </span>
-            <span className="text-[10px] text-gray-500 font-medium">
-              (Chạm "ĐÃ XONG" để đơn tự biến mất khỏi danh sách)
-            </span>
-          </div>
-
-          <span className="text-[11px] font-bold text-amber-800">
-            {pendingKitchenOrders.length} đơn đang chờ
-          </span>
-        </div>
-
-        {/* CAROUSEL CÁC HÓA ĐƠN HÌNH CHỮ NHẬT BỰ */}
-        <div className="flex items-center space-x-3 overflow-x-auto pb-1.5 no-scrollbar min-h-[168px]">
-          {pendingKitchenOrders.length === 0 ? (
-            <div className="w-full py-8 flex items-center justify-center space-x-2 text-xs font-bold text-gray-400 bg-white/80 rounded-2xl border border-dashed border-gray-200">
-              <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-              <span>Tuyệt vời! Hiện tại đã pha chế xong tất cả các đơn hàng. Đơn mới sẽ xuất hiện tại đây.</span>
-            </div>
-          ) : (
-            pendingKitchenOrders.map((order) => {
-              const orderTime = new Date(order.created_at);
-              const minutesAgo = Math.floor((Date.now() - orderTime.getTime()) / 60000);
-              const isUrgent = minutesAgo >= 10;
-              const tableName = order.tables?.table_name || 'Khách mang về';
-              const isPaid = order.payment_status === 'Đã thanh toán';
-
-              return (
-                <div
-                  key={order.id}
-                  onClick={() => setSelectedKitchenTicket(order)}
-                  className={`w-72 sm:w-84 md:w-96 min-w-[280px] h-[162px] p-3.5 rounded-2xl border-2 bg-white flex flex-col justify-between shrink-0 shadow-sm hover:shadow-lg transition-all cursor-pointer relative ${
-                    isUrgent
-                      ? 'border-red-400 ring-2 ring-red-200/80 bg-red-50/20'
-                      : isPaid
-                      ? 'border-emerald-300 ring-1 ring-emerald-100'
-                      : 'border-amber-300 ring-1 ring-amber-100'
-                  }`}
-                  style={{
-                    backgroundImage: 'linear-gradient(to bottom, #FFFFFF, #FFFDF9)'
-                  }}
-                >
-                  {/* TIÊU ĐỀ VÉ: BÀN + THỜI GIAN + TRẠNG THÁI THANH TOÁN */}
-                  <div className="flex items-center justify-between pb-2 border-b border-dashed border-gray-200">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-base font-black text-[#4A3525] uppercase tracking-tight">
-                        {tableName}
-                      </span>
-                      <span className="text-xs text-gray-500 font-semibold bg-gray-100 px-2 py-0.5 rounded-md">
-                        {minutesAgo}p trước
-                      </span>
-                    </div>
-
-                    <span className={`text-[10px] sm:text-[11px] px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider border ${
-                      isPaid 
-                        ? 'bg-emerald-100 text-emerald-900 border-emerald-400' 
-                        : 'bg-amber-100 text-amber-950 border-amber-400'
-                    }`}>
-                      {isPaid ? '✓ ĐÃ THANH TOÁN' : '⏳ CHƯA THANH TOÁN'}
-                    </span>
-                  </div>
-
-                  {/* DANH SÁCH MÓN ĂN HIỂN THỊ RÕ RÀNG */}
-                  <div className="flex-1 overflow-y-auto space-y-1.5 py-1.5 pr-1 custom-scrollbar text-xs sm:text-[13px]">
-                    {order.order_items && order.order_items.length > 0 ? (
-                      order.order_items.map((item: any, i: number) => (
-                        <div key={i} className="flex justify-between items-start leading-snug">
-                          <span className="font-extrabold text-gray-950 truncate flex-1">
-                            {item.name}
-                            {item.notes && (
-                              <span className="block text-[11px] text-amber-800 italic font-medium">
-                                📝 {item.notes}
-                              </span>
-                            )}
-                          </span>
-                          <span className="font-black text-[#4A3525] bg-[#FAF6F0] border border-[#8C6A5C]/30 px-2 py-0.5 rounded-lg text-xs sm:text-sm ml-2 shrink-0">
-                            x{item.quantity}
-                          </span>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="text-xs text-gray-400 italic">Đơn #{order.id.slice(0, 6)}</p>
-                    )}
-
-                    {order.notes && (
-                      <p className="text-xs text-amber-950 bg-amber-50 p-1.5 rounded-lg border border-amber-200 font-semibold">
-                        Ghi chú: {order.notes}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* NÚT BẤM "ĐÃ LÀM XONG" BỰ DỄ BẤM */}
-                  <button
-                    onClick={(e) => handleMarkKitchenOrderDone(order.id, e)}
-                    className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-black text-xs sm:text-sm rounded-xl shadow-xs transition flex items-center justify-center space-x-2 cursor-pointer mt-1"
-                  >
-                    <Check className="w-4 h-4 stroke-[3]" />
-                    <span>✓ ĐÃ LÀM XONG (CHẠM VÀO ĐÂY)</span>
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </section>
-
-      {/* ─────────────────────────────────────────────────────────────
-          3. NỘI DUNG CHÍNH (SƠ ĐỒ BÀN HOẶC GIAO DIỆN BÁN HÀNG)
+          2. NỘI DUNG CHÍNH (SƠ ĐỒ BÀN HOẶC GIAO DIỆN BÁN HÀNG)
       ───────────────────────────────────────────────────────────── */}
       {viewMode === 'tables' ? (
-        /* GIAO DIỆN SƠ ĐỒ BÀN (MẶC ĐỊNH KHI MỞ APP) */
-        <div className="flex-1 p-5 overflow-y-auto bg-gray-50">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-xl font-black text-gray-800">Sơ đồ bàn phục vụ</h2>
-              <p className="text-xs text-gray-500">
-                Chạm vào bàn trống để bắt đầu gọi món, hoặc chạm vào bàn đang phục vụ để xem hóa đơn / thêm món / thanh toán
-              </p>
+        /* GIAO DIỆN SƠ ĐỒ BÀN: CỘT TRÁI HÓA ĐƠN CẦN PHA CHẾ + CỘT PHẢI SƠ ĐỒ BÀN */
+        <div className="flex-1 flex overflow-hidden">
+          
+          {/* CỘT TRÁI: HÓA ĐƠN CẦN PHA CHẾ (BARISTA / BẾP) */}
+          <aside className="w-[330px] sm:w-[360px] md:w-[390px] bg-white border-r border-gray-200 flex flex-col shrink-0 overflow-hidden shadow-xs z-10">
+            <div className="px-4 py-3 bg-[#FAF6F0] border-b border-amber-200/80 flex items-center justify-between shrink-0">
+              <div className="flex items-center space-x-2">
+                <Sparkles className="w-4 h-4 text-amber-700" />
+                <span className="text-xs font-black text-[#4A3525] uppercase tracking-wide">
+                  Hóa đơn cần pha chế
+                </span>
+              </div>
+              <span className="px-2.5 py-0.5 bg-amber-200/80 text-amber-950 font-black text-xs rounded-full">
+                {pendingKitchenOrders.length} đơn
+              </span>
             </div>
-            {selectedTable && (
-              <button
-                onClick={() => setViewMode('menu')}
-                className="px-4 py-2 bg-[#4A3525] hover:bg-[#382513] text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center space-x-1.5 cursor-pointer"
-              >
-                <span>Vào gọi món: {selectedTable.table_name}</span>
-                <span>→</span>
-              </button>
-            )}
-          </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-            {[...tables]
-              .sort((a, b) => {
-                if (a.table_name === 'Khách mang về') return -1;
-                if (b.table_name === 'Khách mang về') return 1;
-                return a.table_name.localeCompare(b.table_name, 'vi', { numeric: true });
-              })
-              .map(table => {
-                const isOccupied = table.status === 'Đang phục vụ';
-                const isTakeaway = table.table_name === 'Khách mang về';
-                const unpaidMatch = unpaidOrders.find(o => o.table_id === table.id);
+            {/* DANH SÁCH HÓA ĐƠN BẾP DỌC (FULL MÓN ĂN, KHÔNG CẦN SCROLL NỘI BỘ) */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar bg-gray-50/50">
+              {pendingKitchenOrders.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center p-6 text-center text-gray-400 space-y-2">
+                  <CheckCircle2 className="w-10 h-10 text-emerald-500 opacity-60" />
+                  <p className="text-xs font-bold text-gray-600">Đã pha chế xong tất cả!</p>
+                  <p className="text-[11px] text-gray-400">Đơn hàng mới từ quầy thu ngân sẽ tự động xuất hiện tại đây.</p>
+                </div>
+              ) : (
+                pendingKitchenOrders.map((order) => {
+                  const orderTime = new Date(order.created_at);
+                  const minutesAgo = Math.floor((Date.now() - orderTime.getTime()) / 60000);
+                  const isUrgent = minutesAgo >= 10;
+                  const tableName = order.tables?.table_name || 'Khách mang về';
+                  const isPaid = order.payment_status === 'Đã thanh toán';
 
-                return (
-                  <button
-                    key={table.id}
-                    onClick={() => handleSelectTable(table)}
-                    className={`h-36 p-4 rounded-2xl border text-left flex flex-col justify-between transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer ${
-                      isTakeaway
-                        ? 'bg-[#FAF6F0] border-[#8C6A5C] ring-2 ring-[#8C6A5C]/40'
-                        : isOccupied
-                        ? 'bg-amber-50/90 border-amber-300 shadow-xs'
-                        : selectedTable?.id === table.id
-                        ? 'bg-[#F5EFE6] border-[#4A3525] shadow-xs'
-                        : 'bg-white border-gray-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                        isOccupied 
-                          ? 'bg-amber-100 text-amber-800' 
-                          : 'bg-emerald-100 text-emerald-800'
-                      }`}>
-                        {table.status}
-                      </span>
-                      <span className="text-[10px] text-gray-400 flex items-center space-x-1">
-                        <Users className="w-3 h-3" />
-                        <span>{table.capacity || 4}</span>
-                      </span>
+                  return (
+                    <div
+                      key={order.id}
+                      className={`p-3.5 rounded-2xl border-2 bg-white flex flex-col justify-between shadow-xs hover:shadow-md transition-all ${
+                        isUrgent
+                          ? 'border-red-400 ring-2 ring-red-200/80 bg-red-50/20'
+                          : isPaid
+                          ? 'border-emerald-300 ring-1 ring-emerald-100'
+                          : 'border-amber-300 ring-1 ring-amber-100'
+                      }`}
+                    >
+                      {/* Tiêu đề vé: Tên bàn + Phù hiệu thanh toán */}
+                      <div className="flex items-center justify-between pb-2 border-b border-dashed border-gray-200">
+                        <div className="flex items-center space-x-2">
+                          <span className="text-base font-black text-[#4A3525] uppercase tracking-tight">
+                            {tableName}
+                          </span>
+                          <span className="text-[11px] text-gray-500 font-semibold bg-gray-100 px-2 py-0.5 rounded-md">
+                            {minutesAgo}p trước
+                          </span>
+                        </div>
+
+                        <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider border ${
+                          isPaid 
+                            ? 'bg-emerald-100 text-emerald-900 border-emerald-400' 
+                            : 'bg-amber-100 text-amber-950 border-amber-400'
+                        }`}>
+                          {isPaid ? 'ĐÃ TT' : 'CHƯA TT'}
+                        </span>
+                      </div>
+
+                      {/* Danh sách món ăn ĐẦY ĐỦ, KHÔNG BỊ CẮT, KHÔNG CẦN SCROLL NỘI BỘ */}
+                      <div className="py-2.5 space-y-1.5 text-xs sm:text-[13px]">
+                        {order.order_items && order.order_items.length > 0 ? (
+                          order.order_items.map((item: any, i: number) => (
+                            <div key={i} className="flex justify-between items-start leading-snug">
+                              <span className="font-extrabold text-gray-900 flex-1 pr-2">
+                                {item.name}
+                                {item.notes && (
+                                  <span className="block text-[11px] text-amber-800 italic font-medium">
+                                    📝 {item.notes}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="font-black text-[#4A3525] bg-[#FAF6F0] border border-[#8C6A5C]/30 px-2 py-0.5 rounded-lg text-xs ml-1 shrink-0">
+                                x{item.quantity}
+                              </span>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-xs text-gray-400 italic">Đơn #{order.id.slice(0, 6)}</p>
+                        )}
+
+                        {order.notes && (
+                          <p className="text-xs text-amber-950 bg-amber-50 p-1.5 rounded-lg border border-amber-200 font-semibold mt-1">
+                            Ghi chú: {order.notes}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Nút hành động ở chân vé */}
+                      <div className="pt-2 border-t border-dashed border-gray-200 flex items-center space-x-2">
+                        {!isPaid && (
+                          <button
+                            type="button"
+                            onClick={() => handleQuickPayFromTicket(order)}
+                            className="flex-1 py-2 bg-[#4A3525] hover:bg-[#382513] text-white font-black text-xs rounded-xl shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                          >
+                            <CreditCard className="w-3.5 h-3.5" />
+                            <span>Thanh toán</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => handleMarkKitchenOrderDone(order.id, e)}
+                          className={`${!isPaid ? 'flex-1' : 'w-full'} py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-black text-xs rounded-xl shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer`}
+                        >
+                          <Check className="w-4 h-4 stroke-[3]" />
+                          <span>Đã làm xong</span>
+                        </button>
+                      </div>
                     </div>
+                  );
+                })
+              )}
+            </div>
+          </aside>
 
-                    <div>
-                      <h4 className="font-black text-lg text-gray-800 tracking-tight">{table.table_name}</h4>
-                      {isOccupied && unpaidMatch ? (
-                        <p className="text-xs font-black text-[#4A3525] mt-1">
-                          {Number(unpaidMatch.total_amount || 0).toLocaleString('vi-VN')} đ
-                        </p>
-                      ) : (
-                        <p className="text-[11px] text-gray-400 mt-1 font-medium">Chạm để gọi món</p>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-          </div>
+          {/* CỘT PHẢI: SƠ ĐỒ BÀN PHỤC VỤ */}
+          <main className="flex-1 p-5 overflow-y-auto bg-gray-50">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-black text-gray-800">Sơ đồ bàn phục vụ</h2>
+                <p className="text-xs text-gray-500">
+                  Chạm vào bàn để bắt đầu gọi món, xem hóa đơn hoặc thanh toán
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3.5">
+              {[...tables]
+                .sort((a, b) => {
+                  if (a.table_name === 'Khách mang về') return -1;
+                  if (b.table_name === 'Khách mang về') return 1;
+                  return a.table_name.localeCompare(b.table_name, 'vi', { numeric: true });
+                })
+                .map(table => {
+                  const isOccupied = table.status === 'Đang phục vụ';
+                  const isTakeaway = table.table_name === 'Khách mang về';
+                  const unpaidMatch = unpaidOrders.find(o => o.table_id === table.id);
+
+                  return (
+                    <button
+                      key={table.id}
+                      onClick={() => handleSelectTable(table)}
+                      className={`h-36 p-4 rounded-2xl border text-left flex flex-col justify-between transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer ${
+                        isTakeaway
+                          ? 'bg-[#FAF6F0] border-[#8C6A5C] ring-2 ring-[#8C6A5C]/40'
+                          : isOccupied
+                          ? 'bg-amber-50/90 border-amber-400 ring-2 ring-amber-200/70 shadow-xs'
+                          : 'bg-white border-gray-200 hover:border-[#4A3525]/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                          isOccupied 
+                            ? 'bg-amber-100 text-amber-800' 
+                            : 'bg-emerald-100 text-emerald-800'
+                        }`}>
+                          {table.status}
+                        </span>
+                        <span className="text-[10px] text-gray-400 flex items-center space-x-1">
+                          <Users className="w-3 h-3" />
+                          <span>{table.capacity || 4}</span>
+                        </span>
+                      </div>
+
+                      <div>
+                        <h4 className="font-black text-lg text-gray-800 tracking-tight">{table.table_name}</h4>
+                        {isOccupied && unpaidMatch ? (
+                          <p className="text-xs font-black text-[#4A3525] mt-1">
+                            {Number(unpaidMatch.total_amount || 0).toLocaleString('vi-VN')} đ
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-gray-400 mt-1 font-medium">Chạm để gọi món</p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+            </div>
+          </main>
         </div>
       ) : (
         /* GIAO DIỆN BÁN HÀNG TOUCH CHUẨN POS (CỘT TRÁI GIỎ HÀNG + CỘT PHẢI THỰC ĐƠN) */
@@ -1113,21 +1220,35 @@ export default function PosPage() {
             <div className="px-3.5 py-2 bg-gray-50 border-b border-gray-200 flex items-center justify-between shrink-0">
               <div className="flex items-center space-x-2">
                 <button
-                  onClick={() => setViewMode('tables')}
-                  className="p-1 hover:bg-gray-200 rounded-lg text-gray-600 transition cursor-pointer"
+                  type="button"
+                  onClick={handleBackToTables}
+                  className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-700 transition cursor-pointer"
                   title="Quay lại sơ đồ bàn"
                 >
                   <ArrowLeft className="w-4 h-4" />
                 </button>
-                <span className="font-extrabold text-xs text-gray-800">
-                  {selectedTable?.table_name || 'Bàn chưa chọn'}
-                </span>
+                <div>
+                  <span className="font-extrabold text-xs text-gray-800 block leading-tight">
+                    {selectedTable?.table_name || 'Bàn chưa chọn'}
+                  </span>
+                  {existingOrder && (
+                    <span className="text-[10px] text-amber-800 font-bold">
+                      Đơn đang phục vụ
+                    </span>
+                  )}
+                </div>
               </div>
 
-              {existingOrder && (
-                <span className="text-[10px] px-2 py-0.5 bg-amber-100 text-amber-900 font-bold rounded-full">
-                  Đang phục vụ
-                </span>
+              {existingOrder && selectedTable?.table_name !== 'Khách mang về' && (
+                <button
+                  type="button"
+                  onClick={() => setIsTransferModalOpen(true)}
+                  className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold flex items-center space-x-1.5 cursor-pointer transition shadow-2xs"
+                  title="Chuyển toàn bộ món sang bàn khác"
+                >
+                  <ArrowRightLeft className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Đổi bàn</span>
+                </button>
               )}
             </div>
 
@@ -1496,6 +1617,101 @@ export default function PosPage() {
                   <p className="text-[11px]">Thử tìm với từ khóa khác hoặc chọn danh mục khác</p>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          3.5 MODAL CHUYỂN BÀN PHỤC VỤ (ĐỔI BÀN)
+      ───────────────────────────────────────────────────────────── */}
+      {isTransferModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-gray-200 animate-scaleIn">
+            <div className="p-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h3 className="font-extrabold text-base text-gray-900">
+                  Chuyển {selectedTable?.table_name || 'Bàn'} sang bàn khác
+                </h3>
+                <p className="text-[11px] text-gray-500">
+                  Chọn bàn trống muốn chuyển tới (toàn bộ món sẽ chuyển sang bàn mới)
+                </p>
+              </div>
+              <button 
+                onClick={() => {
+                  setIsTransferModalOpen(false);
+                  setTransferTargetId('');
+                }}
+                className="p-1.5 hover:bg-gray-200 text-gray-500 rounded-lg transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="text-xs font-bold text-gray-700">
+                Danh sách bàn đang trống:
+              </div>
+
+              {/* Danh sách các bàn trống để chọn */}
+              <div className="grid grid-cols-3 gap-2.5 max-h-64 overflow-y-auto p-1">
+                {tables
+                  .filter(t => t.id !== selectedTable?.id && t.table_name !== 'Khách mang về' && t.status === 'Trống')
+                  .sort((a, b) => a.table_name.localeCompare(b.table_name, 'vi', { numeric: true }))
+                  .map(targetTable => (
+                    <button
+                      key={targetTable.id}
+                      type="button"
+                      onClick={() => setTransferTargetId(targetTable.id)}
+                      className={`p-3 rounded-xl border text-center transition font-black text-sm cursor-pointer ${
+                        transferTargetId === targetTable.id
+                          ? 'bg-[#4A3525] text-white border-[#4A3525] shadow-md ring-2 ring-[#4A3525]/30'
+                          : 'bg-emerald-50/60 hover:bg-emerald-100/80 text-emerald-900 border-emerald-200'
+                      }`}
+                    >
+                      <div>{targetTable.table_name}</div>
+                      <span className="text-[10px] font-medium opacity-80">Trống</span>
+                    </button>
+                  ))}
+              </div>
+
+              {tables.filter(t => t.id !== selectedTable?.id && t.table_name !== 'Khách mang về' && t.status === 'Trống').length === 0 && (
+                <div className="py-6 text-center text-gray-500 text-xs italic bg-gray-50 rounded-xl border border-gray-200">
+                  Hiện không có bàn nào đang trống để chuyển.
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsTransferModalOpen(false);
+                  setTransferTargetId('');
+                }}
+                className="px-4 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold text-xs rounded-xl hover:bg-gray-100 transition cursor-pointer"
+              >
+                Hủy
+              </button>
+
+              <button
+                type="button"
+                disabled={!transferTargetId || transferring}
+                onClick={handleConfirmTransfer}
+                className="px-6 py-2.5 bg-[#4A3525] hover:bg-[#382513] text-white font-black text-xs rounded-xl shadow-md transition disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
+              >
+                {transferring ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Đang chuyển...</span>
+                  </>
+                ) : (
+                  <>
+                    <ArrowRightLeft className="w-4 h-4" />
+                    <span>Xác nhận chuyển bàn</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

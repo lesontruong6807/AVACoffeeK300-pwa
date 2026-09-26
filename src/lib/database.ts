@@ -1834,7 +1834,7 @@ export const db = {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
-  // Tải danh sách đơn hàng gần đây (cả đã thanh toán & chưa thanh toán) cho Bếp / Barista
+  // Tải danh sách đơn hàng gần đây (cả đã thanh toán & chưa thanh toán) cho Bếp / Barista (Loại bỏ các đơn đã hủy)
   async getRecentOrders(limit = 40) {
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase
@@ -1845,6 +1845,8 @@ export const db = {
           nguoidung (ho_ten),
           hoadondetail (id, ghi_chu, idsp, so_luong, ten_san_pham)
         `)
+        .neq('trang_thai_thanh_toan', 'Đã hủy')
+        .neq('trang_thai_thanh_toan', 'Chờ duyệt hủy')
         .order('ngay_tao', { ascending: false })
         .limit(limit);
 
@@ -1856,6 +1858,7 @@ export const db = {
     const tables = mockDb.getTables();
     const users = mockDb.getUsers();
     return orders
+      .filter(o => o.payment_status !== 'Đã hủy' && (o as any).payment_status !== 'Chờ duyệt hủy')
       .slice(0, limit)
       .map(order => ({
         ...order,
@@ -1863,6 +1866,128 @@ export const db = {
         users: users.find(u => u.id === order.staff_id) || null
       }))
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  },
+
+  // Chuyển bàn: Chuyển toàn bộ đơn hàng từ bàn nguồn sang bàn đích (bàn đích phải đang trống)
+  async transferTable(fromTableId: string, toTableId: string, orderId: string) {
+    if (isSupabaseConfigured && supabase) {
+      // 1. Cập nhật id_ban của hóa đơn sang bàn mới
+      const { error: orderErr } = await supabase
+        .from('hoadon')
+        .update({ id_ban: toTableId })
+        .eq('id', orderId);
+      if (orderErr) throw orderErr;
+
+      // 2. Chuyển bàn cũ về 'Trống' (nếu không phải Khách mang về)
+      const { data: fromTable } = await supabase.from('danhsachban').select('ten_ban').eq('id', fromTableId).maybeSingle();
+      if (fromTable?.ten_ban !== 'Khách mang về') {
+        await supabase.from('danhsachban').update({ trang_thai: 'Trống' }).eq('id', fromTableId);
+      }
+
+      // 3. Chuyển bàn mới thành 'Đang phục vụ' (nếu không phải Khách mang về)
+      const { data: toTable } = await supabase.from('danhsachban').select('ten_ban').eq('id', toTableId).maybeSingle();
+      if (toTable?.ten_ban !== 'Khách mang về') {
+        await supabase.from('danhsachban').update({ trang_thai: 'Đang phục vụ' }).eq('id', toTableId);
+      }
+
+      broadcastRealtimeEvent('order_update');
+      broadcastRealtimeEvent('table_update');
+      return true;
+    }
+
+    // Mock DB Fallback
+    const orders = mockDb.getOrders();
+    const tables = mockDb.getTables();
+    const order = orders.find(o => o.id === orderId);
+    if (order) {
+      order.table_id = toTableId;
+      mockDb.setOrders(orders);
+    }
+    const fromT = tables.find(t => t.id === fromTableId);
+    if (fromT && fromT.table_name !== 'Khách mang về') {
+      fromT.status = 'Trống';
+    }
+    const toT = tables.find(t => t.id === toTableId);
+    if (toT && toT.table_name !== 'Khách mang về') {
+      toT.status = 'Đang phục vụ';
+    }
+    mockDb.setTables(tables);
+    broadcastRealtimeEvent('order_update');
+    broadcastRealtimeEvent('table_update');
+    return true;
+  },
+
+  // Đồng bộ/Cập nhật toàn bộ món ăn trong đơn chưa thanh toán (khi thêm món/xóa món của bàn đang phục vụ)
+  async syncUnpaidOrder(orderId: string, orderData: { total_amount: number; discount?: number; notes?: string; items: any[] }) {
+    const { total_amount, discount = 0, notes = '', items } = orderData;
+    if (isSupabaseConfigured && supabase) {
+      // 1. Cập nhật thông tin tổng tiền, giảm giá, ghi chú của hóa đơn
+      await supabase
+        .from('hoadon')
+        .update({
+          tong_tien: total_amount,
+          giam_gia: discount,
+          ghi_chu: notes
+        })
+        .eq('id', orderId);
+
+      // 2. Xóa các chi tiết cũ của hóa đơn
+      await supabase.from('hoadondetail').delete().eq('idhoadon', orderId);
+
+      // 3. Chèn lại danh sách chi tiết mới
+      if (items.length > 0) {
+        const productIds = items.map(i => i.product_id);
+        const { data: dbProds } = await supabase.from('sanpham').select('id, gia_von').in('id', productIds);
+        const dbProducts = dbProds || [];
+
+        const orderItemsToInsert = items.map((item, idx) => {
+          const dbProd = dbProducts.find(p => p.id === item.product_id);
+          const costPrice = dbProd ? Number(dbProd.gia_von || 0) : 0;
+          return {
+            id: generateShortId('item_'),
+            idhoadon: orderId,
+            idsp: item.product_id,
+            ten_san_pham: item.name || 'Sản phẩm',
+            don_vi_tinh: item.don_vi_tinh || 'Ly',
+            don_gia: item.price || item.unit_price || 0,
+            so_luong: item.quantity,
+            thanh_tien: item.subtotal,
+            ghi_chu: item.notes || '',
+            gia_von: costPrice
+          };
+        });
+
+        await supabase.from('hoadondetail').insert(orderItemsToInsert);
+      }
+
+      broadcastRealtimeEvent('order_update');
+      broadcastRealtimeEvent('table_update');
+      return true;
+    }
+
+    // Mock DB Fallback
+    const orders = mockDb.getOrders();
+    const order = orders.find(o => o.id === orderId);
+    if (order) {
+      order.total_amount = total_amount;
+      order.giam_gia = discount;
+      order.notes = notes;
+      mockDb.setOrders(orders);
+    }
+    const orderItems = mockDb.getOrderItems().filter(oi => oi.order_id !== orderId);
+    const newItems = items.map(item => ({
+      id: generateShortId('item_'),
+      order_id: orderId,
+      product_id: item.product_id,
+      name: item.name,
+      quantity: item.quantity,
+      unit_price: item.price || item.unit_price,
+      subtotal: item.subtotal,
+      notes: item.notes || ''
+    }));
+    mockDb.setOrderItems([...orderItems, ...newItems]);
+    broadcastRealtimeEvent('order_update');
+    return true;
   },
 
   async getOrders() {
