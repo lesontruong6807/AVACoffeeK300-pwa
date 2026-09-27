@@ -1900,21 +1900,18 @@ export default function PosPage() {
                     >
                       {/* KHUNG ẢNH SẢN PHẨM */}
                       <div className="relative w-full h-24 bg-white flex items-center justify-center p-2 overflow-hidden">
-                        {prod.image_url ? (
-                          <img
-                            src={prod.image_url}
-                            alt={prod.name}
-                            loading="lazy"
-                            className="max-h-full max-w-full object-contain pointer-events-none"
-                            onError={(e) => {
-                              (e.target as HTMLElement).style.display = 'none';
-                            }}
-                          />
-                        ) : (
-                          <div className="w-10 h-10 border border-dashed border-gray-300 rounded-lg flex items-center justify-center text-gray-300">
-                            <Coffee className="w-5 h-5" />
-                          </div>
-                        )}
+                        <img
+                          src={prod.image_url || '/logo.jpg'}
+                          alt={prod.name}
+                          loading="lazy"
+                          className="max-h-full max-w-full object-contain pointer-events-none rounded-lg"
+                          onError={(e) => {
+                            const img = e.target as HTMLImageElement;
+                            if (!img.src.includes('logo.jpg')) {
+                              img.src = '/logo.jpg';
+                            }
+                          }}
+                        />
 
                         {isOutOfStock && (
                           <div className="absolute inset-0 bg-black/60 flex items-center justify-center text-white text-[10px] font-black uppercase">
