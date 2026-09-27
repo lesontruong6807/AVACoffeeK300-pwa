@@ -187,9 +187,15 @@ export default function MenuPage() {
 
                   <div className="pt-3 border-t border-coffee-light/60 flex items-center justify-between">
                     <div>
-                      <span className="text-[9px] sm:text-[10px] text-coffee-medium block">Giá bán</span>
-                      <span className="font-black text-sm sm:text-base text-coffee-primary">
-                        {prod.price.toLocaleString('vi-VN')}đ
+                      <span className="text-[9px] sm:text-[10px] text-coffee-medium block">
+                        {prod.takeaway_price && prod.dinein_price && prod.takeaway_price !== prod.dinein_price
+                          ? 'Mang về / Ngồi lại'
+                          : 'Giá bán'}
+                      </span>
+                      <span className="font-black text-xs sm:text-sm md:text-base text-coffee-primary">
+                        {prod.takeaway_price && prod.dinein_price && prod.takeaway_price !== prod.dinein_price
+                          ? `${prod.takeaway_price.toLocaleString('vi-VN')}đ / ${prod.dinein_price.toLocaleString('vi-VN')}đ`
+                          : `${(prod.price || 0).toLocaleString('vi-VN')}đ`}
                       </span>
                     </div>
 

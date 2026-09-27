@@ -82,11 +82,11 @@ const CATEGORY_COLORS: Record<string, { bg: string; border: string; text: string
     text: '#1B4477', 
     bar: '#3B82F6' 
   },
-  'c_sualac': { 
-    bg: '#FEF3CD', 
-    border: '#FFE69C', 
-    text: '#725100', 
-    bar: '#EAB308' 
+  'c_nuocep': { 
+    bg: '#FFE8D6', 
+    border: '#FFBF99', 
+    text: '#803400', 
+    bar: '#F97316' 
   },
   'c_douongkhac': { 
     bg: '#CFF4FC', 
@@ -750,6 +750,11 @@ export default function PosPage() {
       return;
     }
 
+    const isTakeaway = selectedTable?.table_name === 'Khách mang về' || selectedTable?.id === 'tb_mangve';
+    const effectivePrice = isTakeaway
+      ? (product.takeaway_price !== undefined && product.takeaway_price !== null ? Number(product.takeaway_price) : Number(product.price))
+      : (product.dinein_price !== undefined && product.dinein_price !== null ? Number(product.dinein_price) : Number(product.price));
+
     setCart(prev => {
       const idx = prev.findIndex(item => item.product_id === product.id);
       if (idx !== -1) {
@@ -757,8 +762,9 @@ export default function PosPage() {
         const nextQty = updated[idx].quantity + 1;
         updated[idx] = {
           ...updated[idx],
+          price: effectivePrice,
           quantity: nextQty,
-          subtotal: nextQty * updated[idx].price
+          subtotal: nextQty * effectivePrice
         };
         setSelectedCartIndex(idx);
         return updated;
@@ -767,9 +773,9 @@ export default function PosPage() {
       const newItem: CartItem = {
         product_id: product.id,
         name: product.name,
-        price: product.price,
+        price: effectivePrice,
         quantity: 1,
-        subtotal: product.price
+        subtotal: effectivePrice
       };
       const updated = [...prev, newItem];
       setSelectedCartIndex(updated.length - 1);
@@ -1519,9 +1525,18 @@ export default function PosPage() {
                   <ArrowLeft className="w-4 h-4" />
                 </button>
                 <div>
-                  <span className="font-extrabold text-xs text-gray-800 block leading-tight">
-                    {selectedTable?.table_name || 'Bàn chưa chọn'}
-                  </span>
+                  <div className="flex items-center space-x-1.5">
+                    <span className="font-extrabold text-xs text-gray-800 block leading-tight">
+                      {selectedTable?.table_name || 'Bàn chưa chọn'}
+                    </span>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                      (selectedTable?.table_name === 'Khách mang về' || selectedTable?.id === 'tb_mangve')
+                        ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                        : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                    }`}>
+                      {(selectedTable?.table_name === 'Khách mang về' || selectedTable?.id === 'tb_mangve') ? 'Mang về' : 'Ngồi lại'}
+                    </span>
+                  </div>
                   {existingOrder && (
                     <span className="text-[10px] text-amber-800 font-bold">
                       Đơn đang phục vụ
@@ -1919,6 +1934,12 @@ export default function PosPage() {
                       <div className="p-1.5 pt-0 text-center">
                         <p className="text-[11px] font-extrabold text-gray-800 leading-tight line-clamp-1">
                           {prod.name}
+                        </p>
+                        <p className="text-[10px] font-black text-[#8C6A5C] mt-0.5">
+                          {((selectedTable?.table_name === 'Khách mang về' || selectedTable?.id === 'tb_mangve')
+                            ? (prod.takeaway_price ?? prod.price)
+                            : (prod.dinein_price ?? prod.price)
+                          )?.toLocaleString('vi-VN')} đ
                         </p>
                       </div>
 

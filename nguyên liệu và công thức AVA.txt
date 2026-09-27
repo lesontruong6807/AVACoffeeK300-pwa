@@ -1,6 +1,6 @@
 Công thức pha nguyên liệu
 1. Nước đường: 1 bao đường 1kg + 600ml nước -> 1200ml nước đường
-2. Nước cốt hồng trà: 1 bịch hồng trà (30g) + 1600ml nước -> 1600ml nước cốt hồng trà
+2. Nước cốt trà lài: 60g trà lài + 2000ml nước -> 2600ml nước cốt trà lài
 3. Kem muối: 1 hộp kem béo, 20ml sữa đặc, 30ml sữa tươi, 10g bột topping muối biển, 5g muối IOT -> 900ml kem muối
 
 Công thức pha nước:
@@ -10,33 +10,40 @@ Công thức pha nước:
 4. Cà phê muối: 20g cà phê hạt AVA, 30g sữa đặc, 60ml kem muối, 1 Ly trắng AVA
 5. Bạc xỉu: 20g cà phê hạt AVA, 40g sữa đặc, 50ml sữa tươi, 1 Ly trắng AVA
 6. Bạc xỉu kem muối: 20g cà phê hạt AVA, 40g sữa đặc, 50ml sữa tươi, 60ml kem muối, 1 Ly trắng AVA
-7. Cacao sữa: 10g cacao, 50ml nước nóng, 40g sữa đặc, 30ml sữa tươi, , 1 Ly trắng AVA
-8. Cacao kem muối: 10g cacao, 50ml nước nóng, 40g sữa đặc, 30ml sữa tươi, 60ml kem muối, 1 Ly trắng AVA
-9. Matcha Latte: 3.5g matcha, 50ml nước nóng, 30g sữa đặc, 80ml sữa tươi, 1 Ly trắng AVA
-10. Matcha Latte kem muối: 3,5g matcha, 50ml nước nóng, 30g sữa đặc, 50ml sữa tươi, 60ml kem muối, 1 Ly trắng AVA
-11. Trà tắc: 50ml nước đường, 1 Ly trà tắc
-12. Trà dâu: 150ml nước cốt hồng trà, 10ml siro dâu, 30ml mứt dâu, 10ml nước đường, 1 trái tắc, 1 vá trân châu tươi, 1 Ly trắng hoa văn AVA
-13. Trà đào: 150ml nước cốt hồng trà, 10ml siro đào, 30ml mứt đào, 10ml nước đường, 1 trái tắc, 1 vá trân châu tươi, 1 Ly trắng hoa văn AVA
-14. Trà vải: 150ml nước cốt hồng trà, 30ml siro vải, 15ml nước đường, 1 trái tắc, 1 vá trân châu tươi, 1 Ly trắng hoa văn AVA
-15. Trà chanh dây: 150ml nước cốt hồng trà, 40ml mứt chanh dây, 10ml nước đường, 1 trái tắc, 1 vá trân châu tươi, 1 Ly trắng hoa văn AVA
-16. Yaourt đá: 1 hộp sữa chua, 40g sữa đặc, 20ml cốt chanh (½ quả), 1 Ly trắng AVA
-17. Yaourt dâu: 1 hộp sữa chua, 30g sữa đặc, 30ml mứt dâu, 15ml cốt chanh, 1 Ly trắng AVA
-18. Yaourt việt quất: 1 hộp sữa chua, 30g sữa đặc, 30ml mứt việt quất, 15ml cốt chanh, 1 Ly trắng AVA
-19. Yaourt đào: 1 hộp sữa chua, 30g sữa đặc, 30ml mứt đào, 15ml cốt chanh, 1 Ly trắng AVA
-20. Yaourt chanh dây: 1 hộp sữa chua, 50ml mứt chanh dây, 15ml cốt chanh, 1 Ly trắng AVA
-21. Soda dâu: 195ml 7-Up (chai), 30ml siro dâu, 10ml mứt dâu, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
-22. Soda đào: 195ml 7-Up (chai), 30ml siro đào, 10ml mứt đào, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
-23. Soda việt quất: 195ml 7-Up (chai), 30ml mứt việt quất, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
-24. Soda chanh dây: 195ml 7-Up (chai), 30ml mứt chanh dây, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
-25. Soda vải: 195ml 7-Up (chai), 40ml siro vải, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
-26. Sữa lắc: 60ml sữa tươi, 20g sữa đặc, 1 Ly trắng AVA
-27. Sữa lắc dâu: 60ml sữa tươi, 20g sữa đặc, 30ml mứt dâu, 1 Ly trắng AVA
-28. Sữa lắc việt quất: 60ml sữa tươi, 20g sữa đặc, 30ml mứt việt quất, 1 Ly trắng AVA
-29. Sữa lắc đào: 60ml sữa tươi, 20g sữa đặc, 30ml mứt đào, 1 Ly trắng AVA
-30. Sữa lắc chanh dây: 60ml sữa tươi, 20g sữa đặc, 30ml mứt chanh dây, 1 Ly trắng AVA
-31. Chanh đá: 50ml nước đường, 1 Ly trà tắc
-32. Chanh nóng: 50ml nước đường, 1 Ly đen AVA
+7. Americano: 20g cà phê hạt AVA, 1 ly trắng AVA
+8. Cacao sữa: 10g cacao, 50ml nước nóng, 40g sữa đặc, 30ml sữa tươi, , 1 Ly trắng AVA
+9. Cacao kem muối: 10g cacao, 50ml nước nóng, 40g sữa đặc, 30ml sữa tươi, 60ml kem muối, 1 Ly trắng AVA
+10. Matcha Latte: 3.5g matcha, 50ml nước nóng, 30g sữa đặc, 80ml sữa tươi, 1 Ly trắng AVA
+11. Matcha Latte kem muối: 3,5g matcha, 50ml nước nóng, 30g sữa đặc, 50ml sữa tươi, 60ml kem muối, 1 Ly trắng AVA
+12. Khoai môn Latte: 10g khoai môn, 50ml nước nóng, 30g sữa đặc, 80ml sữa tươi, 1 Ly trắng AVA
+13. Khoai môn Latte kem muối: 10g khoai môn, 50ml nước nóng, 30g sữa đặc, 50ml sữa tươi, 60ml kem muối, 1 Ly trắng AVA
+14. Trà tắc: 50ml nước đường, 1 Ly trà tắc
+15. Trà Lipton: 150ml nước cốt trà Lipton, 50ml nước đường, 1 Ly trắng AVA
+16. Trà dâu: 120ml nước cốt trà lài, 20ml siro dâu, 25g mứt dâu, 20ml nước đường, 2 trái tắc, 1 Ly trắng hoa văn AVA
+17. Trà đào: 120ml nước cốt trà lài, 40ml mứt đào, 20ml nước đường, 1 trái tắc, 1 Ly trắng hoa văn AVA
+18. Trà nhiệt đới: 120ml nước cốt trà lài, 20ml siro chanh dây, 50g mứt nhiệt đới, 20ml nước đường, 2 trái tắc, 1 Ly trắng hoa văn AVA
+19. Trà xoài chanh dây: 120ml nước cốt trà lài, 20ml siro chanh dây, 50g mứt xoài, 20ml nước đường, 2 trái tắc, 1 Ly trắng hoa văn AVA
+20. Trà ổi hồng: 120ml nước cốt trà lài, 20ml siro ổi hồng, 50g mứt ổi hồng, 20ml nước đường, 2 trái tắc, 1 Ly trắng hoa văn AVA
+21. Trà dưa lưới: 120ml nước cốt trà lài, 20ml siro dưa lưới, 50g mứt dưa lưới, 20ml nước đường, 2 trái tắc, 1 Ly trắng hoa văn AVA
+22. Trà mãng cầu: 120ml nước cốt trà lài, 20ml siro mãng cầu, 40g mứt mãng cầu, 20ml nước đường, 2 trái tắc, 1 Ly trắng hoa văn AVA
+23. Trà nhãn: 120ml nước cốt trà lài, 40g mứt nhãn, 20ml nước đường, 2 trái tắc, 1 Ly trắng hoa văn AVA
+24. Yaourt đá: 1 hộp sữa chua, 40g sữa đặc, 20ml cốt chanh (½ quả), 1 Ly trắng AVA
+25. Yaourt dâu: 1 hộp sữa chua, 30g sữa đặc, 30ml mứt dâu, 15ml cốt chanh, 1 Ly trắng AVA
+26. Yaourt việt quất: 1 hộp sữa chua, 30g sữa đặc, 30ml mứt việt quất, 15ml cốt chanh, 1 Ly trắng AVA
+27. Yaourt đào: 1 hộp sữa chua, 30g sữa đặc, 30ml mứt đào, 15ml cốt chanh, 1 Ly trắng AVA
+28. Yaourt chanh dây: 1 hộp sữa chua, 40ml mứt chanh dây, 15ml cốt chanh, 1 Ly trắng AVA
+29. Soda dâu: 195ml 7-Up (chai), 30ml siro dâu, 10ml mứt dâu, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
+30. Soda đào: 195ml 7-Up (chai), 30ml siro đào, 10ml mứt đào, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
+31. Soda việt quất: 195ml 7-Up (chai), 30ml mứt việt quất, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
+32. Soda chanh dây: 195ml 7-Up (chai), 30ml mứt chanh dây, 10ml nước đường, 1 trái chanh, 1 Ly trắng hoa văn AVA
+33. Chanh đá: 50ml nước đường, 1 Ly trà tắc
+34. Chanh nóng: 50ml nước đường, 1 Ly đen AVA
+35. Nước ép ổi: 30ml nước đường, 1 Ly trắng hoa văn AVA
+36. Nước ép táo: 30ml nước đường, 1 Ly trắng hoa văn AVA
+37. Nước ép cam: 30ml nước đường, 1 Ly trắng hoa văn AVA
+38. Nước ép dưa hấu: 30ml nước đường, 1 Ly trắng hoa văn AVA
 
 Topping:
 1. Kem muối: 60ml kem muối (30.27g kem béo, 1.33g sữa đặc, 2ml sữa tươi, 0.67g muối biển)
 2. Trân châu trắng: 1 phần (không trừ kho)
+3. Hạt đác: 1 phần (không trừ kho)
