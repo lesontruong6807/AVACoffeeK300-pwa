@@ -969,6 +969,7 @@ export default function PosPage() {
     setSavingOrder(true);
 
     try {
+      let currentOrderId = existingOrder?.id;
       if (existingOrder?.id) {
         // Cập nhật đơn hàng đang phục vụ đã có sẵn
         await db.syncUnpaidOrder(existingOrder.id, {
@@ -990,10 +991,31 @@ export default function PosPage() {
 
         // Optimistic update: Thêm ngay đơn mới vào danh sách Bếp làm
         if (savedOrder) {
+          currentOrderId = savedOrder.id;
           setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
         }
 
         toast.success(`Đã lưu đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
+      }
+
+      // In hóa đơn / phiếu order ngay lập tức khi Lưu đơn
+      try {
+        await printOrderDirect({
+          tableName: selectedTable?.table_name || 'Khách mang về',
+          staffName: currentUser?.full_name || 'Admin',
+          orderId: currentOrderId || `OD-${Date.now()}`,
+          items: cart.map(i => ({
+            name: i.name,
+            quantity: i.quantity,
+            price: i.price,
+            subtotal: i.subtotal
+          })),
+          totalAmount: finalTotalAmount,
+          discount: discountAmount,
+          notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
+        });
+      } catch (printErr) {
+        console.warn('Lỗi in khi lưu đơn:', printErr);
       }
 
       handleClearCart();

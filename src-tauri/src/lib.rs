@@ -2,6 +2,7 @@
 
 mod printer;
 mod customer_screen;
+mod http_server;
 
 #[tauri::command]
 fn get_printers() -> Result<Vec<String>, String> {
@@ -27,7 +28,13 @@ fn open_customer_display(app: tauri::AppHandle) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Tự động mở màn hình phụ nếu phát hiện máy POS có từ 2 màn hình trở lên
+            // 1. Tự động khởi chạy HTTP Print Bridge Server trên cổng 3333
+            // Cho phép các thiết bị di động của nhân viên cùng Wi-Fi in trực tiếp tới máy POS
+            std::thread::spawn(|| {
+                http_server::start_http_print_server(3333);
+            });
+
+            // 2. Tự động mở màn hình phụ nếu phát hiện máy POS có từ 2 màn hình trở lên
             let app_handle = app.handle().clone();
             if let Ok(monitors) = app_handle.available_monitors() {
                 if monitors.len() > 1 {

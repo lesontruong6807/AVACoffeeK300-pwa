@@ -47,6 +47,21 @@ export function formatRow(left: string, right: string, totalWidth: number = RECE
   return leftClean + ' '.repeat(spacesNeeded) + rightClean;
 }
 
+// Helper to format 3 columns: Tên món | Số lượng | Thành tiền (Chuẩn máy in K80 40 ký tự)
+export function formatThreeColumns(
+  col1: string,
+  col2: string,
+  col3: string,
+  col1Width: number = 24,
+  col2Width: number = 4,
+  col3Width: number = 10
+): string {
+  const c1 = removeDiacritics(col1).slice(0, col1Width).padEnd(col1Width, ' ');
+  const c2 = removeDiacritics(col2).slice(0, col2Width).padStart(col2Width, ' ');
+  const c3 = removeDiacritics(col3).slice(0, col3Width).padStart(col3Width, ' ');
+  return `${c1} ${c2} ${c3}`;
+}
+
 // ESC/POS Command Builder Class
 class EscPosBuilder {
   private buffer: number[] = [];
@@ -138,7 +153,7 @@ export interface OrderData {
   notes?: string;
 }
 
-// Build compact, paper-saving ESC/POS receipt data (Tiết kiệm tối đa giấy in)
+// Build compact, paper-saving ESC/POS receipt data (Tiết kiệm tối đa giấy in, bố cục chuẩn)
 export function buildReceiptBytes(orderData: OrderData, settings?: Partial<StoreSettings>): Uint8Array {
   const builder = new EscPosBuilder();
   const timeFormatted = formatShortReceiptTime(new Date());
@@ -174,22 +189,27 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
 
   builder.line(divider);
 
-  // 3. Danh sách món (Gộp 1 dòng cho mỗi món để tiết kiệm 50% giấy)
+  // 3. Danh sách món (3 cột: TÊN MÓN - SL - T.TIỀN thay vì x2 x3)
+  builder.bold(true)
+    .line(formatThreeColumns('TEN MON', 'SL', 'T.TIEN', 24, 4, 10))
+    .bold(false)
+    .line(divider);
+
   orderData.items.forEach((item, index) => {
-    const qtyStr = item.quantity > 1 ? ` x${item.quantity}` : '';
-    const nameWithQty = `${index + 1}. ${item.name}${qtyStr}`;
+    const itemName = `${index + 1}. ${item.name}`;
+    const cleanName = removeDiacritics(itemName);
+    const qtyStr = String(item.quantity);
     const subtotalStr = `${item.subtotal.toLocaleString('vi-VN')}d`;
 
-    // Nếu tên món vừa vặn trên 1 dòng
-    if (removeDiacritics(nameWithQty).length + subtotalStr.length + 1 <= RECEIPT_WIDTH) {
-      builder.line(formatRow(nameWithQty, subtotalStr, RECEIPT_WIDTH));
+    // Nếu tên món vừa vặn trong 24 ký tự
+    if (cleanName.length <= 24) {
+      const lineStr = cleanName.padEnd(24, ' ') + ' ' + qtyStr.padStart(4, ' ') + ' ' + subtotalStr.padStart(10, ' ');
+      builder.line(lineStr);
     } else {
-      // Tên món quá dài: Dòng 1 tên món, Dòng 2 số lượng + thành tiền
-      builder.line(`${index + 1}. ${item.name}`);
-      const detailLeft = item.quantity > 1 
-        ? `   x${item.quantity} (${Math.round(item.price / 1000)}k)`
-        : `   x1`;
-      builder.line(formatRow(detailLeft, subtotalStr, RECEIPT_WIDTH));
+      // Tên món dài: In tên món trước, dòng sau in số lượng và thành tiền canh đúng cột
+      builder.line(cleanName);
+      const line2 = ' '.repeat(25) + qtyStr.padStart(4, ' ') + ' ' + subtotalStr.padStart(10, ' ');
+      builder.line(line2);
     }
   });
 
@@ -208,7 +228,7 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
     .bold(false)
     .line(divider);
 
-  // 5. Chân trang (1 dòng ngắn gọn, feed 2 dòng vừa khít dao cắt)
+  // 5. Chân trang
   builder.alignCenter();
   if (settings?.bill_footer && settings.bill_footer.trim()) {
     const lines = settings.bill_footer.split('\n');
@@ -216,16 +236,19 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
       if (l.trim()) builder.line(removeDiacritics(l.trim()));
     });
   } else {
-    builder.line('XIN CAM ON VA HEN GAP LAI!');
+    builder.line('AVA COFFEE XIN CAM ON QUY KHACH !');
+    builder.line('CHUC QUY KHACH NGON MIENG');
   }
 
-  builder.feed(2) // Chỉ feed 2 dòng vừa tới lưỡi dao cắt thay vì 4 dòng
+  // Feed 4 dòng chuẩn cơ học để đẩy toàn bộ chữ qua khỏi lưỡi dao trước khi cắt
+  // (Khắc phục triệt để lỗi cắt phạm ngang chữ và chữ sót dính lên đầu phiếu sau)
+  builder.feed(4)
     .cut();
 
   return builder.getBuffer();
 }
 
-// Print order directly via TCP Socket
+// In hóa đơn trực tiếp (Tự động chuyển đổi giữa POS Desktop USB và Mobile Wi-Fi Print)
 export async function printOrderDirect(
   orderData: OrderData,
   printerIP?: string,
@@ -234,14 +257,14 @@ export async function printOrderDirect(
   const storeSettings = db.getStoreSettingsSync();
   const targetIP = printerIP || storeSettings.printer_ip || '192.168.1.232';
   const targetPort = port || storeSettings.printer_port || 9100;
+  const receiptBytes = buildReceiptBytes(orderData, storeSettings);
 
-  // 1. Kiểm tra môi trường Desktop Tauri (Windows POS máy in USB / Spooler)
+  // 1. Kiểm tra môi trường Desktop Tauri (Windows POS cắm dây máy in USB / Spooler)
   try {
     const { isTauriEnvironment, silentPrintEscPos } = await import('@/lib/tauriPOS');
     if (isTauriEnvironment()) {
       console.log('[Tauri Desktop Mode] Initiating Silent ESC/POS printing...');
-      const receiptBytes = buildReceiptBytes(orderData, storeSettings);
-      const res = await silentPrintEscPos(receiptBytes);
+      const res = await silentPrintEscPos(receiptBytes, (storeSettings as any).printer_name);
       if (!res.success) {
         throw new Error(res.message || 'Lỗi in ngầm máy in Windows POS');
       }
@@ -254,9 +277,43 @@ export async function printOrderDirect(
     }
   }
 
-  // 2. If not running in native Capacitor platform, do not try to open TCP connection
+  // 2. Môi trường Web App / Điện thoại nhân viên kết nối chung Wi-Fi với máy POS:
+  // Gửi lệnh in trực tiếp tới HTTP Print Bridge chạy ngầm trên máy POS (Port 3333)
+  if (typeof window !== 'undefined') {
+    const hostCandidates = [
+      typeof localStorage !== 'undefined' ? localStorage.getItem('pos_bridge_ip') : null,
+      storeSettings.printer_ip,
+      window.location.hostname !== 'localhost' ? window.location.hostname : null,
+      '127.0.0.1'
+    ].filter(Boolean) as string[];
+
+    for (const host of hostCandidates) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2500);
+        const resp = await fetch(`http://${host}:3333/print`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            data: Array.from(receiptBytes),
+            printerName: (storeSettings as any).printer_name || null
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (resp.ok) {
+          console.log(`[Web Wi-Fi Print] Đã in bill thành công qua máy POS ${host}:3333`);
+          return;
+        }
+      } catch (_) {
+        // Tiếp tục thử host tiếp theo
+      }
+    }
+  }
+
+  // 3. Nếu chạy trong ứng dụng di động Capacitor native kết nối máy in IP mạng
   if (!Capacitor.isNativePlatform()) {
-    console.log('[Web/Browser Dev Mode] Skipping TCP socket print. Order data:', orderData);
+    console.log('[Web Mode] Không tìm thấy máy in POS Wi-Fi nội bộ. Dữ liệu đơn:', orderData);
     return;
   }
 
@@ -325,7 +382,7 @@ export async function printTestTicket(settings?: Partial<StoreSettings>): Promis
         .line('IN NGAM THANH CONG 100%!')
         .bold(false)
         .line(divider)
-        .feed(2)
+        .feed(4)
         .cut();
 
       const res = await silentPrintEscPos(builder.getBuffer());
@@ -343,22 +400,75 @@ export async function printTestTicket(settings?: Partial<StoreSettings>): Promis
     }
   } catch (e) {}
 
+  // Kiểm tra in qua HTTP Print Bridge từ Web App / Điện thoại
+  const currentSettings = { ...db.getStoreSettingsSync(), ...settings };
+  const builder = new EscPosBuilder();
+  const divider = '-'.repeat(RECEIPT_WIDTH);
+  builder.alignCenter()
+    .fontSizeDouble()
+    .bold(true)
+    .line(removeDiacritics(currentSettings.store_name || 'AVA COFFEE K300'))
+    .fontSizeNormal()
+    .bold(false)
+    .line(divider)
+    .bold(true)
+    .line('*** TEST IN QUA WI-FI (WEB APP) ***')
+    .bold(false)
+    .line(`Kenh in: HTTP Print Bridge (Port 3333)`)
+    .line(`Gio: ${formatShortReceiptTime(new Date())}`)
+    .line(divider)
+    .bold(true)
+    .line('KET NOI MAY IN THANH CONG!')
+    .bold(false)
+    .line(divider)
+    .feed(4)
+    .cut();
+
+  const testBytes = builder.getBuffer();
+  const hostCandidates = [
+    typeof localStorage !== 'undefined' ? localStorage.getItem('pos_bridge_ip') : null,
+    currentSettings.printer_ip,
+    typeof window !== 'undefined' && window.location.hostname !== 'localhost' ? window.location.hostname : null,
+    '127.0.0.1'
+  ].filter(Boolean) as string[];
+
+  for (const host of hostCandidates) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
+      const resp = await fetch(`http://${host}:3333/print`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: Array.from(testBytes),
+          printerName: (currentSettings as any).printer_name || null
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      if (resp.ok) {
+        return {
+          success: true,
+          message: `In test thành công qua máy POS (${host}:3333)!`
+        };
+      }
+    } catch (_) {}
+  }
+
   // Kiểm tra môi trường Web: Trình duyệt web không thể mở TCP socket trực tiếp
   if (!Capacitor.isNativePlatform()) {
     return {
       success: false,
       isWeb: true,
-      message: 'Tính năng in trực tiếp qua mạng LAN chỉ hoạt động trên App Android (APK/máy POS). Cấu hình này đã được lưu để máy POS sử dụng!'
+      message: 'Không tìm thấy máy in quầy POS trên cổng 3333. Vui lòng đảm bảo máy POS đang bật ứng dụng AVA Coffee hoặc chạy dịch vụ in ngầm và chung Wi-Fi!'
     };
   }
 
-  const currentSettings = { ...db.getStoreSettingsSync(), ...settings };
   const targetIP = currentSettings.printer_ip || '192.168.1.232';
   const targetPort = Number(currentSettings.printer_port || 9100);
 
-  const builder = new EscPosBuilder();
-  const divider = '-'.repeat(RECEIPT_WIDTH);
-  builder.alignCenter()
+  const nativeBuilder = new EscPosBuilder();
+  nativeBuilder.alignCenter()
     .fontSizeDouble()
     .bold(true)
     .line(removeDiacritics(currentSettings.store_name || 'AVA COFFEE'))
@@ -375,10 +485,10 @@ export async function printTestTicket(settings?: Partial<StoreSettings>): Promis
     .line('KET NOI THANH CONG 100%!')
     .bold(false)
     .line(divider)
-    .feed(2)
+    .feed(4)
     .cut();
 
-  const payload = builder.getBuffer();
+  const payload = nativeBuilder.getBuffer();
   let connection: any = null;
 
   try {
