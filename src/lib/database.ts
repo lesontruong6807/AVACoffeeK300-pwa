@@ -175,6 +175,17 @@ export function broadcastRealtimeEvent(event: 'table_update' | 'order_update' | 
   }
 }
 
+export function onRealtimeEvent(
+  event: 'table_update' | 'order_update' | 'report_update' | 'inventory_update' | 'attendance_update',
+  callback: (payload: any) => void
+): () => void {
+  getSharedRealtimeChannel();
+  realtimeListeners[event]?.add(callback);
+  return () => {
+    realtimeListeners[event]?.delete(callback);
+  };
+}
+
 // Helper tạo ID ngắn giống trên database khi offline (ví dụ: p_3a4b5c)
 export const generateShortId = (prefix: string): string => {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -1158,6 +1169,7 @@ export interface StoreSettings {
   bill_footer: string;
   printer_ip: string;
   printer_port: number;
+  pos_bridge_ip?: string;
 }
 
 export const DEFAULT_STORE_SETTINGS: StoreSettings = {
@@ -1165,8 +1177,9 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   store_address: 'K300, Tân Bình, TP. Hồ Chí Minh',
   store_phone: '0909 123 456',
   bill_footer: 'AVA COFFEE XIN CẢM ƠN QUÝ KHÁCH !\nCHÚC QUÝ KHÁCH NGON MIỆNG',
-  printer_ip: '192.168.1.232',
-  printer_port: 9100
+  printer_ip: '192.168.1.167',
+  printer_port: 9100,
+  pos_bridge_ip: '192.168.1.212'
 };
 
 // Lớp Mock Database lưu trữ qua LocalStorage

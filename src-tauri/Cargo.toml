@@ -4,6 +4,15 @@ version = "0.1.0"
 description = "Hệ thống POS & Quản lý bán hàng AVA Coffee K300"
 authors = ["AVA Coffee Team"]
 edition = "2021"
+default-run = "ava-coffee-k300"
+
+[[bin]]
+name = "ava-coffee-k300"
+path = "src/main.rs"
+
+[[bin]]
+name = "ava_print_bridge"
+path = "src/bin/ava_print_bridge.rs"
 
 [lib]
 name = "ava_coffee_k300_lib"

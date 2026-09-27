@@ -1,0 +1,8 @@
+# ==========================================================
+# CAU HINH MAY IN NHIET WI-FI AVA COFFEE K300
+# Neu doi may in hoac modem Wi-Fi cap IP moi, chi can sua
+# dia chi IP ben duoi roi mo lai file la xong:
+# ==========================================================
+printer_ip=192.168.1.167
+printer_port=9100
+http_port=3333

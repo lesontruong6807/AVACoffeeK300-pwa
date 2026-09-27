@@ -255,7 +255,7 @@ export async function printOrderDirect(
   port?: number
 ): Promise<void> {
   const storeSettings = db.getStoreSettingsSync();
-  const targetIP = printerIP || storeSettings.printer_ip || '192.168.1.232';
+  const targetIP = printerIP || storeSettings.printer_ip || '192.168.1.167';
   const targetPort = port || storeSettings.printer_port || 9100;
   const receiptBytes = buildReceiptBytes(orderData, storeSettings);
 
@@ -277,20 +277,35 @@ export async function printOrderDirect(
     }
   }
 
-  // 2. Môi trường Web App / Điện thoại nhân viên kết nối chung Wi-Fi với máy POS:
+  // 2. Phát sóng lệnh in qua Supabase Realtime Broadcast:
+  // Giúp máy POS tại quầy nhận diện và tự động in ngay lập tức mà KHÔNG bị chặn Mixed Content trên trình duyệt điện thoại!
+  try {
+    const { broadcastRealtimeEvent } = await import('@/lib/database');
+    broadcastRealtimeEvent('order_update', {
+      action: 'PRINT_RECEIPT',
+      orderData,
+      timestamp: Date.now()
+    });
+  } catch (bcErr) {
+    console.warn('Lỗi broadcast lệnh in:', bcErr);
+  }
+
+  // 3. Môi trường Web App / Điện thoại nhân viên kết nối chung Wi-Fi với máy POS:
   // Gửi lệnh in trực tiếp tới HTTP Print Bridge chạy ngầm trên máy POS (Port 3333)
   if (typeof window !== 'undefined') {
     const hostCandidates = [
+      (storeSettings as any).pos_bridge_ip,
       typeof localStorage !== 'undefined' ? localStorage.getItem('pos_bridge_ip') : null,
-      storeSettings.printer_ip,
+      '192.168.1.212',
       window.location.hostname !== 'localhost' ? window.location.hostname : null,
       '127.0.0.1'
     ].filter(Boolean) as string[];
 
-    for (const host of hostCandidates) {
+    const uniqueHosts = Array.from(new Set(hostCandidates));
+    for (const host of uniqueHosts) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2500);
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
         const resp = await fetch(`http://${host}:3333/print`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -425,17 +440,29 @@ export async function printTestTicket(settings?: Partial<StoreSettings>): Promis
     .cut();
 
   const testBytes = builder.getBuffer();
+
+  // Phát sóng lệnh in test qua Supabase Realtime nếu máy POS đang mở
+  try {
+    const { broadcastRealtimeEvent } = await import('@/lib/database');
+    broadcastRealtimeEvent('order_update', {
+      action: 'PRINT_TEST',
+      timestamp: Date.now()
+    });
+  } catch (_) {}
+
   const hostCandidates = [
+    (currentSettings as any).pos_bridge_ip,
     typeof localStorage !== 'undefined' ? localStorage.getItem('pos_bridge_ip') : null,
-    currentSettings.printer_ip,
+    '192.168.1.212',
     typeof window !== 'undefined' && window.location.hostname !== 'localhost' ? window.location.hostname : null,
     '127.0.0.1'
   ].filter(Boolean) as string[];
 
-  for (const host of hostCandidates) {
+  const uniqueHosts = Array.from(new Set(hostCandidates));
+  for (const host of uniqueHosts) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2500);
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
       const resp = await fetch(`http://${host}:3333/print`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -464,7 +491,7 @@ export async function printTestTicket(settings?: Partial<StoreSettings>): Promis
     };
   }
 
-  const targetIP = currentSettings.printer_ip || '192.168.1.232';
+  const targetIP = currentSettings.printer_ip || '192.168.1.167';
   const targetPort = Number(currentSettings.printer_port || 9100);
 
   const nativeBuilder = new EscPosBuilder();

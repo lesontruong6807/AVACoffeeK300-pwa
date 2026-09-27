@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { 
   db, 
   getCurrentUser, 
-  isSupabaseConfigured 
+  isSupabaseConfigured,
+  onRealtimeEvent
 } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { printOrderDirect } from '@/lib/printerService';
@@ -656,9 +657,41 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     const unsubTables = db.subscribeToTableChanges(() => refreshData());
     const unsubOrders = db.subscribeToOrderChanges(() => refreshData());
 
+    // Tự động in hóa đơn khi nhân viên tạo đơn / thanh toán từ điện thoại
+    const processedPrints = new Set<string>();
+    const unsubPrints = onRealtimeEvent('order_update', async (payload: any) => {
+      if (payload?.action === 'PRINT_RECEIPT' && payload?.orderData) {
+        const printKey = `${payload.orderData.orderId}_${payload.timestamp || ''}`;
+        if (processedPrints.has(printKey)) return;
+        processedPrints.add(printKey);
+        if (processedPrints.size > 100) {
+          const first = processedPrints.values().next().value;
+          if (first) processedPrints.delete(first);
+        }
+
+        console.log('[Desktop POS Counter] Nhận lệnh in tự động từ điện thoại:', payload.orderData);
+        try {
+          await printOrderDirect(payload.orderData);
+          toast.success(`🖨️ Đã tự động in bill (${payload.orderData.tableName || 'Đơn hàng'}) từ điện thoại!`);
+        } catch (printErr: any) {
+          console.error('[Desktop POS Counter] Lỗi in bill từ điện thoại:', printErr);
+        }
+      } else if (payload?.action === 'PRINT_TEST') {
+        const testKey = `test_${payload.timestamp || ''}`;
+        if (processedPrints.has(testKey)) return;
+        processedPrints.add(testKey);
+        try {
+          const { printTestTicket } = await import('@/lib/printerService');
+          await printTestTicket();
+          toast.success('🖨️ Đã in phiếu test máy in Wi-Fi!');
+        } catch (_) {}
+      }
+    });
+
     return () => {
       unsubTables();
       unsubOrders();
+      unsubPrints();
     };
   }, []);
 

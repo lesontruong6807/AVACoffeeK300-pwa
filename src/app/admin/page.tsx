@@ -92,8 +92,9 @@ export default function AdminPage() {
   const [cfgStoreAddress, setCfgStoreAddress] = useState('K300, Tân Bình, TP. Hồ Chí Minh');
   const [cfgStorePhone, setCfgStorePhone] = useState('0909 123 456');
   const [cfgBillFooter, setCfgBillFooter] = useState('AVA COFFEE XIN CẢM ƠN QUÝ KHÁCH !\nCHÚC QUÝ KHÁCH NGON MIỆNG');
-  const [cfgPrinterIp, setCfgPrinterIp] = useState('192.168.1.232');
+  const [cfgPrinterIp, setCfgPrinterIp] = useState('192.168.1.167');
   const [cfgPrinterPort, setCfgPrinterPort] = useState('9100');
+  const [cfgPosBridgeIp, setCfgPosBridgeIp] = useState('192.168.1.212');
   const [savingSettings, setSavingSettings] = useState(false);
   const [testingPrinter, setTestingPrinter] = useState(false);
 
@@ -283,8 +284,9 @@ export default function AdminPage() {
         setCfgStoreAddress(settings.store_address || 'K300, Tân Bình, TP. Hồ Chí Minh');
         setCfgStorePhone(settings.store_phone || '0909 123 456');
         setCfgBillFooter(settings.bill_footer || 'AVA COFFEE XIN CẢM ƠN QUÝ KHÁCH !\nCHÚC QUÝ KHÁCH NGON MIỆNG');
-        setCfgPrinterIp(settings.printer_ip || '192.168.1.232');
+        setCfgPrinterIp(settings.printer_ip || '192.168.1.167');
         setCfgPrinterPort(String(settings.printer_port || 9100));
+        setCfgPosBridgeIp((settings as any).pos_bridge_ip || '192.168.1.212');
       }
     } catch (e) {
       console.error('Lỗi khi tải dữ liệu admin:', e);
@@ -1044,7 +1046,8 @@ export default function AdminPage() {
         store_phone: cfgStorePhone.trim(),
         bill_footer: cfgBillFooter.trim(),
         printer_ip: cfgPrinterIp.trim(),
-        printer_port: Number(cfgPrinterPort) || 9100
+        printer_port: Number(cfgPrinterPort) || 9100,
+        pos_bridge_ip: cfgPosBridgeIp.trim()
       });
       setStoreSettings(updated);
       toast.success('Đã lưu cấu hình cửa hàng & máy in thành công!');
@@ -4778,17 +4781,17 @@ export default function AdminPage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="sm:col-span-2 space-y-1">
-                    <label className="text-xs font-bold text-coffee-dark">Địa chỉ IP Máy in</label>
+                    <label className="text-xs font-bold text-coffee-dark">Địa chỉ IP Máy in Wi-Fi (Cổng 9100)</label>
                     <input
                       type="text"
                       value={cfgPrinterIp}
                       onChange={(e) => setCfgPrinterIp(e.target.value)}
-                      placeholder="VD: 192.168.1.232"
+                      placeholder="VD: 192.168.1.167"
                       className="w-full h-11 px-4 bg-[#FAF6F0] rounded-xl text-xs font-bold text-coffee-dark border border-coffee-light/60 focus:ring-1 focus:ring-coffee-primary font-mono"
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-coffee-dark">Port (Cổng)</label>
+                    <label className="text-xs font-bold text-coffee-dark">Port máy in</label>
                     <input
                       type="number"
                       value={cfgPrinterPort}
@@ -4799,9 +4802,21 @@ export default function AdminPage() {
                   </div>
                 </div>
 
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-coffee-dark">Địa chỉ IP Máy POS / Máy chủ in ngầm (Cổng 3333)</label>
+                  <input
+                    type="text"
+                    value={cfgPosBridgeIp}
+                    onChange={(e) => setCfgPosBridgeIp(e.target.value)}
+                    placeholder="VD: 192.168.1.212"
+                    className="w-full h-11 px-4 bg-[#FAF6F0] rounded-xl text-xs font-bold text-coffee-dark border border-coffee-light/60 focus:ring-1 focus:ring-coffee-primary font-mono"
+                  />
+                  <p className="text-[11px] text-coffee-medium">Địa chỉ IP của máy tính POS quầy chạy app hoặc dịch vụ in ngầm.</p>
+                </div>
+
                 <div className="p-3 bg-[#FAF6F0] rounded-xl border border-coffee-light text-xs text-coffee-medium space-y-1">
-                  <p>• Port mặc định của hầu hết máy in nhiệt K80 (Xprinter, Epson, Birch...) là <strong>9100</strong>.</p>
-                  <p>• Khi quán đổi modem hoặc router nhảy IP, chỉ cần vào đây đổi lại đúng IP mới là xong, không cần can thiệp code.</p>
+                  <p>• <strong>Máy in Wi-Fi:</strong> IP 192.168.1.167 - Cổng 9100.</p>
+                  <p>• <strong>Điện thoại:</strong> Khi nhân viên bấm Lưu đơn / Thanh toán trên điện thoại, hệ thống sẽ tự động gửi lệnh in qua mạng nội bộ và Cloud Realtime tới quầy để nhả bill tức thì.</p>
                 </div>
               </div>
 

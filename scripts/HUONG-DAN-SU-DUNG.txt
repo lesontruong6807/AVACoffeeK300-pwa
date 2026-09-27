@@ -1,0 +1,24 @@
+==============================================================================
+    HƯỚNG DẪN DÙNG DỊCH VỤ IN NGẦM MÁY IN WI-FI - AVA COFFEE K300
+==============================================================================
+
+1. MÔ TẢ:
+   - Dịch vụ in ngầm này giúp điện thoại của nhân viên khi bấm "Lưu đơn" hoặc
+     "Thanh toán" thì máy in Wi-Fi (IP 192.168.1.167 : Port 9100) sẽ tự động nhả bill ngay lập tức.
+   - Hoàn toàn KHÔNG CẦN CÀI ĐẶT Node.js hay bất kỳ phần mềm nào khác! 1 click là chạy.
+
+2. CÁC FILE TRONG THƯ MỤC NÀY:
+   - [Chay-Kiem-Tra-In.bat] : Mở giao diện kiểm tra. Khi mở lên, nó sẽ tự động gửi lệnh in
+     thử 1 phiếu test ra máy in Wi-Fi để bạn biết chắc chắn máy in đã kết nối thành công.
+   - [Chay-In-Ngam.bat]     : Chạy máy chủ in hoàn toàn ẩn trong nền (không hiện màn hình đen).
+   - [Dung-In-Ngam.bat]     : Tắt dịch vụ in ngầm khi không sử dụng.
+   - [Khoi-Dong-Cung-Windows.bat] : Bấm 1 lần duy nhất để mỗi khi bật máy tính POS, dịch vụ
+     in sẽ tự khởi động cùng Windows, không cần bật thủ công mỗi ngày.
+   - [cai_dat_may_in.txt]   : Nơi lưu cấu hình IP máy in (mặc định 192.168.1.167). Nếu sau này
+     đổi modem wifi làm đổi IP máy in, chỉ cần sửa số IP trong file này là xong.
+
+3. ĐIỀU KIỆN ĐỂ ĐIỆN THOẠI IN ĐƯỢC:
+   - Máy in đã BẬT nguồn và kết nối Wi-Fi quán (IP 192.168.1.167).
+   - Máy tính POS và Điện thoại của nhân viên kết nối CÙNG MẠNG WI-FI của quán.
+   - Trên máy tính POS, mở file [Chay-Kiem-Tra-In.bat] hoặc [Chay-In-Ngam.bat].
+==============================================================================

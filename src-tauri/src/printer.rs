@@ -217,8 +217,53 @@ pub fn get_printers() -> Result<Vec<String>, String> {
     }
 }
 
-/// In ngầm trực tiếp hóa đơn nhị phân ESC/POS qua máy in nhiệt USB K80
+/// In trực tiếp qua mạng Wi-Fi/LAN tới cổng 9100 của máy in nhiệt ESC/POS
+pub fn print_tcp(ip: &str, port: u16, data: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+
+    let addr_str = format!("{}:{}", ip, port);
+    let socket_addr: SocketAddr = addr_str
+        .parse()
+        .map_err(|e| format!("Địa chỉ IP máy in '{}' không hợp lệ: {}", addr_str, e))?;
+
+    let mut stream = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(2000))
+        .map_err(|e| format!("Không thể kết nối máy in Wi-Fi {}: {}. Vui lòng kiểm tra nguồn và Wi-Fi máy in!", addr_str, e))?;
+
+    stream.set_write_timeout(Some(Duration::from_secs(3)))
+        .map_err(|e| e.to_string())?;
+
+    stream.write_all(data)
+        .map_err(|e| format!("Lỗi gửi dữ liệu tới máy in Wi-Fi: {}", e))?;
+
+    stream.flush()
+        .map_err(|e| format!("Lỗi flush máy in Wi-Fi: {}", e))?;
+
+    Ok(())
+}
+
+/// In ngầm trực tiếp hóa đơn nhị phân ESC/POS (Hỗ trợ cả Wi-Fi LAN TCP 9100 và USB Win32 Spooler)
 pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(), String> {
+    // 1. Nếu target_printer là địa chỉ IP mạng (ví dụ "192.168.1.167" hoặc "192.168.1.167:9100")
+    if let Some(ref target) = target_printer {
+        if target.contains('.') {
+            let (ip, port) = if let Some((ip_part, port_part)) = target.split_once(':') {
+                (ip_part.trim(), port_part.trim().parse().unwrap_or(9100))
+            } else {
+                (target.trim(), 9100)
+            };
+            return print_tcp(ip, port, data);
+        }
+    }
+
+    // 2. Thử in trực tiếp qua TCP Socket Wi-Fi tới máy in 192.168.1.167:9100 trước
+    if let Ok(()) = print_tcp("192.168.1.167", 9100, data) {
+        println!("[Print] Đã in thành công qua Wi-Fi TCP Socket 192.168.1.167:9100");
+        return Ok(());
+    }
+
+    // 3. Fallback sang cổng USB / Windows Spooler nếu cắm dây
     #[cfg(windows)]
     {
         let printer = match target_printer {

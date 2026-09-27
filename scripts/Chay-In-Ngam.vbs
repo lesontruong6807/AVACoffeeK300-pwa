@@ -1,11 +1,11 @@
-' Script khởi chạy dịch vụ in ngầm AVA Coffee K300 hoàn toàn ẩn danh (không hiện cửa sổ đen CMD)
+' Script khoi chay dich vu in ngam AVA Coffee K300 hoan toan an danh (khong hien cua so den CMD)
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-' Đường dẫn tới file ava-print-bridge.js cùng thư mục
+' Duong dan toi file ava-print-bridge.exe cung thu muc
 currentDir = fso.GetParentFolderName(WScript.ScriptFullName)
-jsFile = currentDir & "\ava-print-bridge.js"
+exeFile = currentDir & "\ava-print-bridge.exe"
 
-' Chạy ngầm với windowStyle = 0 (ẩn hoàn toàn)
-cmd = "node """ & jsFile & """"
+' Chay ngam voi windowStyle = 0 (an hoan toan)
+cmd = """" & exeFile & """"
 WshShell.Run cmd, 0, False
