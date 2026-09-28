@@ -267,8 +267,8 @@ pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(
         {
             let mut last_hash_lock = LAST_PRINT_RAW_HASH.lock().unwrap();
             if let Some((prev_hash, prev_time)) = *last_hash_lock {
-                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(10) {
-                    println!("[Print Raw] Bỏ qua lệnh in trùng lặp tuyệt đối (vừa in cách đây < 10s)");
+                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(3) {
+                    println!("[Print Raw] Bỏ qua lệnh in trùng lặp tuyệt đối (vừa in cách đây < 3s)");
                     return Ok(());
                 }
             }

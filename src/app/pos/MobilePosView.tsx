@@ -520,138 +520,157 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
   const isTakeaway = selectedTable?.table_name === 'Khách mang về' || selectedTable?.id === 'tb_mangve';
 
   return (
-    <div className="w-full space-y-5 pb-28 min-h-screen">
-      {/* THANH ĐIỀU HƯỚNG TRÊN CÙNG */}
-      <div className="flex items-center justify-between">
+    <div className="w-full h-full flex flex-col bg-[#FAF6F0] overflow-hidden">
+      {/* THANH TOP BAR CỐ ĐỊNH - ĐẢM BẢO 100% NẰM NGOÀI TAI THỎ / DYNAMIC ISLAND / STATUS BAR */}
+      <header 
+        className="w-full shrink-0 bg-[#FAF6F0] border-b border-coffee-light/60 px-3 sm:px-4 pb-2 z-40"
+        style={{
+          paddingTop: 'calc(max(env(safe-area-inset-top, 0px), 48px) + 6px)'
+        }}
+      >
         {!selectedTable ? (
-          <Link 
-            href="/"
-            className="inline-flex items-center space-x-2 px-3.5 py-2 bg-white border border-coffee-light text-coffee-primary rounded-xl text-xs font-bold hover:bg-coffee-light transition shadow-xs"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Về Trang chủ</span>
-          </Link>
-        ) : (
-          <button 
-            onClick={() => {
-              if (posStep === 'menu') {
-                setPosStep('table');
-                setSelectedTable(null);
-                setExistingOrder(null);
-                setExistingOrderItems([]);
-                clearCart();
-              } else if (posStep === 'summary') {
-                setPosStep('menu');
-              }
-            }}
-            className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-white border border-coffee-light text-coffee-medium hover:text-coffee-primary rounded-xl text-xs font-bold transition shadow-xs"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Đổi bàn</span>
-          </button>
-        )}
+          <div className="flex items-center justify-between gap-2">
+            <Link 
+              href="/"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 bg-white border border-coffee-light text-coffee-primary rounded-xl text-xs font-black hover:bg-coffee-light active:bg-gray-100 transition shadow-2xs active:scale-95 cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4 stroke-[2.5]" />
+              <span>Về Trang chủ</span>
+            </Link>
 
-        {/* Nút chuyển đổi giao diện sang Desktop nếu mở trên máy tính */}
-        {onSwitchToDesktop && (
-          <button
-            onClick={onSwitchToDesktop}
-            className="hidden sm:inline-flex items-center space-x-1.5 px-3 py-1.5 bg-[#FAF6F0] hover:bg-coffee-light text-coffee-dark border border-coffee-light rounded-xl text-xs font-semibold transition"
-            title="Chuyển sang giao diện máy POS cảm ứng tại quầy"
-          >
-            <Monitor className="w-3.5 h-3.5 text-coffee-primary" />
-            <span>Giao diện Máy POS</span>
-          </button>
-        )}
-      </div>
-
-      {/* BREADCRUMB BÀN ĐANG CHỌN */}
-      {selectedTable && (
-        <div className="flex items-center justify-between bg-white p-3.5 sm:p-4 rounded-2xl shadow-xs border border-coffee-light">
-          <div className="flex items-center space-x-3">
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                  isTakeaway 
-                    ? 'bg-amber-100 text-amber-900 border border-amber-300' 
-                    : 'bg-emerald-100 text-emerald-800'
-                }`}>
-                  {isTakeaway ? 'MANG VỀ' : 'NGỒI LẠI'}
-                </span>
-                <span className="text-[10px] font-semibold text-coffee-medium">
-                  {selectedTable?.status === 'Đang phục vụ' ? 'Đang có đơn' : 'Bàn mới'}
-                </span>
+            <div className="flex items-center space-x-2">
+              <div className="text-right">
+                <p className="text-[10px] font-bold text-coffee-medium uppercase tracking-wider">Nhân viên order</p>
+                <p className="text-xs font-black text-coffee-dark truncate max-w-[120px]">{currentUser?.full_name || 'Nhân viên'}</p>
               </div>
-              <h2 className="font-extrabold text-lg sm:text-xl text-coffee-primary leading-tight mt-0.5">
-                {selectedTable?.table_name || ''}
-              </h2>
+              {onSwitchToDesktop && (
+                <button
+                  onClick={onSwitchToDesktop}
+                  className="hidden sm:inline-flex items-center space-x-1.5 px-3 py-2 bg-white hover:bg-coffee-light text-coffee-dark border border-coffee-light rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+                  title="Chuyển sang giao diện máy POS cảm ứng tại quầy"
+                >
+                  <Monitor className="w-3.5 h-3.5 text-coffee-primary" />
+                  <span>Máy POS</span>
+                </button>
+              )}
             </div>
           </div>
-
-          <div className="flex items-center space-x-2">
-            {existingOrder ? (
-              <button
-                onClick={() => setIsQuickPayOpen(true)}
-                className="flex items-center space-x-2.5 p-2 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-left transition shadow-xs"
-              >
-                <div className="text-right">
-                  <p className="text-[9px] font-bold text-amber-800 uppercase tracking-wider">Hóa đơn bàn</p>
-                  <p className="font-black text-coffee-dark text-xs sm:text-sm">
-                    {displayTotalAmount.toLocaleString('vi-VN')}đ
-                  </p>
-                </div>
-                <div className="p-2 bg-coffee-primary text-white rounded-lg relative shadow-xs">
-                  <CreditCard className="w-4 h-4 text-coffee-accent" />
-                  {displayTotalItems > 0 && (
-                    <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center shadow">
-                      {displayTotalItems}
-                    </span>
-                  )}
-                </div>
-              </button>
-            ) : (
-              <div 
+        ) : (
+          <div className="bg-white p-2.5 sm:p-3 rounded-2xl shadow-xs border border-coffee-light flex items-center justify-between gap-2">
+            <div className="flex items-center space-x-2.5">
+              <button 
+                type="button"
                 onClick={() => {
-                  if (cart.length > 0) setIsMobileCartOpen(true);
+                  if (posStep === 'menu') {
+                    setPosStep('table');
+                    setSelectedTable(null);
+                    setExistingOrder(null);
+                    setExistingOrderItems([]);
+                    clearCart();
+                  } else if (posStep === 'summary') {
+                    setPosStep('menu');
+                  }
                 }}
-                className="flex items-center space-x-2 cursor-pointer p-1.5 bg-[#FAF6F0] rounded-xl border border-coffee-light"
+                className="px-3.5 py-2 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-800 border border-gray-200 rounded-xl text-xs font-black transition flex items-center gap-1.5 shadow-2xs active:scale-95 cursor-pointer shrink-0"
+                title="Quay lại chọn bàn khác"
               >
-                <div className="text-right pl-1">
-                  <p className="text-[10px] text-coffee-medium font-semibold">Giỏ hàng</p>
-                  <p className="font-black text-coffee-dark text-xs">{totalCartAmount.toLocaleString('vi-VN')}đ</p>
+                <ArrowLeft className="w-4 h-4 text-coffee-primary stroke-[2.5]" />
+                <span>Đổi bàn</span>
+              </button>
+
+              <div>
+                <div className="flex items-center space-x-1.5">
+                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md uppercase tracking-wider ${
+                    isTakeaway 
+                      ? 'bg-amber-100 text-amber-900 border border-amber-300' 
+                      : 'bg-emerald-100 text-emerald-800'
+                  }`}>
+                    {isTakeaway ? 'MANG VỀ' : 'NGỒI LẠI'}
+                  </span>
+                  <span className="text-[9px] font-semibold text-coffee-medium truncate max-w-[85px]">
+                    {selectedTable?.status === 'Đang phục vụ' ? 'Đang có đơn' : 'Bàn mới'}
+                  </span>
                 </div>
-                <div className="p-2 bg-coffee-accent rounded-lg text-coffee-dark relative">
-                  <ShoppingCart className="w-4 h-4" />
-                  {cart.length > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-red-500 text-white font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center shadow">
-                      {cart.reduce((sum, item) => sum + item.quantity, 0)}
-                    </span>
-                  )}
-                </div>
+                <h2 className="font-black text-sm sm:text-base text-coffee-dark leading-tight mt-0.5">
+                  {selectedTable?.table_name || ''}
+                </h2>
               </div>
-            )}
-          </div>
-        </div>
-      )}
+            </div>
 
-      {/* BƯỚC 1: CHỌN BÀN */}
-      {posStep === 'table' && (
-        <div className="space-y-4">
-          <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-xs border border-coffee-light space-y-1">
-            <h3 className="font-bold text-base text-coffee-primary flex items-center space-x-2">
-              <Users className="w-4 h-4 text-coffee-medium" />
-              <span>Bước 1: Chọn Bàn hoặc Khách mang về</span>
-            </h3>
-            <p className="text-xs text-coffee-medium">
-              Chạm vào bàn để mở thực đơn gọi món, hoặc xem lại đơn của bàn đang phục vụ.
-            </p>
+            <div className="flex items-center space-x-2">
+              {existingOrder ? (
+                <button
+                  type="button"
+                  onClick={() => setIsQuickPayOpen(true)}
+                  className="flex items-center space-x-2 p-1.5 px-2.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-left transition shadow-xs active:scale-95 cursor-pointer"
+                >
+                  <div className="text-right">
+                    <p className="text-[9px] font-bold text-amber-800 uppercase tracking-wider">Hóa đơn</p>
+                    <p className="font-black text-coffee-dark text-xs sm:text-sm">
+                      {displayTotalAmount.toLocaleString('vi-VN')}đ
+                    </p>
+                  </div>
+                  <div className="p-1.5 bg-coffee-primary text-white rounded-lg relative shadow-xs">
+                    <CreditCard className="w-3.5 h-3.5 text-coffee-accent" />
+                    {displayTotalItems > 0 && (
+                      <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center shadow">
+                        {displayTotalItems}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              ) : (
+                <div 
+                  onClick={() => {
+                    if (cart.length > 0) setIsMobileCartOpen(true);
+                  }}
+                  className="flex items-center space-x-2 cursor-pointer p-1.5 px-2 bg-[#FAF6F0] rounded-xl border border-coffee-light active:scale-95 transition"
+                >
+                  <div className="text-right pl-1">
+                    <p className="text-[9px] text-coffee-medium font-bold uppercase tracking-wider">Giỏ hàng</p>
+                    <p className="font-black text-coffee-dark text-xs">{totalCartAmount.toLocaleString('vi-VN')}đ</p>
+                  </div>
+                  <div className="p-1.5 bg-coffee-accent rounded-lg text-coffee-dark relative">
+                    <ShoppingCart className="w-4 h-4" />
+                    {cart.length > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white font-bold text-[9px] w-4 h-4 rounded-full flex items-center justify-center shadow">
+                        {cart.reduce((sum, item) => sum + item.quantity, 0)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
+        )}
+      </header>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
-            {[...tables]
-              .sort((a, b) => {
-                if (a.table_name === 'Khách mang về') return -1;
-                if (b.table_name === 'Khách mang về') return 1;
-                return a.table_name.localeCompare(b.table_name, 'vi', { numeric: true });
+      {/* VÙNG CUỘN NỘI DUNG RIÊNG BIỆT CHO ĐIỆN THOẠI */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden space-y-3 px-3 sm:px-4 pt-2 pb-32">
+        {/* BƯỚC 1: CHỌN BÀN */}
+        {posStep === 'table' && (
+          <div className="space-y-3">
+            <div className="bg-white px-3.5 py-2.5 rounded-2xl shadow-2xs border border-coffee-light flex items-center justify-between">
+              <div className="space-y-0.5">
+                <h3 className="font-bold text-xs sm:text-sm text-coffee-primary flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-coffee-medium" />
+                  <span>Bước 1: Chọn Bàn hoặc Khách mang về</span>
+                </h3>
+                <p className="text-[10px] text-coffee-medium">
+                  Chạm bàn để mở menu order hoặc xem lại đơn đang phục vụ
+                </p>
+              </div>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-coffee-accent/20 text-coffee-dark">
+                {tables.length} bàn
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-3">
+              {[...tables]
+                .sort((a, b) => {
+                  if (a.table_name === 'Khách mang về') return -1;
+                  if (b.table_name === 'Khách mang về') return 1;
+                  return a.table_name.localeCompare(b.table_name, 'vi', { numeric: true });
               })
               .map((table) => {
                 const isOccupied = table.status === 'Đang phục vụ';
@@ -662,9 +681,9 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                   <button
                     key={table.id}
                     onClick={() => handleSelectTable(table)}
-                    className={`relative p-4 rounded-2xl border text-left flex flex-col justify-between h-32 sm:h-36 transition-all duration-150 active:scale-95 shadow-xs ${
+                    className={`relative p-3 sm:p-3.5 rounded-2xl border text-left flex flex-col justify-between h-28 sm:h-32 transition-all duration-150 active:scale-95 shadow-2xs ${
                       isTbTakeaway
-                        ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-300/50'
+                        ? 'bg-amber-50/70 border-amber-300 ring-2 ring-amber-300/40'
                         : isOccupied
                         ? 'bg-amber-50/50 border-amber-300 shadow-inner'
                         : 'bg-white border-coffee-light hover:border-coffee-accent'
@@ -681,18 +700,18 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                         {isTbTakeaway ? 'Mang về' : table.status}
                       </span>
                       {!isTbTakeaway && (
-                        <span className="text-[10px] text-coffee-medium flex items-center space-x-1">
+                        <span className="text-[10px] text-coffee-medium flex items-center space-x-1 font-semibold">
                           <Users className="w-3 h-3" />
                           <span>{table.capacity}</span>
                         </span>
                       )}
                     </div>
 
-                    <div className="space-y-0.5 mt-2">
-                      <h4 className="font-black text-base sm:text-lg text-coffee-dark tracking-tight line-clamp-1">
+                    <div className="space-y-0.5 mt-1">
+                      <h4 className="font-black text-base text-coffee-dark tracking-tight line-clamp-1">
                         {table.table_name}
                       </h4>
-                      <p className="text-[10px] text-coffee-medium line-clamp-1">
+                      <p className="text-[10px] text-coffee-medium line-clamp-1 font-medium">
                         {isOccupied && unpaidMatch
                           ? `${Number(unpaidMatch.total_amount || 0).toLocaleString('vi-VN')}đ • Đang phục vụ`
                           : isOccupied
@@ -704,7 +723,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                     </div>
 
                     <div className="self-end text-coffee-medium/40">
-                      <ChevronRight className="w-4 h-4" />
+                      <ChevronRight className="w-3.5 h-3.5" />
                     </div>
                   </button>
                 );
@@ -816,37 +835,50 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                         </p>
                       </div>
 
-                      <div className="flex items-center justify-between pt-1">
-                        <span className="font-extrabold text-xs sm:text-sm text-coffee-primary">
+                      <div className="flex items-center justify-between pt-1.5 gap-1.5">
+                        <span className="font-black text-xs sm:text-sm text-coffee-primary shrink-0">
                           {unitPrice.toLocaleString('vi-VN')}đ
                         </span>
 
                         {isOutOfStock ? (
-                          <span className="text-[9px] text-red-500 font-bold uppercase">Hết</span>
+                          <span className="text-[10px] text-red-500 font-bold uppercase">Hết món</span>
                         ) : cartQty > 0 ? (
-                          <div className="flex items-center bg-[#FAF6F0] rounded-lg border border-coffee-accent/40 overflow-hidden shadow-inner">
+                          <div className="flex items-center bg-[#FAF6F0] rounded-xl border border-coffee-accent/40 shadow-xs h-9 overflow-hidden">
                             <button
-                              onClick={() => updateQuantity(prod.id, -1)}
-                              className="p-1 hover:bg-coffee-accent/20 text-coffee-primary"
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                updateQuantity(prod.id, -1);
+                              }}
+                              className="w-8 h-9 flex items-center justify-center text-coffee-primary active:bg-coffee-accent/20 cursor-pointer"
                             >
-                              <Minus className="w-3 h-3" />
+                              <Minus className="w-3.5 h-3.5 stroke-[2.5]" />
                             </button>
-                            <span className="px-1.5 font-bold text-[10px] text-coffee-dark min-w-[14px] text-center">
+                            <span className="px-2 font-black text-xs text-coffee-dark min-w-[20px] text-center">
                               {cartQty}
                             </span>
                             <button
-                              onClick={() => addToCart(prod)}
-                              className="p-1 hover:bg-coffee-accent/20 text-coffee-primary"
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                addToCart(prod);
+                              }}
+                              className="w-8 h-9 flex items-center justify-center text-coffee-primary active:bg-coffee-accent/20 cursor-pointer"
                             >
-                              <Plus className="w-3 h-3" />
+                              <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                             </button>
                           </div>
                         ) : (
                           <button
-                            onClick={() => addToCart(prod)}
-                            className="px-2.5 py-1 bg-coffee-accent hover:bg-coffee-accent/80 text-coffee-dark font-extrabold text-[10px] rounded-lg shadow-2xs transition"
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              addToCart(prod);
+                            }}
+                            className="px-3.5 py-2 bg-[#4A3525] hover:bg-[#382513] active:scale-95 text-white font-black text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-1 cursor-pointer shrink-0"
                           >
-                            + Thêm
+                            <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                            <span>Thêm</span>
                           </button>
                         )}
                       </div>
@@ -968,6 +1000,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
           </div>
         </div>
       )}
+      </div>
 
       {/* THANH GIỎ HÀNG DÍNH DƯỚI ĐÁY TRÊN ĐIỆN THOẠI (STICKY BOTTOM BAR) */}
       {cart.length > 0 && posStep === 'menu' && (

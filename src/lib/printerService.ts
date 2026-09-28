@@ -255,30 +255,29 @@ export function tryAcquirePrintLock(orderId: string, action: 'create' | 'pay' | 
   if (!orderId) return true;
   const now = Date.now();
 
-  // 1. Khóa chống in kép toàn cục cho cùng 1 đơn hàng trong vòng 12 giây
-  const lastAny = printedOrderHistory.get(`ord_${orderId}`);
-  if (lastAny && (now - lastAny) < 12000) {
-    console.log(`[PrintLock] Đơn ${orderId} vừa in cách đây ${now - lastAny}ms. Bỏ qua lệnh in trùng lặp.`);
+  // 1. Khóa chống in lặp theo từng hành động cụ thể ('create' hoặc 'pay') trong vòng 8 giây
+  const actionKey = `${orderId}_${action}`;
+  const lastAction = printedOrderHistory.get(actionKey);
+  if (lastAction && (now - lastAction) < 8000) {
+    console.log(`[PrintLock] Đơn ${orderId} (${action}) vừa in cách đây ${now - lastAction}ms. Bỏ qua.`);
     return false;
   }
 
-  // 2. Khóa chống in kép theo loại hành động cụ thể ('create' hoặc 'pay') trong vòng 60 giây
-  if (action !== 'any') {
-    const actionKey = `ord_${orderId}_${action}`;
-    const lastAction = printedOrderHistory.get(actionKey);
-    if (lastAction && (now - lastAction) < 60000) {
-      console.log(`[PrintLock] Đơn ${orderId} (${action}) đã được in cách đây ${now - lastAction}ms. Bỏ qua.`);
-      return false;
-    }
-    printedOrderHistory.set(actionKey, now);
+  // 2. Khóa tức thì chống race-condition (ví dụ Broadcast và Postgres Changes cùng đến cách nhau < 2.5s)
+  const anyKey = `any_${orderId}`;
+  const lastAny = printedOrderHistory.get(anyKey);
+  if (lastAny && (now - lastAny) < 2500) {
+    console.log(`[PrintLock] Đơn ${orderId} vừa in qua kênh khác cách đây ${now - lastAny}ms. Bỏ qua.`);
+    return false;
   }
 
-  // Đánh dấu thời điểm in đơn hàng
-  printedOrderHistory.set(`ord_${orderId}`, now);
+  // Giành khóa in thành công
+  printedOrderHistory.set(actionKey, now);
+  printedOrderHistory.set(anyKey, now);
 
-  // Tự động dọn dẹp các mục cũ hơn 5 phút
+  // Tự động dọn dẹp các mục cũ hơn 2 phút
   if (printedOrderHistory.size > 200) {
-    const cutoff = now - 300000;
+    const cutoff = now - 120000;
     for (const [k, v] of printedOrderHistory.entries()) {
       if (v < cutoff) printedOrderHistory.delete(k);
     }
@@ -288,16 +287,18 @@ export function tryAcquirePrintLock(orderId: string, action: 'create' | 'pay' | 
 }
 
 /**
- * Đánh dấu một đơn hàng đã được in (được gọi từ giao diện POS trực tiếp tại quầy)
+ * Xóa khóa in của đơn hàng (dùng khi hủy đơn hoặc muốn cho phép in lại)
  */
-export function markOrderAsPrinted(orderId: string, action: 'create' | 'pay' = 'create') {
+export function clearPrintLock(orderId: string) {
   if (!orderId) return;
-  const now = Date.now();
-  printedOrderHistory.set(`ord_${orderId}`, now);
-  printedOrderHistory.set(`ord_${orderId}_${action}`, now);
-  if (action === 'pay') {
-    printedOrderHistory.set(`ord_${orderId}_create`, now);
-  }
+  printedOrderHistory.delete(`any_${orderId}`);
+  printedOrderHistory.delete(`${orderId}_create`);
+  printedOrderHistory.delete(`${orderId}_pay`);
+  printedOrderHistory.delete(`${orderId}_any`);
+}
+
+export function markOrderAsPrinted(orderId: string, action: 'create' | 'pay' = 'create') {
+  // Để printOrderDirect tự động quản lý khóa an toàn, tránh deadlock tự chặn chính mình
 }
 
 // In hóa đơn trực tiếp (Tự động chuyển đổi giữa POS Desktop USB và Mobile Wi-Fi Print)

@@ -4,8 +4,18 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+static LAST_BRIDGE_HASH: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+
+fn simple_hash(bytes: &[u8]) -> u64 {
+    let mut h = 14695981039346656037u64;
+    for &b in bytes {
+        h = (h ^ (b as u64)).wrapping_mul(1099511628211u64);
+    }
+    h
+}
 
 #[derive(Clone)]
 struct BridgeConfig {
@@ -233,6 +243,27 @@ fn handle_http_client(mut stream: TcpStream, cfg: Arc<BridgeConfig>) {
             if let Some(arr) = val.get("data").and_then(|d| d.as_array()) {
                 let raw_bytes: Vec<u8> = arr.iter().filter_map(|x| x.as_u64().map(|n| n as u8)).collect();
                 if !raw_bytes.is_empty() {
+                    if raw_bytes.len() > 30 {
+                        let hash = simple_hash(&raw_bytes);
+                        let now = Instant::now();
+                        {
+                            let mut last_lock = LAST_BRIDGE_HASH.lock().unwrap();
+                            if let Some((prev_hash, prev_time)) = *last_lock {
+                                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(4) {
+                                    println!("[IN BỎ QUA] Lệnh in trùng lặp tuyệt đối (vừa in cách đây < 4s)");
+                                    let body = serde_json::json!({ "success": true, "message": "Đã in hóa đơn thành công (bỏ qua in lặp)" }).to_string();
+                                    let response = format!(
+                                        "HTTP/1.1 200 OK\r\n{}Content-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        cors_headers, body.len(), body
+                                    );
+                                    let _ = stream.write_all(response.as_bytes());
+                                    return;
+                                }
+                            }
+                            *last_lock = Some((hash, now));
+                        }
+                    }
+
                     match print_to_wifi_printer(&raw_bytes, &cfg.printer_ip, cfg.printer_port) {
                         Ok(_) => {
                             println!("[IN THÀNH CÔNG] Đã in phiếu ({} bytes) ra máy in Wi-Fi {}:{}", raw_bytes.len(), cfg.printer_ip, cfg.printer_port);

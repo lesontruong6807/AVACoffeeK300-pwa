@@ -238,7 +238,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
 
   if (isPosScreen) {
     return (
-      <div className="w-full h-screen overflow-hidden bg-[#FAF6F0] text-coffee-dark font-sans select-none">
+      <div className="w-full h-[100dvh] overflow-hidden bg-[#FAF6F0] text-coffee-dark font-sans select-none flex flex-col">
         {children}
         {/* Floating Toast Notification */}
         {toastMessage && (

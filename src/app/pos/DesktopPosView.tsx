@@ -433,7 +433,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         });
 
         if (newOrder?.id) {
-          markOrderAsPrinted(newOrder.id, 'pay');
           await db.payOrder(newOrder.id, splitPaymentMethod);
           try {
             await printOrderDirect({
@@ -565,6 +564,34 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     }
   };
 
+  // Hủy hóa đơn hoàn toàn (y chang nút Hủy bên trang Thanh toán)
+  const handleCancelOrderById = async (orderId: string, tableName?: string, totalAmount?: number) => {
+    const confirmCancel = window.confirm(
+      `Bạn có chắc chắn muốn hủy và xóa hoàn toàn hóa đơn của ${tableName || 'bàn này'}${totalAmount ? ` (${Number(totalAmount).toLocaleString('vi-VN')} đ)` : ''} không?`
+    );
+    if (!confirmCancel) return;
+
+    try {
+      const success = await db.cancelOrder(orderId);
+      if (success) {
+        toast.success(`Đã hủy và xóa hóa đơn ${tableName || ''} thành công!`);
+        if (existingOrder?.id === orderId) {
+          setExistingOrder(null);
+          setExistingOrderItems([]);
+          setCart([]);
+          setSelectedTable(null);
+          setViewMode('tables');
+        }
+        await refreshData();
+      } else {
+        toast.error('Không thể hủy hóa đơn này.');
+      }
+    } catch (e) {
+      console.error('Lỗi khi hủy hóa đơn tại POS:', e);
+      toast.error('Gặp lỗi khi hủy hóa đơn.');
+    }
+  };
+
   // Làm mới dữ liệu bàn, đơn chưa thanh toán & toàn bộ đơn gần đây (cả đã thanh toán và chưa thanh toán)
   const refreshData = async () => {
     try {
@@ -664,10 +691,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       if (orderChangePayload && (orderChangePayload.eventType === 'INSERT' || (orderChangePayload.eventType === 'UPDATE' && orderChangePayload.new?.trang_thai_thanh_toan === 'Đã thanh toán'))) {
         const newOrder = orderChangePayload.new;
         if (newOrder && newOrder.id) {
-          const action = newOrder.trang_thai_thanh_toan === 'Đã thanh toán' ? 'pay' : 'create';
-          if (!tryAcquirePrintLock(newOrder.id, action)) {
-            return;
-          }
           const createdAt = newOrder.ngay_tao ? new Date(newOrder.ngay_tao).getTime() : Date.now();
           if (Date.now() - createdAt < 45000) {
             console.log('[Desktop POS Counter] Tự động in từ Postgres Change:', newOrder.id);
@@ -704,12 +727,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     const unsubPrints = onRealtimeEvent('order_update', async (rawPayload: any) => {
       const payload = rawPayload?.payload || rawPayload;
       if (payload?.action === 'PRINT_RECEIPT' && payload?.orderData) {
-        const orderId = payload.orderData.orderId;
-        const action = (payload.orderData.notes?.includes('ĐÃ THANH TOÁN') || payload.orderData.notes?.includes('(ĐÃ THANH TOÁN)')) ? 'pay' : 'create';
-        if (!tryAcquirePrintLock(orderId, action)) {
-          return;
-        }
-
         console.log('[Desktop POS Counter] Nhận lệnh in tự động từ điện thoại:', payload.orderData);
         try {
           await printOrderDirect(payload.orderData);
@@ -718,8 +735,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
           console.error('[Desktop POS Counter] Lỗi in bill từ điện thoại:', printErr);
         }
       } else if (payload?.action === 'PRINT_TEST') {
-        const testKey = `test_${payload.timestamp || ''}`;
-        if (!tryAcquirePrintLock(testKey, 'any')) return;
         try {
           const { printTestTicket } = await import('@/lib/printerService');
           await printTestTicket();
@@ -1074,7 +1089,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       // In hóa đơn / phiếu order ngay lập tức khi Lưu đơn
       try {
         const printOrderId = currentOrderId || `OD-${Date.now()}`;
-        markOrderAsPrinted(printOrderId, 'create');
         await printOrderDirect({
           tableName: selectedTable?.table_name || 'Khách mang về',
           staffName: currentUser?.full_name || 'Admin',
@@ -1165,7 +1179,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               notes: i.ghi_chu || ''
             }));
 
-        markOrderAsPrinted(orderIdToPay, 'pay');
         await printOrderDirect({
           tableName: selectedTable?.table_name || 'Khách mang về',
           staffName: currentUser?.full_name || 'Admin',
@@ -1925,13 +1938,25 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                 </button>
               </div>
 
-              {/* NÚT XÓA GIỎ HÀNG */}
-              <button
-                onClick={handleClearCart}
-                className="w-full py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg font-bold text-[11px] text-gray-500 transition active:scale-98 cursor-pointer"
-              >
-                Xóa giỏ hàng (Mới)
-              </button>
+              {/* NÚT XÓA GIỎ HÀNG & HỦY ĐƠN */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handleClearCart}
+                  className="flex-1 py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg font-bold text-[11px] text-gray-500 transition active:scale-98 cursor-pointer"
+                >
+                  Xóa giỏ hàng
+                </button>
+                {existingOrder && (
+                  <button
+                    onClick={() => handleCancelOrderById(existingOrder.id, selectedTable?.table_name, existingOrder.total_amount)}
+                    className="py-1.5 px-3 bg-red-50 hover:bg-red-100 border border-red-200 text-red-600 rounded-lg font-bold text-[11px] transition active:scale-98 cursor-pointer flex items-center gap-1"
+                    title="Hủy đơn hàng đang phục vụ của bàn này"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Hủy đơn</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -2936,32 +2961,81 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                   <p className="text-xs font-bold">Không có đơn hàng nào chưa thanh toán</p>
                 </div>
               ) : (
-                unpaidOrders.map(order => (
-                  <div
-                    key={order.id}
-                    onClick={() => {
-                      const matchedTable = tables.find(t => t.id === order.table_id);
-                      if (matchedTable) {
-                        handleSelectTable(matchedTable);
-                      }
-                      setIsUnpaidOrdersDrawerOpen(false);
-                    }}
-                    className="p-3.5 bg-gray-50 hover:bg-[#FAF6F0] border border-gray-200 rounded-2xl cursor-pointer transition space-y-1.5"
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className="font-extrabold text-sm text-gray-900">
-                        {order.tables?.table_name || 'Khách mang về'}
-                      </span>
-                      <span className="font-black text-sm text-[#4A3525]">
-                        {Number(order.total_amount).toLocaleString('vi-VN')} đ
-                      </span>
+                unpaidOrders.map(order => {
+                  const matchedTable = tables.find(t => t.id === order.table_id);
+                  const isTakeaway = order.tables?.table_name === 'Khách mang về' || order.table_id === 'tb_mangve';
+                  return (
+                    <div
+                      key={order.id}
+                      className="p-3.5 bg-gray-50 hover:bg-[#FAF6F0] border border-gray-200 rounded-2xl transition space-y-2.5 shadow-2xs"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                              isTakeaway ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+                            }`}>
+                              {isTakeaway ? 'Mang về' : 'Ngồi lại'}
+                            </span>
+                            <span className="font-extrabold text-sm text-gray-900">
+                              {order.tables?.table_name || 'Khách mang về'}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-gray-500 mt-1 space-y-0.5">
+                            <div>Giờ tạo: {new Date(order.created_at || order.ngay_tao || Date.now()).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} • Thu ngân: {order.users?.full_name || 'Admin'}</div>
+                            {order.notes && <div className="italic text-gray-600">Ghi chú: {order.notes}</div>}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="font-black text-base text-[#4A3525]">
+                            {Number(order.total_amount).toLocaleString('vi-VN')} đ
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* HÀNG NÚT THAO TÁC: MỞ ĐƠN, THANH TOÁN, HỦY ĐƠN */}
+                      <div className="flex items-center justify-end gap-2 pt-1 border-t border-gray-200/80">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (matchedTable) {
+                              handleSelectTable(matchedTable);
+                            }
+                            setIsUnpaidOrdersDrawerOpen(false);
+                          }}
+                          className="px-3 py-1.5 bg-white hover:bg-gray-100 border border-gray-300 text-gray-700 rounded-xl text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer"
+                        >
+                          <span>Mở bàn</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleQuickPayFromTicket(order);
+                            setIsUnpaidOrdersDrawerOpen(false);
+                          }}
+                          className="px-3 py-1.5 bg-[#4A3525] hover:bg-[#382513] text-white rounded-xl text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer shadow-xs"
+                        >
+                          <CreditCard className="w-3.5 h-3.5" />
+                          <span>Thanh toán</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCancelOrderById(order.id, order.tables?.table_name || 'Khách mang về', order.total_amount);
+                          }}
+                          className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-xs font-bold border border-red-200 transition flex items-center gap-1 active:scale-95 cursor-pointer"
+                          title="Hủy đơn hàng này hoàn toàn"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Hủy đơn</span>
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex justify-between items-center text-[10px] text-gray-500">
-                      <span>{new Date(order.created_at).toLocaleString('vi-VN')}</span>
-                      <span>Thu ngân: {order.users?.full_name || 'Admin'}</span>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
