@@ -385,7 +385,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
           })),
           totalAmount: displayTotalAmount,
           discount: discountAmount,
-          notes: orderNotes.trim()
+          notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
         });
       } catch (printErr) {
         console.warn('Lỗi gửi lệnh in từ điện thoại:', printErr);

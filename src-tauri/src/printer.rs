@@ -243,8 +243,39 @@ pub fn print_tcp(ip: &str, port: u16, data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+// Bộ nhớ đệm chống in trùng lặp nhị phân tuyệt đối (< 10 giây)
+static LAST_PRINT_RAW_HASH: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+
+fn simple_hash(bytes: &[u8]) -> u64 {
+    let mut h = 14695981039346656037u64;
+    for &b in bytes {
+        h = (h ^ (b as u64)).wrapping_mul(1099511628211u64);
+    }
+    h
+}
+
 /// In ngầm trực tiếp hóa đơn nhị phân ESC/POS (Hỗ trợ cả Wi-Fi LAN TCP 9100 và USB Win32 Spooler)
 pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(), String> {
+    // 0. Chống in trùng lặp tuyệt đối ở tầng nhị phân ESC/POS (< 10 giây)
+    // Chỉ áp dụng cho hóa đơn có dữ liệu dài (> 30 bytes), không chặn lệnh kick két tiền
+    if data.len() > 30 {
+        let hash = simple_hash(data);
+        let now = Instant::now();
+        {
+            let mut last_hash_lock = LAST_PRINT_RAW_HASH.lock().unwrap();
+            if let Some((prev_hash, prev_time)) = *last_hash_lock {
+                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(10) {
+                    println!("[Print Raw] Bỏ qua lệnh in trùng lặp tuyệt đối (vừa in cách đây < 10s)");
+                    return Ok(());
+                }
+            }
+            *last_hash_lock = Some((hash, now));
+        }
+    }
+
     // 1. Nếu target_printer là địa chỉ IP mạng (ví dụ "192.168.1.167" hoặc "192.168.1.167:9100")
     if let Some(ref target) = target_printer {
         if target.contains('.') {

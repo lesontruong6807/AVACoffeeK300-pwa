@@ -160,22 +160,14 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
   const storeName = settings?.store_name || 'AVA COFFEE';
   const divider = '-'.repeat(RECEIPT_WIDTH);
 
-  // 1. Header quán (Gọn gàng, không feed dòng trống)
+  // 1. Header quán (Chỉ in tên quán, bỏ địa chỉ & hotline để bill ngắn gọn tiết kiệm giấy)
   builder.alignCenter()
     .fontSizeDouble()
     .bold(true)
     .line(storeName)
     .fontSizeNormal()
-    .bold(false);
-
-  const contactList: string[] = [];
-  if (settings?.store_address) contactList.push(removeDiacritics(settings.store_address));
-  if (settings?.store_phone) contactList.push(`Hotline: ${settings.store_phone}`);
-  if (contactList.length > 0) {
-    builder.line(contactList.join(' - '));
-  }
-
-  builder.line(divider);
+    .bold(false)
+    .line(divider);
 
   // 2. Thông tin Bàn & Giờ (Gộp chung 1 dòng để tiết kiệm giấy)
   builder.alignLeft()
@@ -240,20 +232,94 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
     builder.line('CHUC QUY KHACH NGON MIENG');
   }
 
-  // Feed 4 dòng chuẩn cơ học để đẩy toàn bộ chữ qua khỏi lưỡi dao trước khi cắt
-  // (Khắc phục triệt để lỗi cắt phạm ngang chữ và chữ sót dính lên đầu phiếu sau)
-  builder.feed(4)
+  // Feed 3 dòng chuẩn cơ học để đẩy chữ qua lưỡi dao trước khi cắt (ngắn gọn, tiết kiệm giấy)
+  builder.feed(3)
     .cut();
 
   return builder.getBuffer();
+}
+
+// =========================================================================
+// BỘ NHỚ ĐỆM CHỐNG IN TRÙNG LẶP TOÀN CỤC (GLOBAL PRINT LOCK ENGINE)
+// Đảm bảo 1 đơn hàng khi lưu hay thanh toán chỉ in đúng 1 lần duy nhất
+// =========================================================================
+const printedOrderHistory = new Map<string, number>();
+
+/**
+ * Kiểm tra và giành quyền in cho một đơn hàng (Deduplication Lock)
+ * @param orderId Mã đơn hàng (ord_..., OD-..., hoặc ID database)
+ * @param action Loại hành động ('create' | 'pay' | 'any')
+ * @returns boolean true nếu được phép in, false nếu đơn đã in gần đây
+ */
+export function tryAcquirePrintLock(orderId: string, action: 'create' | 'pay' | 'any' = 'any'): boolean {
+  if (!orderId) return true;
+  const now = Date.now();
+
+  // 1. Khóa chống in kép toàn cục cho cùng 1 đơn hàng trong vòng 12 giây
+  const lastAny = printedOrderHistory.get(`ord_${orderId}`);
+  if (lastAny && (now - lastAny) < 12000) {
+    console.log(`[PrintLock] Đơn ${orderId} vừa in cách đây ${now - lastAny}ms. Bỏ qua lệnh in trùng lặp.`);
+    return false;
+  }
+
+  // 2. Khóa chống in kép theo loại hành động cụ thể ('create' hoặc 'pay') trong vòng 60 giây
+  if (action !== 'any') {
+    const actionKey = `ord_${orderId}_${action}`;
+    const lastAction = printedOrderHistory.get(actionKey);
+    if (lastAction && (now - lastAction) < 60000) {
+      console.log(`[PrintLock] Đơn ${orderId} (${action}) đã được in cách đây ${now - lastAction}ms. Bỏ qua.`);
+      return false;
+    }
+    printedOrderHistory.set(actionKey, now);
+  }
+
+  // Đánh dấu thời điểm in đơn hàng
+  printedOrderHistory.set(`ord_${orderId}`, now);
+
+  // Tự động dọn dẹp các mục cũ hơn 5 phút
+  if (printedOrderHistory.size > 200) {
+    const cutoff = now - 300000;
+    for (const [k, v] of printedOrderHistory.entries()) {
+      if (v < cutoff) printedOrderHistory.delete(k);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Đánh dấu một đơn hàng đã được in (được gọi từ giao diện POS trực tiếp tại quầy)
+ */
+export function markOrderAsPrinted(orderId: string, action: 'create' | 'pay' = 'create') {
+  if (!orderId) return;
+  const now = Date.now();
+  printedOrderHistory.set(`ord_${orderId}`, now);
+  printedOrderHistory.set(`ord_${orderId}_${action}`, now);
+  if (action === 'pay') {
+    printedOrderHistory.set(`ord_${orderId}_create`, now);
+  }
 }
 
 // In hóa đơn trực tiếp (Tự động chuyển đổi giữa POS Desktop USB và Mobile Wi-Fi Print)
 export async function printOrderDirect(
   orderData: OrderData,
   printerIP?: string,
-  port?: number
+  port?: number,
+  options?: { force?: boolean }
 ): Promise<void> {
+  const orderId = orderData.orderId;
+  const action: 'create' | 'pay' = (orderData.notes?.includes('ĐÃ THANH TOÁN') || orderData.notes?.includes('(ĐÃ THANH TOÁN)'))
+    ? 'pay'
+    : 'create';
+
+  // Khóa chống in trùng lặp: Nếu không ép buộc in (re-print), chỉ in đúng 1 lần
+  if (!options?.force && orderId) {
+    if (!tryAcquirePrintLock(orderId, action)) {
+      console.log(`[printOrderDirect] Bỏ qua vì đơn ${orderId} (${action}) đã được in trước đó.`);
+      return;
+    }
+  }
+
   const storeSettings = db.getStoreSettingsSync();
   const targetIP = printerIP || storeSettings.printer_ip || '192.168.1.167';
   const targetPort = port || storeSettings.printer_port || 9100;

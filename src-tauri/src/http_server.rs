@@ -6,16 +6,6 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-// Bộ nhớ đệm tạm thời chống in trùng lặp khi bấm 2 lần liên tiếp (< 5 giây)
-static LAST_PRINT_HASH: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
-
-fn simple_hash(bytes: &[u8]) -> u64 {
-    let mut h = 14695981039346656037u64;
-    for &b in bytes {
-        h = (h ^ (b as u64)).wrapping_mul(1099511628211u64);
-    }
-    h
-}
 
 pub fn start_http_print_server(port: u16) {
     let addr = format!("0.0.0.0:{}", port);
@@ -202,19 +192,6 @@ fn handle_print_payload(body: &[u8]) -> Result<String, String> {
             return Err("Dữ liệu mã in rỗng".to_string());
         }
 
-        // Kiểm tra chống in trùng trong vòng 4 giây
-        let hash = simple_hash(&raw_bytes);
-        let now = Instant::now();
-        {
-            let mut last_hash_lock = LAST_PRINT_HASH.lock().unwrap();
-            if let Some((prev_hash, prev_time)) = *last_hash_lock {
-                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(4) {
-                    println!("[HTTP Print Bridge] Bỏ qua lệnh in trùng lặp (vừa in cách đây < 4s)");
-                    return Ok("Bỏ qua lệnh in trùng lặp".to_string());
-                }
-            }
-            *last_hash_lock = Some((hash, now));
-        }
 
         crate::printer::print_escpos_raw(&raw_bytes, printer_name)?;
         return Ok("Đã in hóa đơn thành công".to_string());
