@@ -87,28 +87,33 @@ function getSharedRealtimeChannel() {
 
     // 1. Lắng nghe phát sóng từ các thiết bị khác (Broadcast - siêu nhanh ~20ms, không phụ thuộc Postgres publication)
     sharedRealtimeChannel
-      .on('broadcast', { event: 'table_update' }, (payload: any) => {
+      .on('broadcast', { event: 'table_update' }, (msg: any) => {
         cachedTables = null;
+        const payload = msg?.payload || msg;
         realtimeListeners['table_update']?.forEach(fn => {
           try { fn(payload); } catch (e) { console.error(e); }
         });
       })
-      .on('broadcast', { event: 'order_update' }, (payload: any) => {
+      .on('broadcast', { event: 'order_update' }, (msg: any) => {
+        const payload = msg?.payload || msg;
         realtimeListeners['order_update']?.forEach(fn => {
           try { fn(payload); } catch (e) { console.error(e); }
         });
       })
-      .on('broadcast', { event: 'report_update' }, (payload: any) => {
+      .on('broadcast', { event: 'report_update' }, (msg: any) => {
+        const payload = msg?.payload || msg;
         realtimeListeners['report_update']?.forEach(fn => {
           try { fn(payload); } catch (e) { console.error(e); }
         });
       })
-      .on('broadcast', { event: 'inventory_update' }, (payload: any) => {
+      .on('broadcast', { event: 'inventory_update' }, (msg: any) => {
+        const payload = msg?.payload || msg;
         realtimeListeners['inventory_update']?.forEach(fn => {
           try { fn(payload); } catch (e) { console.error(e); }
         });
       })
-      .on('broadcast', { event: 'attendance_update' }, (payload: any) => {
+      .on('broadcast', { event: 'attendance_update' }, (msg: any) => {
+        const payload = msg?.payload || msg;
         realtimeListeners['attendance_update']?.forEach(fn => {
           try { fn(payload); } catch (e) { console.error(e); }
         });

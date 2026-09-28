@@ -654,17 +654,64 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     initPos();
 
     // Lắng nghe Realtime thay đổi từ Supabase
-    const unsubTables = db.subscribeToTableChanges(() => refreshData());
-    const unsubOrders = db.subscribeToOrderChanges(() => refreshData());
-
-    // Tự động in hóa đơn khi nhân viên tạo đơn / thanh toán từ điện thoại
     const processedPrints = new Set<string>();
-    const unsubPrints = onRealtimeEvent('order_update', async (payload: any) => {
+    const unsubTables = db.subscribeToTableChanges(() => refreshData());
+
+    // 1. Tự động in dự phòng qua Postgres Database Changes (khi nhân viên lưu đơn / thanh toán vào DB)
+    const unsubOrders = db.subscribeToOrderChanges(async (orderChangePayload?: any) => {
+      refreshData();
+
+      if (orderChangePayload && (orderChangePayload.eventType === 'INSERT' || (orderChangePayload.eventType === 'UPDATE' && orderChangePayload.new?.trang_thai_thanh_toan === 'Đã thanh toán'))) {
+        const newOrder = orderChangePayload.new;
+        if (newOrder && newOrder.id) {
+          const autoKey = `db_auto_${newOrder.id}_${newOrder.trang_thai_thanh_toan}`;
+          if (!processedPrints.has(autoKey)) {
+            processedPrints.add(autoKey);
+            const createdAt = newOrder.ngay_tao ? new Date(newOrder.ngay_tao).getTime() : Date.now();
+            if (Date.now() - createdAt < 45000) {
+              console.log('[Desktop POS Counter] Tự động in từ Postgres Change:', newOrder.id);
+              try {
+                const items = await db.getOrderItems(newOrder.id);
+                if (items && items.length > 0) {
+                  const currentTables = await db.getTables();
+                  const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
+                  await printOrderDirect({
+                    orderId: newOrder.id,
+                    tableName: matchedTable?.table_name || 'Khách mang về',
+                    staffName: 'Nhân viên (Điện thoại)',
+                    totalAmount: Number(newOrder.tong_tien || 0),
+                    discount: Number(newOrder.giam_gia || 0),
+                    notes: newOrder.trang_thai_thanh_toan === 'Đã thanh toán' ? '(ĐÃ THANH TOÁN)' : '(LƯU ĐƠN)',
+                    items: items.map((i: any) => ({
+                      name: i.ten_san_pham || i.name || 'Món',
+                      quantity: Number(i.so_luong || i.quantity || 1),
+                      price: Number(i.don_gia || i.price || 0),
+                      subtotal: Number(i.thanh_tien || i.subtotal || 0)
+                    }))
+                  });
+                  toast.success(`🖨️ Đã tự động in đơn (${matchedTable?.table_name || 'Khách mang về'}) từ điện thoại!`);
+                }
+              } catch (autoPrintErr) {
+                console.warn('Lỗi tự động in từ DB change:', autoPrintErr);
+              }
+            }
+          }
+        }
+      }
+    });
+
+    // 2. Tự động in siêu tốc qua Supabase Realtime Broadcast (~20ms)
+    const unsubPrints = onRealtimeEvent('order_update', async (rawPayload: any) => {
+      const payload = rawPayload?.payload || rawPayload;
       if (payload?.action === 'PRINT_RECEIPT' && payload?.orderData) {
         const printKey = `${payload.orderData.orderId}_${payload.timestamp || ''}`;
         if (processedPrints.has(printKey)) return;
         processedPrints.add(printKey);
-        if (processedPrints.size > 100) {
+        // Đánh dấu cả key DB dự phòng để không in 2 lần
+        processedPrints.add(`db_auto_${payload.orderData.orderId}_Đã thanh toán`);
+        processedPrints.add(`db_auto_${payload.orderData.orderId}_Chưa thanh toán`);
+
+        if (processedPrints.size > 200) {
           const first = processedPrints.values().next().value;
           if (first) processedPrints.delete(first);
         }

@@ -302,9 +302,14 @@ fn main() {
             println!("===============================================================================\n");
             l
         }
-        Err(e) => {
-            eprintln!("[LỖI] Không thể mở cổng {}: {}", cfg.http_port, e);
-            eprintln!("Có thể một tiến trình in khác đang chạy hoặc app POS đã mở cổng này.");
+        Err(_) => {
+            println!("-------------------------------------------------------------------------------");
+            println!("[THONG BAO] Cong {} hien dang duoc mo boi ung dung AVA Coffee POS chinh.", cfg.http_port);
+            println!("==> Ung dung POS tai quay da tich hop san may chu in Wi-Fi!");
+            println!("==> May in Wi-Fi ({}:{}) da san sang nhan lenh in tu dien thoai!", cfg.printer_ip, cfg.printer_port);
+            println!("===============================================================================");
+            println!("* Ban chi can mo ung dung AVA Coffee POS tren may nay la da co san tinh nang in.");
+            println!("* Cua so nay se tu dong dong sau 10 giay...");
             std::thread::sleep(Duration::from_secs(10));
             return;
         }
