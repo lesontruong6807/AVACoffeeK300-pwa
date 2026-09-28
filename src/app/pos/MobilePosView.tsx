@@ -67,6 +67,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
   const [loadingExistingOrder, setLoadingExistingOrder] = useState(false);
   const [isQuickPayOpen, setIsQuickPayOpen] = useState(false);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [showTransferQr, setShowTransferQr] = useState(false);
   const [submittingPayment, setSubmittingPayment] = useState(false);
 
   // Trạng thái giảm giá
@@ -188,9 +189,9 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
   const getProductPrice = (prod: any) => {
     const isTakeaway = selectedTable?.table_name === 'Khách mang về' || selectedTable?.id === 'tb_mangve';
     if (isTakeaway) {
-      return Number(prod.price_takeaway || prod.gia_mang_ve || prod.price || 0);
+      return Number(prod.takeaway_price ?? prod.gia_mang_ve ?? prod.price ?? 0);
     }
-    return Number(prod.price_dine_in || prod.gia_ngoi_lai || prod.price || 0);
+    return Number(prod.dinein_price ?? prod.gia_ngoi_lai ?? prod.price ?? 0);
   };
 
   // --- LÓGIC CART ---
@@ -206,7 +207,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
       if (existing) {
         return prev.map(item => 
           item.product_id === product.id 
-            ? { ...item, quantity: item.quantity + 1, subtotal: (item.quantity + 1) * item.price }
+            ? { ...item, price: unitPrice, quantity: item.quantity + 1, subtotal: (item.quantity + 1) * unitPrice }
             : item
         );
       }
@@ -1222,26 +1223,65 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
               <span className="text-base font-black text-coffee-primary">{displayTotalAmount.toLocaleString('vi-VN')}đ</span>
             </div>
 
-            <div className="space-y-2">
-              <p className="text-[10px] font-bold text-coffee-medium uppercase tracking-wider">Phương thức thanh toán</p>
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  onClick={() => handlePayInPos('Tiền mặt')}
-                  disabled={submittingPayment}
-                  className="p-4 bg-coffee-cream/40 border border-coffee-accent/60 hover:bg-coffee-accent/50 rounded-xl flex flex-col items-center justify-center space-y-1.5 transition font-bold text-coffee-dark text-xs disabled:opacity-50"
-                >
-                  <DollarSign className="w-6 h-6 text-coffee-primary" />
-                  <span>Tiền mặt</span>
-                </button>
-                <button
-                  onClick={() => handlePayInPos('Chuyển khoản')}
-                  disabled={submittingPayment}
-                  className="p-4 bg-coffee-cream/40 border border-coffee-accent/60 hover:bg-coffee-accent/50 rounded-xl flex flex-col items-center justify-center space-y-1.5 transition font-bold text-coffee-dark text-xs disabled:opacity-50"
-                >
-                  <ArrowRightLeft className="w-6 h-6 text-coffee-primary" />
-                  <span>Chuyển khoản</span>
-                </button>
-              </div>
+            <div className="space-y-3">
+              {!showTransferQr ? (
+                <>
+                  <p className="text-[10px] font-bold text-coffee-medium uppercase tracking-wider">Phương thức thanh toán</p>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      onClick={() => handlePayInPos('Tiền mặt')}
+                      disabled={submittingPayment}
+                      className="p-4 bg-coffee-cream/40 border border-coffee-accent/60 hover:bg-coffee-accent/50 rounded-xl flex flex-col items-center justify-center space-y-1.5 transition font-bold text-coffee-dark text-xs disabled:opacity-50 cursor-pointer active:scale-95"
+                    >
+                      <DollarSign className="w-6 h-6 text-coffee-primary" />
+                      <span>Tiền mặt</span>
+                    </button>
+                    <button
+                      onClick={() => setShowTransferQr(true)}
+                      disabled={submittingPayment}
+                      className="p-4 bg-pink-50 border border-pink-300 hover:bg-pink-100 rounded-xl flex flex-col items-center justify-center space-y-1.5 transition font-bold text-pink-900 text-xs disabled:opacity-50 cursor-pointer active:scale-95"
+                    >
+                      <ArrowRightLeft className="w-6 h-6 text-pink-600" />
+                      <span>Chuyển khoản (MoMo)</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-3 flex flex-col items-center">
+                  <div className="p-2 bg-white rounded-2xl border border-pink-200 shadow-xs flex flex-col items-center text-center">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src="/momo-qr.png"
+                      alt="QR Loa MoMo"
+                      className="w-48 h-48 object-contain rounded-xl"
+                    />
+                    <p className="text-[11px] font-extrabold text-pink-900 mt-1">
+                      Mã Loa: AIO-MOMO: 3763661
+                    </p>
+                    <p className="text-[9px] text-gray-500">
+                      Khách quét từ MoMo hoặc mọi Ngân hàng, Loa sẽ báo
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 w-full">
+                    <button
+                      type="button"
+                      onClick={() => setShowTransferQr(false)}
+                      className="py-2.5 px-3 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-xl transition"
+                    >
+                      Đổi cách khác
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handlePayInPos('Chuyển khoản')}
+                      disabled={submittingPayment}
+                      className="flex-1 py-2.5 bg-[#4A3525] hover:bg-[#382513] text-white text-xs font-black rounded-xl shadow-xs transition flex items-center justify-center gap-1 active:scale-95 cursor-pointer disabled:opacity-50"
+                    >
+                      {submittingPayment ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <span>Xác nhận đã nhận tiền</span>}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

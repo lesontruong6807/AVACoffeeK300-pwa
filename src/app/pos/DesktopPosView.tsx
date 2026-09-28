@@ -160,7 +160,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
   // Cấu hình Loa MoMo / Số điện thoại MoMo
   const [momoPhone, setMomoPhone] = useState<string>('0909123456');
-  const [transferTab, setTransferTab] = useState<'momo' | 'vietqr'>('momo');
 
   // Modal states
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
@@ -707,9 +706,9 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                   discount: Number(newOrder.giam_gia || 0),
                   notes: newOrder.trang_thai_thanh_toan === 'Đã thanh toán' ? '(ĐÃ THANH TOÁN)' : '(LƯU ĐƠN)',
                   items: items.map((i: any) => ({
-                    name: i.ten_san_pham || i.name || 'Món',
+                    name: i.products?.name || i.name || i.ten_san_pham || 'Món',
                     quantity: Number(i.so_luong || i.quantity || 1),
-                    price: Number(i.don_gia || i.price || 0),
+                    price: Number(i.unit_price || i.don_gia || i.price || 0),
                     subtotal: Number(i.thanh_tien || i.subtotal || 0)
                   }))
                 });
@@ -767,27 +766,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     return Math.max(0, totalCartAmount - discountAmount);
   }, [totalCartAmount, discountAmount]);
 
-  // Tạo URL mã QR MoMo và VietQR
-  const momoQrUrl = useMemo(() => {
-    if (finalTotalAmount <= 0) return '';
-    const cleanPhone = momoPhone.trim().replace(/\s+/g, '');
-    // Chuỗi mã QR tiêu chuẩn chuyển tiền MoMo
-    const momoData = `2|99|${cleanPhone}|||0|0|${finalTotalAmount}|AVA Coffee K300|transfer_myqr`;
-    return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(momoData)}`;
-  }, [momoPhone, finalTotalAmount]);
-
-  const vietQrUrl = useMemo(() => {
-    if (finalTotalAmount <= 0) return '';
-    const cleanPhone = momoPhone.trim().replace(/\s+/g, '');
-    // Napas BIN 970422 là tài khoản MoMo / MB Bank liên kết
-    return `https://img.vietqr.io/image/970422-${cleanPhone}-compact2.png?amount=${finalTotalAmount}&addInfo=AVAK300`;
-  }, [momoPhone, finalTotalAmount]);
+  // Mã QR tĩnh Loa MoMo chuẩn của quán
+  const momoQrUrl = '/momo-qr.png';
 
   // Đồng bộ giỏ hàng sang Màn hình phụ 11.6 inch cho khách
   useEffect(() => {
     const syncToSecondaryDisplay = async () => {
       try {
-        const activeQr = transferTab === 'momo' ? momoQrUrl : vietQrUrl;
+        const activeQr = '/momo-qr.png';
         const hasCart = cart.length > 0;
         const hasExisting = !hasCart && existingOrderItems.length > 0;
 
@@ -815,7 +801,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             discount: hasCart ? discountAmount : (existingOrder?.discount || 0),
             totalAmount: totalToDisplay,
             paymentMethod: paymentMethod,
-            qrCodeUrl: paymentMethod === 'Chuyển khoản' ? activeQr : undefined,
+            qrCodeUrl: activeQr,
             orderStatus: 'ordering'
           });
         } else {
@@ -829,7 +815,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       } catch (_) {}
     };
     syncToSecondaryDisplay();
-  }, [cart, existingOrder, existingOrderItems, selectedTable, discountAmount, finalTotalAmount, currentUser, paymentMethod, transferTab, momoQrUrl, vietQrUrl]);
+  }, [cart, existingOrder, existingOrderItems, selectedTable, discountAmount, finalTotalAmount, currentUser, paymentMethod]);
 
   // THAO TÁC 1-CHẠM THÊM MÓN VÀO GIỎ HÀNG (FAST TOUCH)
   const handleAddToCart = (product: any) => {
@@ -2603,84 +2589,33 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                   }`}
                 >
                   <QrCode className="w-5 h-5" />
-                  <span>Chuyển khoản (MoMo / VietQR)</span>
+                  <span>Chuyển khoản (Loa MoMo)</span>
                 </button>
               </div>
 
-              {/* NẾU LÀ CHUYỂN KHOẢN -> HỖ TRỢ LOA MOMO & VIETQR */}
+              {/* NẾU LÀ CHUYỂN KHOẢN -> DÙNG MÃ QR LOA MOMO CỦA QUÁN */}
               {paymentMethod === 'Chuyển khoản' && (
                 <div className="p-4 bg-pink-50/60 border border-pink-200 rounded-2xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-1.5">
-                      <Volume2 className="w-4 h-4 text-pink-700" />
-                      <span className="text-xs font-black text-pink-950 uppercase">
-                        Quét mã Loa MoMo / Ngân hàng
-                      </span>
-                    </div>
-
-                    <div className="flex bg-white rounded-lg p-0.5 border border-pink-200 text-[10px] font-bold">
-                      <button
-                        type="button"
-                        onClick={() => setTransferTab('momo')}
-                        className={`px-2.5 py-1 rounded-md transition ${
-                          transferTab === 'momo' ? 'bg-pink-600 text-white shadow-xs' : 'text-gray-600'
-                        }`}
-                      >
-                        Loa MoMo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTransferTab('vietqr')}
-                        className={`px-2.5 py-1 rounded-md transition ${
-                          transferTab === 'vietqr' ? 'bg-pink-600 text-white shadow-xs' : 'text-gray-600'
-                        }`}
-                      >
-                        VietQR
-                      </button>
-                    </div>
+                  <div className="flex items-center space-x-1.5">
+                    <Volume2 className="w-4 h-4 text-pink-700" />
+                    <span className="text-xs font-black text-pink-950 uppercase">
+                      Quét mã Loa MoMo (Mọi Ngân Hàng & MoMo)
+                    </span>
                   </div>
 
-                  {/* SĐT Loa MoMo */}
-                  <div className="flex items-center space-x-2">
-                    <span className="text-xs font-semibold text-gray-600 shrink-0">SĐT MoMo:</span>
-                    <input
-                      type="text"
-                      value={momoPhone}
-                      onChange={(e) => handleSaveMomoPhone(e.target.value)}
-                      placeholder="Nhập số điện thoại MoMo..."
-                      className="flex-1 h-8 px-2.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-800 focus:outline-none focus:border-pink-500"
+                  {/* Hiển thị mã QR Loa MoMo thực tế */}
+                  <div className="flex flex-col items-center justify-center p-2.5 bg-white rounded-xl border border-pink-100 shadow-2xs">
+                    <img
+                      src="/momo-qr.png"
+                      alt="Mã QR Loa MoMo AVA Coffee K300"
+                      className="w-40 h-40 object-contain rounded-lg"
                     />
-                  </div>
-
-                  {/* Hiển thị mã QR tương ứng */}
-                  <div className="flex flex-col items-center justify-center p-2 bg-white rounded-xl border border-pink-100 shadow-2xs">
-                    {transferTab === 'momo' ? (
-                      momoQrUrl ? (
-                        <div className="flex flex-col items-center space-y-1">
-                          <img
-                            src={momoQrUrl}
-                            alt="Mã QR MoMo"
-                            className="w-36 h-36 object-contain rounded-lg"
-                          />
-                          <p className="text-[10px] text-pink-800 font-bold">
-                            Mã MoMo chuẩn: Khách quét app MoMo sẽ báo Loa MoMo
-                          </p>
-                        </div>
-                      ) : null
-                    ) : (
-                      vietQrUrl ? (
-                        <div className="flex flex-col items-center space-y-1">
-                          <img
-                            src={vietQrUrl}
-                            alt="Mã VietQR"
-                            className="w-36 h-36 object-contain rounded-lg"
-                          />
-                          <p className="text-[10px] text-blue-800 font-bold">
-                            Mã VietQR: Mọi ngân hàng (MB, VCB, Techcom...) đều quét được
-                          </p>
-                        </div>
-                      ) : null
-                    )}
+                    <p className="text-[11px] text-pink-900 font-extrabold mt-1">
+                      Mã AIO-MOMO: 3763661
+                    </p>
+                    <p className="text-[10px] text-gray-600 font-medium">
+                      Khách chuyển từ MoMo hoặc bất kỳ Ngân hàng nào, Loa sẽ đọc thông báo
+                    </p>
                   </div>
                   <p className="text-[10px] text-gray-500 text-center italic">
                     Mã QR đã tự động đồng bộ sang màn hình phụ 11.6 inch cho khách quét

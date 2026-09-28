@@ -226,44 +226,30 @@ export default function CustomerDisplayPage() {
                   {order.totalAmount.toLocaleString('vi-VN')} <span className="text-lg">đ</span>
                 </p>
               </div>
-
-              {order.paymentMethod && (
-                <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white/15 border border-white/20 text-xs font-bold text-white">
-                  <DollarSign className="w-3.5 h-3.5 text-amber-300" />
-                  Hình thức: {order.paymentMethod}
-                </div>
-              )}
             </div>
 
-            {/* MÃ QR QUÉT NHANH */}
+            {/* MÃ QR QUÉT NHANH MOMO LOA TĨNH */}
             <div className="flex-1 bg-white rounded-2xl border-2 border-amber-200 p-5 flex flex-col items-center justify-center shadow-md relative">
-              {order.qrCodeUrl ? (
-                <div className="flex flex-col items-center text-center">
-                  <p className="text-xs font-black text-[#4A3525] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    <QrCode className="w-4 h-4 text-amber-600" />
-                    Quét mã thanh toán (MoMo / VietQR)
-                  </p>
-                  <div className="p-2.5 bg-white rounded-2xl border border-gray-200 shadow-sm">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={order.qrCodeUrl}
-                      alt="QR thanh toán"
-                      className="w-44 h-44 sm:w-48 sm:h-48 object-contain rounded-xl"
-                    />
-                  </div>
-                  <p className="text-xs text-gray-600 font-semibold mt-2.5">
-                    Mở App MoMo hoặc Ngân hàng bất kỳ để quét
-                  </p>
+              <div className="flex flex-col items-center text-center">
+                <p className="text-xs font-black text-[#4A3525] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <QrCode className="w-4 h-4 text-amber-600" />
+                  Quét mã thanh toán (MoMo)
+                </p>
+                <div className="p-2 bg-white rounded-2xl border border-gray-200 shadow-sm">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src="/momo-qr.png"
+                    alt="Mã QR Loa MoMo AVA Coffee K300"
+                    className="w-48 h-48 sm:w-56 sm:h-56 object-contain rounded-xl"
+                  />
                 </div>
-              ) : (
-                <div className="text-center p-6">
-                  <div className="w-14 h-14 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center mx-auto mb-3">
-                    <Coffee className="w-8 h-8 text-[#4A3525]" />
-                  </div>
-                  <p className="text-base font-black text-[#4A3525]">AVA Coffee K300</p>
-                  <p className="text-xs text-gray-500 font-medium mt-1">Cảm ơn Quý khách !</p>
-                </div>
-              )}
+                <p className="text-xs text-gray-700 font-bold mt-2.5">
+                  Quét bằng MoMo hoặc bất kỳ Ngân hàng nào
+                </p>
+                <p className="text-[11px] text-gray-500 font-medium">
+                  Loa MoMo sẽ tự động đọc thông báo khi nhận tiền
+                </p>
+              </div>
             </div>
           </div>
         </main>

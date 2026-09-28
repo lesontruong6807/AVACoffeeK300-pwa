@@ -232,8 +232,8 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
     builder.line('CHUC QUY KHACH NGON MIENG');
   }
 
-  // Feed 3 dòng chuẩn cơ học để đẩy chữ qua lưỡi dao trước khi cắt (ngắn gọn, tiết kiệm giấy)
-  builder.feed(3)
+  // Feed 5 dòng chuẩn cơ học để đẩy toàn bộ chữ qua khỏi lưỡi dao trước khi cắt (chống chém ngang chữ)
+  builder.feed(5)
     .cut();
 
   return builder.getBuffer();

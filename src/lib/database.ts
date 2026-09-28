@@ -1327,13 +1327,15 @@ const mapOrderItemToClient = (oi: any) => oi ? {
   id: oi.id,
   order_id: oi.idhoadon,
   product_id: oi.idsp,
+  name: oi.ten_san_pham || oi.sanpham?.ten_san_pham || 'Món',
+  ten_san_pham: oi.ten_san_pham || oi.sanpham?.ten_san_pham || 'Món',
   quantity: oi.so_luong,
   unit_price: Number(oi.don_gia),
   subtotal: Number(oi.thanh_tien),
   ghi_chu: oi.ghi_chu || '',
   cost_price: Number(oi.gia_von || 0),
   products: {
-    name: oi.ten_san_pham,
+    name: oi.ten_san_pham || oi.sanpham?.ten_san_pham || 'Món',
     image_url: oi.sanpham?.hinh_anh || ''
   }
 } : null;
