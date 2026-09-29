@@ -170,7 +170,7 @@ interface RevenueData {
     lyDen: number;
     lyTrang: number;
     lyHoaVan: number;
-    lyTraTac: number;
+    lyTraTac?: number;
     totalLy: number;
   };
 }
@@ -246,7 +246,6 @@ export function exportRevenueToExcel(
     wsData.push(['Ly Đen AVA', data.sales.lyDen]);
     wsData.push(['Ly Trắng AVA', data.sales.lyTrang]);
     wsData.push(['Ly Hoa Văn', data.sales.lyHoaVan]);
-    wsData.push(['Ly Trà Tắc', data.sales.lyTraTac]);
     wsData.push([]);
     wsData.push(['CHI TIẾT MÓN ĂN ĐÃ BÁN (SẮP XẾP GIẢM DẦN)']);
     wsData.push(['STT', 'Tên sản phẩm', 'Số lượng bán', 'Đơn giá', 'Thành tiền']);
@@ -442,7 +441,6 @@ export function exportRevenueToPDF(
         ['Ly Đen AVA', String(data.sales.lyDen)],
         ['Ly Trắng AVA', String(data.sales.lyTrang)],
         ['Ly Hoa Văn', String(data.sales.lyHoaVan)],
-        ['Ly Trà Tắc', String(data.sales.lyTraTac)],
       ],
       styles: { font: 'TimesNewRoman', fontSize: 9, cellPadding: 2.5 },
       headStyles: { fillColor: [74, 53, 37], textColor: [255, 255, 255], fontStyle: 'bold' },
@@ -776,7 +774,7 @@ export function exportProductSalesToExcel(
     lyDen: number;
     lyTrang: number;
     lyHoaVan: number;
-    lyTraTac: number;
+    lyTraTac?: number;
     sortedSales: Array<{ name: string; quantity: number; price: number; subtotal: number }>;
   },
   startDate: string,
@@ -794,7 +792,6 @@ export function exportProductSalesToExcel(
     ['Ly Đen AVA', salesData.lyDen],
     ['Ly Trắng AVA', salesData.lyTrang],
     ['Ly Trắng Hoa Văn', salesData.lyHoaVan],
-    ['Ly Trà Tắc', salesData.lyTraTac],
     [],
     ['DANH SÁCH MÓN ĂN BÁN RA (SẮP XẾP SỐ LƯỢNG GIẢM DẦN)'],
     ['STT', 'Tên sản phẩm', 'Số lượng bán', 'Đơn giá', 'Thành tiền']
@@ -838,7 +835,7 @@ export function exportProductSalesToPDF(
     lyDen: number;
     lyTrang: number;
     lyHoaVan: number;
-    lyTraTac: number;
+    lyTraTac?: number;
     sortedSales: Array<{ name: string; quantity: number; price: number; subtotal: number }>;
   },
   startDate: string,
@@ -868,9 +865,9 @@ export function exportProductSalesToPDF(
 
   autoTable(doc, {
     startY: 42,
-    head: [['Tổng số ly', 'Ly Đen AVA', 'Ly Trắng AVA', 'Ly Hoa Văn', 'Ly Trà Tắc']],
+    head: [['Tổng số ly', 'Ly Đen AVA', 'Ly Trắng AVA', 'Ly Hoa Văn']],
     body: [
-      [`${salesData.totalLy} ly`, `${salesData.lyDen} ly`, `${salesData.lyTrang} ly`, `${salesData.lyHoaVan} ly`, `${salesData.lyTraTac} ly`]
+      [`${salesData.totalLy} ly`, `${salesData.lyDen} ly`, `${salesData.lyTrang} ly`, `${salesData.lyHoaVan} ly`]
     ],
     styles: { font: 'TimesNewRoman', fontSize: 9, cellPadding: 3, halign: 'center' },
     headStyles: { fillColor: [74, 53, 37], textColor: [255, 255, 255], fontStyle: 'bold' },

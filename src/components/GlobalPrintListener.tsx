@@ -1,0 +1,178 @@
+'use client';
+
+import React, { useEffect, useRef } from 'react';
+import { db, onRealtimeEvent } from '@/lib/database';
+import { printOrderDirect, tryAcquirePrintLock } from '@/lib/printerService';
+import { toast } from '@/lib/toast';
+
+// Bộ nhớ đệm theo dõi các đơn và danh sách món đã in
+const printedOrdersTracker = new Map<string, { printedAt: number; itemCount: number; itemIds: string[] }>();
+
+export default function GlobalPrintListener() {
+  const isListeningRef = useRef(false);
+
+  useEffect(() => {
+    // Chỉ kích hoạt một bộ lắng nghe duy nhất trong toàn bộ vòng đời ứng dụng
+    if (isListeningRef.current) return;
+    isListeningRef.current = true;
+
+    // Kiểm tra xem có đang chạy trong môi trường Desktop (Tauri) hay không
+    const isDesktop = typeof window !== 'undefined' && (!!(window as any).__TAURI__ || !!(window as any).__TAURI_INTERNALS__);
+    console.log(`[GlobalPrintListener] Khởi động bộ lắng nghe in toàn cục (Môi trường Desktop: ${isDesktop})`);
+
+    // ─────────────────────────────────────────────────────────────
+    // 1. LẮNG NGHE LỆNH IN SIÊU TỐC QUA SUPABASE REALTIME BROADCAST (~20ms)
+    // ─────────────────────────────────────────────────────────────
+    const unsubRealtime = onRealtimeEvent('order_update', async (rawPayload: any) => {
+      const payload = rawPayload?.payload || rawPayload;
+      if (!payload || payload.action !== 'PRINT_RECEIPT' || !payload.orderData) return;
+
+      const orderData = payload.orderData;
+      const orderId = orderData.orderId;
+      const isManual = payload.isManualReprint || orderData.isManualReprint;
+      const isPayment = payload.isPayment || orderData.notes?.includes('(ĐÃ THANH TOÁN)') || orderData.notes?.includes('ĐÃ THANH TOÁN');
+
+      // Quy tắc nghiêm ngặt: Nếu là lệnh thanh toán mà đơn đã được in lúc lưu trước đó -> TUYỆT ĐỐI KHÔNG IN LẠI
+      if (isPayment && !isManual && orderId) {
+        const existingTrack = printedOrdersTracker.get(orderId);
+        if (existingTrack) {
+          console.log(`[GlobalPrintListener] Bỏ qua in tự động khi thanh toán vì đơn ${orderId} đã in lúc lưu.`);
+          return;
+        }
+      }
+
+      console.log('[GlobalPrintListener] Nhận lệnh in từ Web app điện thoại:', orderData);
+      try {
+        await printOrderDirect(orderData, undefined, undefined, { force: !!isManual });
+        
+        if (orderId) {
+          const items = orderData.items || [];
+          printedOrdersTracker.set(orderId, {
+            printedAt: Date.now(),
+            itemCount: items.length,
+            itemIds: items.map((i: any) => i.id || i.product_id)
+          });
+        }
+
+        toast.success(`🖨️ Đã in hoá đơn (${orderData.tableName || 'Đơn hàng'}) từ điện thoại!`);
+      } catch (err: any) {
+        console.error('[GlobalPrintListener] Lỗi in tự động:', err);
+      }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // 2. DỰ PHÒNG LẮNG NGHE QUA SUPABASE POSTGRES DATABASE CHANGES
+    // ─────────────────────────────────────────────────────────────
+    const unsubPostgres = db.subscribeToOrderChanges(async (orderChangePayload?: any) => {
+      if (!orderChangePayload) return;
+
+      const { eventType, new: newOrder } = orderChangePayload;
+      if (!newOrder || !newOrder.id) return;
+
+      // Đã hủy thì không in
+      if (newOrder.trang_thai_thanh_toan === 'Đã hủy' || newOrder.trang_thai_thanh_toan === 'Chờ duyệt hủy') {
+        return;
+      }
+
+      const orderId = newOrder.id;
+      const createdAt = newOrder.ngay_tao ? new Date(newOrder.ngay_tao).getTime() : Date.now();
+      const isRecent = Date.now() - createdAt < 45000;
+
+      // TRƯỜNG HỢP 1: TẠO ĐƠN MỚI (LƯU ĐƠN)
+      if (eventType === 'INSERT' && isRecent) {
+        // Chỉ in nếu chưa từng in
+        if (printedOrdersTracker.has(orderId)) return;
+        if (!tryAcquirePrintLock(orderId, 'create')) return;
+
+        try {
+          const items = await db.getOrderItems(orderId);
+          if (items && items.length > 0) {
+            const currentTables = await db.getTables();
+            const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
+            
+            await printOrderDirect({
+              orderId: newOrder.id,
+              tableName: matchedTable?.table_name || 'Khách mang về',
+              staffName: 'Nhân viên (Điện thoại)',
+              totalAmount: Number(newOrder.tong_tien || 0),
+              discount: Number(newOrder.giam_gia || 0),
+              notes: '(LƯU ĐƠN)',
+              items: items.map((i: any) => ({
+                name: i.products?.name || i.name || i.ten_san_pham || 'Món',
+                quantity: Number(i.so_luong || i.quantity || 1),
+                price: Number(i.unit_price || i.don_gia || i.price || 0),
+                subtotal: Number(i.thanh_tien || i.subtotal || 0),
+                notes: i.ghi_chu || ''
+              }))
+            });
+
+            printedOrdersTracker.set(orderId, {
+              printedAt: Date.now(),
+              itemCount: items.length,
+              itemIds: items.map((i: any) => i.id || i.product_id)
+            });
+
+            toast.success(`🖨️ Đã in phiếu bếp (${matchedTable?.table_name || 'Khách mang về'}) từ điện thoại!`);
+          }
+        } catch (printErr) {
+          console.warn('[GlobalPrintListener] Lỗi in tự động từ INSERT:', printErr);
+        }
+      }
+
+      // TRƯỜNG HỢP 2: UPDATE (KIỂM TRA CÓ MÓN MỚI BỔ SUNG KHÔNG)
+      else if (eventType === 'UPDATE' && newOrder.trang_thai_thanh_toan === 'Chưa thanh toán') {
+        const tracked = printedOrdersTracker.get(orderId);
+        if (tracked) {
+          try {
+            const currentItems = await db.getOrderItems(orderId);
+            if (currentItems && currentItems.length > tracked.itemCount) {
+              // Bàn này có thêm món mới!
+              const newItems = currentItems.slice(tracked.itemCount);
+              const currentTables = await db.getTables();
+              const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
+
+              await printOrderDirect({
+                orderId: newOrder.id,
+                tableName: matchedTable?.table_name || 'Khách mang về',
+                staffName: 'Nhân viên (Điện thoại)',
+                totalAmount: Number(newOrder.tong_tien || 0),
+                discount: 0,
+                notes: '(GỌI THÊM MÓN)',
+                items: newItems.map((i: any) => ({
+                  name: i.products?.name || i.name || i.ten_san_pham || 'Món',
+                  quantity: Number(i.so_luong || i.quantity || 1),
+                  price: Number(i.unit_price || i.don_gia || i.price || 0),
+                  subtotal: Number(i.thanh_tien || i.subtotal || 0),
+                  notes: i.ghi_chu || ''
+                }))
+              }, undefined, undefined, { force: true });
+
+              printedOrdersTracker.set(orderId, {
+                printedAt: Date.now(),
+                itemCount: currentItems.length,
+                itemIds: currentItems.map((i: any) => i.id || i.product_id)
+              });
+
+              toast.success(`🖨️ Đã in món gọi thêm (${matchedTable?.table_name || 'Bàn'})!`);
+            }
+          } catch (e) {
+            console.warn('[GlobalPrintListener] Lỗi in món gọi thêm:', e);
+          }
+        }
+      }
+      // TRƯỜNG HỢP 3: UPDATE SANG 'Đã thanh toán' -> TUYỆT ĐỐI BỎ QUA KHÔNG IN LẠI
+      else if (eventType === 'UPDATE' && newOrder.trang_thai_thanh_toan === 'Đã thanh toán') {
+        // Đã lưu là in, khi ấn thanh toán là tuyệt đối không in thêm!
+        console.log(`[GlobalPrintListener] Đơn ${orderId} đã thanh toán - tuân thủ quy tắc không in lặp.`);
+      }
+    });
+
+    return () => {
+      unsubRealtime();
+      unsubPostgres();
+      isListeningRef.current = false;
+    };
+  }, []);
+
+  return null;
+}

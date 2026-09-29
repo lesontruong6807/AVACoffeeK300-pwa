@@ -1438,7 +1438,6 @@ export default function AdminPage() {
   let lyDen = 0;
   let lyTrang = 0;
   let lyHoaVan = 0;
-  let lyTraTac = 0;
 
   rangeOrderItems.forEach(item => {
     const prodId = item.product_id;
@@ -1448,17 +1447,15 @@ export default function AdminPage() {
     prodRecipes.forEach(r => {
       if (r.ingredient_id === 'ing_lyden') {
         lyDen += Number(r.quantity_needed || 0) * qty;
-      } else if (r.ingredient_id === 'ing_lytrang') {
+      } else if (r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lytratac') {
         lyTrang += Number(r.quantity_needed || 0) * qty;
       } else if (r.ingredient_id === 'ing_lyhoavan') {
         lyHoaVan += Number(r.quantity_needed || 0) * qty;
-      } else if (r.ingredient_id === 'ing_lytratac') {
-        lyTraTac += Number(r.quantity_needed || 0) * qty;
       }
     });
   });
 
-  const totalLy = lyDen + lyTrang + lyHoaVan + lyTraTac;
+  const totalLy = lyDen + lyTrang + lyHoaVan;
 
 
   // Helper: Trích xuất lý do/ghi chú thực tế do nhân viên nhập
@@ -3089,7 +3086,7 @@ export default function AdminPage() {
             <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={() => exportProductSalesToExcel({
-                  totalLy, lyDen, lyTrang, lyHoaVan, lyTraTac, sortedSales
+                  totalLy, lyDen, lyTrang, lyHoaVan, sortedSales
                 }, repStartDate, repEndDate)}
                 className="px-3.5 py-2.5 bg-green-50 hover:bg-green-100 text-green-700 text-xs font-bold rounded-xl transition border border-green-200 flex items-center space-x-1.5 shadow-sm"
               >
@@ -3097,7 +3094,7 @@ export default function AdminPage() {
               </button>
               <button
                 onClick={() => exportProductSalesToPDF({
-                  totalLy, lyDen, lyTrang, lyHoaVan, lyTraTac, sortedSales
+                  totalLy, lyDen, lyTrang, lyHoaVan, sortedSales
                 }, repStartDate, repEndDate)}
                 className="px-3.5 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold rounded-xl transition border border-red-200 flex items-center space-x-1.5 shadow-sm"
               >
@@ -3113,7 +3110,7 @@ export default function AdminPage() {
               <span className="text-xs text-coffee-medium">Tổng số: <strong>{totalLy} ly</strong></span>
             </h4>
 
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 bg-[#FAF6F0] p-5 rounded-2xl border border-coffee-light/60">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-[#FAF6F0] p-5 rounded-2xl border border-coffee-light/60">
               <div className="text-center space-y-1">
                 <span className="text-[10px] text-coffee-medium uppercase font-bold block">Tổng số ly</span>
                 <span className="font-black text-xl text-coffee-primary">{totalLy}</span>
@@ -3129,10 +3126,6 @@ export default function AdminPage() {
               <div className="text-center space-y-1 border-l border-coffee-light/60">
                 <span className="text-[10px] text-coffee-medium uppercase font-bold block">Ly Hoa Văn</span>
                 <span className="font-black text-xl text-coffee-dark">{lyHoaVan}</span>
-              </div>
-              <div className="text-center space-y-1 border-l border-coffee-light/60">
-                <span className="text-[10px] text-coffee-medium uppercase font-bold block">Ly Trà Tắc</span>
-                <span className="font-black text-xl text-coffee-dark">{lyTraTac}</span>
               </div>
             </div>
           </div>

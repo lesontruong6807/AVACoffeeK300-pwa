@@ -730,7 +730,6 @@ export const MOCK_INGREDIENTS = [
   { id: 'ing_lyden', name: 'Ly đen AVA', unit: 'cái', stock_quantity: 78, opening_stock: 78, min_stock: 50, quy_cach: 'cái', don_gia_nhap: 1300, gia_von_trung_binh: 1292.3853157803167 },
   { id: 'ing_lyhoavan', name: 'Ly trắng hoa văn AVA', unit: 'cái', stock_quantity: 178, opening_stock: 178, min_stock: 50, quy_cach: 'cái', don_gia_nhap: 1500, gia_von_trung_binh: 1500 },
   { id: 'ing_lytrang', name: 'Ly trắng AVA', unit: 'cái', stock_quantity: 117, opening_stock: 117, min_stock: 50, quy_cach: 'cái', don_gia_nhap: 1400, gia_von_trung_binh: 1398.0662983425414 },
-  { id: 'ing_lytratac', name: 'Ly trà tắc', unit: 'cái', stock_quantity: 144, opening_stock: 144, min_stock: 2, quy_cach: 'cái', don_gia_nhap: 680, gia_von_trung_binh: 680 },
   { id: 'ing_matcha', name: 'Bột Matcha', unit: 'g', stock_quantity: 354.5, opening_stock: 354.5, min_stock: 50, quy_cach: '200g', don_gia_nhap: 725, gia_von_trung_binh: 725 },
   { id: 'ing_muoibien', name: 'Topping Muối biển', unit: 'g', stock_quantity: 304.089999999997, opening_stock: 304.089999999997, min_stock: null, quy_cach: '500g', don_gia_nhap: 150, gia_von_trung_binh: 150 },
   { id: 'ing_muong', name: 'Muỗng', unit: 'bịch', stock_quantity: 5, opening_stock: 5, min_stock: null, quy_cach: 'bịch', don_gia_nhap: 333.3333333333333, gia_von_trung_binh: 333.3333333333333 },
@@ -850,14 +849,14 @@ export const MOCK_RECIPES = [
 
   // 14. Chanh đá (TUK005)
   { id: 'rec_tuk5_duong', product_id: 'TUK005', ingredient_id: 'ing_duong', quantity_needed: 41.67, unit: 'g' },
-  { id: 'rec_tuk5_ly', product_id: 'TUK005', ingredient_id: 'ing_lytratac', quantity_needed: 1, unit: 'cái' },
+  { id: 'rec_tuk5_ly', product_id: 'TUK005', ingredient_id: 'ing_lytrang', quantity_needed: 1, unit: 'cái' },
 
   // 15. Chanh nóng (TUK006)
   { id: 'rec_tuk6_duong', product_id: 'TUK006', ingredient_id: 'ing_duong', quantity_needed: 41.67, unit: 'g' },
   { id: 'rec_tuk6_ly', product_id: 'TUK006', ingredient_id: 'ing_lyden', quantity_needed: 1, unit: 'cái' },
 
   // 16. Trà tắc (T001 - 4 trái tắc)
-  { id: 'rec_t1_lytratac', product_id: 'T001', ingredient_id: 'ing_lytratac', quantity_needed: 1, unit: 'cái' },
+  { id: 'rec_t1_lytrang', product_id: 'T001', ingredient_id: 'ing_lytrang', quantity_needed: 1, unit: 'cái' },
   { id: 'rec_t1_duong', product_id: 'T001', ingredient_id: 'ing_duong', quantity_needed: 41.67, unit: 'g' },
 
   // 17. Trà Lipton (T006)
@@ -1314,12 +1313,32 @@ const mapOrderToClient = (o: any) => {
     notes: orderNote,
     tables: o.danhsachban ? { table_name: o.danhsachban.ten_ban } : null,
     users: o.nguoidung ? { full_name: o.nguoidung.ho_ten } : null,
-    order_items: o.hoadondetail && Array.isArray(o.hoadondetail) ? o.hoadondetail.map((d: any) => ({
-      id: d.id,
-      name: d.ten_san_pham || 'Món',
-      quantity: d.so_luong || 1,
-      notes: d.ghi_chu || ''
-    })) : []
+    order_items: o.hoadondetail && Array.isArray(o.hoadondetail) ? o.hoadondetail.map((d: any) => {
+      const unitPrice = Number(d.don_gia || d.unit_price || d.price || 0);
+      const qty = Number(d.so_luong || d.quantity || 1);
+      const sub = Number(d.thanh_tien || d.subtotal || (qty * unitPrice));
+      return {
+        id: d.id,
+        order_id: d.idhoadon || o.id,
+        product_id: d.idsp || d.product_id,
+        name: d.ten_san_pham || d.name || d.sanpham?.ten_san_pham || 'Món',
+        ten_san_pham: d.ten_san_pham || d.name || d.sanpham?.ten_san_pham || 'Món',
+        quantity: qty,
+        so_luong: qty,
+        unit_price: unitPrice,
+        price: unitPrice,
+        don_gia: unitPrice,
+        subtotal: sub,
+        thanh_tien: sub,
+        notes: d.ghi_chu || d.notes || '',
+        ghi_chu: d.ghi_chu || d.notes || '',
+        cup_id: d.cup_id || (d.ghi_chu && d.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || null,
+        products: {
+          name: d.ten_san_pham || d.name || d.sanpham?.ten_san_pham || 'Món',
+          image_url: d.sanpham?.hinh_anh || ''
+        }
+      };
+    }) : []
   };
 };
 
@@ -1980,7 +1999,7 @@ export const db = {
           *,
           danhsachban (ten_ban),
           nguoidung (ho_ten),
-          hoadondetail (id, ghi_chu)
+          hoadondetail (id, idsp, ten_san_pham, so_luong, don_gia, thanh_tien, ghi_chu)
         `)
         .eq('trang_thai_thanh_toan', 'Chưa thanh toán')
         .order('ngay_tao', { ascending: false });
@@ -2011,7 +2030,7 @@ export const db = {
           *,
           danhsachban (ten_ban),
           nguoidung (ho_ten),
-          hoadondetail (id, ghi_chu, idsp, so_luong, ten_san_pham)
+          hoadondetail (id, idsp, ten_san_pham, so_luong, don_gia, thanh_tien, ghi_chu)
         `)
         .neq('trang_thai_thanh_toan', 'Đã hủy')
         .neq('trang_thai_thanh_toan', 'Chờ duyệt hủy')
@@ -2363,7 +2382,7 @@ export const db = {
           *,
           danhsachban (ten_ban),
           nguoidung (ho_ten),
-          hoadondetail (id, ghi_chu)
+          hoadondetail (id, idsp, ten_san_pham, so_luong, don_gia, thanh_tien, ghi_chu)
         `)
         .eq('id_ban', tableId)
         .eq('trang_thai_thanh_toan', 'Chưa thanh toán')
@@ -2741,7 +2760,7 @@ export const db = {
       // 1. Lấy thông tin bàn & chi tiết items cùng lúc
       const [orderResult, itemsResult] = await Promise.all([
         supabase.from('hoadon').select('id, id_ban, trang_thai_thanh_toan, tong_tien, giam_gia, ngay_tao, ngay_thanh_toan, id_nhan_vien').eq('id', orderId).single(),
-        supabase.from('hoadondetail').select('idsp, so_luong').eq('idhoadon', orderId)
+        supabase.from('hoadondetail').select('idsp, so_luong, ghi_chu').eq('idhoadon', orderId)
       ]);
       const order = orderResult.data;
       const items = itemsResult.data;
@@ -2755,7 +2774,11 @@ export const db = {
       // 2. Tối ưu siêu tốc: Chạy song song cập nhật hóa đơn, trả bàn và khấu trừ kho cùng một lúc
       cachedTables = null;
       const stockDeductionPromise = (items && items.length > 0)
-        ? this.deductStockFromOrder(items.map(item => ({ product_id: item.idsp, quantity: item.so_luong })))
+        ? this.deductStockFromOrder(items.map(item => ({
+            product_id: item.idsp,
+            quantity: item.so_luong,
+            notes: item.ghi_chu || ''
+          })))
             .catch(err => console.error('Lỗi khấu trừ kho khi thanh toán:', err))
         : Promise.resolve();
 
@@ -4761,17 +4784,52 @@ export const db = {
 
       let updated = false;
 
+      const CUP_INGREDIENTS = ['ing_lyden', 'ing_lytrang', 'ing_lyhoavan'];
       const ingChanges: { [id: string]: { deductQty: number; productIds: string[] } } = {};
       for (const item of items) {
+        // Kiểm tra xem món có chọn đổi ly riêng không (từ thuộc tính hoặc ghi chú [Ly: ing_...])
+        let customCupId = (item as any).cup_id || (item as any).selected_cup_id;
+        const notesStr = (item as any).notes || (item as any).ghi_chu || '';
+        if (!customCupId && notesStr) {
+          const m = notesStr.match(/\[Ly:\s*(ing_ly[a-z]+)\]/);
+          if (m) customCupId = m[1];
+        }
+
         const itemRecipes = recipes.filter(r => r.product_id === item.product_id);
+        let cupReplaced = false;
+
         for (const rec of itemRecipes) {
-          const deductQty = rec.quantity_needed * item.quantity;
-          if (!ingChanges[rec.ingredient_id]) {
-            ingChanges[rec.ingredient_id] = { deductQty: 0, productIds: [] };
+          let targetIngId = rec.ingredient_id;
+
+          // Nếu công thức có ly trà tắc cũ -> đổi sang ly trắng vì K300 không dùng ly trà tắc
+          if (targetIngId === 'ing_lytratac') {
+            targetIngId = 'ing_lytrang';
           }
-          ingChanges[rec.ingredient_id].deductQty += deductQty;
-          if (!ingChanges[rec.ingredient_id].productIds.includes(item.product_id)) {
-            ingChanges[rec.ingredient_id].productIds.push(item.product_id);
+
+          // Nếu là nguyên liệu ly và đơn hàng có chỉ định đổi ly riêng (ví dụ uống nóng -> đổi ly đen)
+          if (CUP_INGREDIENTS.includes(targetIngId) && customCupId && CUP_INGREDIENTS.includes(customCupId)) {
+            targetIngId = customCupId;
+            cupReplaced = true;
+          }
+
+          const deductQty = rec.quantity_needed * item.quantity;
+          if (!ingChanges[targetIngId]) {
+            ingChanges[targetIngId] = { deductQty: 0, productIds: [] };
+          }
+          ingChanges[targetIngId].deductQty += deductQty;
+          if (!ingChanges[targetIngId].productIds.includes(item.product_id)) {
+            ingChanges[targetIngId].productIds.push(item.product_id);
+          }
+        }
+
+        // Nếu món ban đầu không có ly trong công thức nhưng nhân viên chọn ly
+        if (!cupReplaced && customCupId && CUP_INGREDIENTS.includes(customCupId)) {
+          if (!ingChanges[customCupId]) {
+            ingChanges[customCupId] = { deductQty: 0, productIds: [] };
+          }
+          ingChanges[customCupId].deductQty += item.quantity;
+          if (!ingChanges[customCupId].productIds.includes(item.product_id)) {
+            ingChanges[customCupId].productIds.push(item.product_id);
           }
         }
       }

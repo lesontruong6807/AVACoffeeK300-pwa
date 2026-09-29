@@ -35,6 +35,8 @@ interface CartItem {
   price: number;
   quantity: number;
   subtotal: number;
+  cup_id?: string;
+  notes?: string;
 }
 
 interface MobilePosViewProps {
@@ -241,6 +243,40 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
     setCart(prev => prev.filter(item => item.product_id !== productId));
   };
 
+  const handleCycleCupType = (index: number) => {
+    setCart(prev => {
+      const next = [...prev];
+      const item = next[index];
+      if (!item) return prev;
+
+      let nextCupId: string | undefined;
+      let cupLabel = '';
+      if (!item.cup_id || item.cup_id === 'ing_lytrang') {
+        nextCupId = 'ing_lyden';
+        cupLabel = 'Ly Đen (Nóng)';
+      } else if (item.cup_id === 'ing_lyden') {
+        nextCupId = 'ing_lyhoavan';
+        cupLabel = 'Ly Hoa Văn';
+      } else {
+        nextCupId = 'ing_lytrang';
+        cupLabel = 'Ly Trắng';
+      }
+
+      let cleanNotes = (item.notes || '').replace(/\[Ly:\s*ing_ly[a-z]+\]/g, '').trim();
+      const updatedNotes = cleanNotes 
+        ? `${cleanNotes} [Ly: ${nextCupId}]`
+        : `[Ly: ${nextCupId}]`;
+
+      next[index] = {
+        ...item,
+        cup_id: nextCupId,
+        notes: updatedNotes
+      };
+      toast.info(`Đã đổi: ${item.name} ➔ ${cupLabel}`);
+      return next;
+    });
+  };
+
   const clearCart = () => {
     setCart([]);
     setDiscountValue(0);
@@ -363,33 +399,28 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
 
       await db.payOrder(orderIdToPay, method);
 
-      // In hóa đơn ra máy in quầy POS qua Wi-Fi
-      try {
-        const printItems = cart.length > 0
-          ? cart
-          : existingOrderItems.map(i => ({
-              name: i.products?.name || i.ten_san_pham || 'Món',
-              quantity: i.quantity || 1,
-              price: i.unit_price || 0,
-              subtotal: i.subtotal || 0
-            }));
-
-        await printOrderDirect({
-          tableName: selectedTable?.table_name || 'Khách mang về',
-          staffName: currentUser?.full_name || 'Nhân viên',
-          orderId: orderIdToPay,
-          items: printItems.map(i => ({
-            name: i.name,
-            quantity: i.quantity,
-            price: i.price,
-            subtotal: i.subtotal
-          })),
-          totalAmount: displayTotalAmount,
-          discount: discountAmount,
-          notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-        });
-      } catch (printErr) {
-        console.warn('Lỗi gửi lệnh in từ điện thoại:', printErr);
+      // In hóa đơn: CHỈ in nếu là đơn tạo mới và thanh toán ngay lập tức (cart.length > 0 && !existingOrder)
+      // Nếu là bàn đã gọi món và lưu từ trước (existingOrder) thì tuyệt đối không in lại khi ấn thanh toán
+      if (cart.length > 0 && !existingOrder) {
+        try {
+          await printOrderDirect({
+            tableName: selectedTable?.table_name || 'Khách mang về',
+            staffName: currentUser?.full_name || 'Nhân viên',
+            orderId: orderIdToPay,
+            items: cart.map(i => ({
+              name: i.name,
+              quantity: i.quantity,
+              price: i.price,
+              subtotal: i.subtotal,
+              notes: i.notes
+            })),
+            totalAmount: displayTotalAmount,
+            discount: discountAmount,
+            notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
+          });
+        } catch (printErr) {
+          console.warn('Lỗi gửi lệnh in từ điện thoại:', printErr);
+        }
       }
 
       confetti({
@@ -911,11 +942,27 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
             </h3>
 
             <div className="flex-1 overflow-y-auto max-h-[300px] py-3 space-y-3">
-              {cart.map((item) => (
-                <div key={item.product_id} className="flex items-center justify-between text-xs pb-2 border-b border-dashed border-coffee-light/60">
+              {cart.map((item, idx) => (
+                <div key={`${item.product_id}-${idx}`} className="flex items-center justify-between text-xs pb-2 border-b border-dashed border-coffee-light/60">
                   <div className="space-y-0.5 flex-1 pr-2">
                     <p className="font-bold text-coffee-dark line-clamp-1">{item.name}</p>
-                    <p className="text-[10px] text-coffee-medium">{item.price.toLocaleString('vi-VN')}đ</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-[10px] text-coffee-medium">{item.price.toLocaleString('vi-VN')}đ</span>
+                      <button
+                        type="button"
+                        onClick={() => handleCycleCupType(idx)}
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold border transition active:scale-95 ${
+                          item.cup_id === 'ing_lyden'
+                            ? 'bg-amber-950 text-amber-200 border-amber-800'
+                            : item.cup_id === 'ing_lyhoavan'
+                            ? 'bg-pink-100 text-pink-700 border-pink-300'
+                            : 'bg-stone-100 text-stone-700 border-stone-300 hover:bg-stone-200'
+                        }`}
+                        title="Bấm để đổi loại ly (Nóng/Hoa văn/Trắng)"
+                      >
+                        {item.cup_id === 'ing_lyden' ? '☕ Ly Đen' : item.cup_id === 'ing_lyhoavan' ? '🌸 Hoa Văn' : '🥤 Ly Trắng'}
+                      </button>
+                    </div>
                   </div>
                   <div className="flex items-center space-x-2">
                     <div className="flex items-center bg-[#FAF6F0] rounded-lg border border-coffee-light overflow-hidden">
@@ -1048,11 +1095,27 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
             </h3>
 
             <div className="flex-1 overflow-y-auto py-2 space-y-2.5 my-1">
-              {cart.map((item) => (
-                <div key={item.product_id} className="flex items-center justify-between text-xs pb-2 border-b border-dashed border-coffee-light/60">
+              {cart.map((item, idx) => (
+                <div key={`${item.product_id}-${idx}`} className="flex items-center justify-between text-xs pb-2 border-b border-dashed border-coffee-light/60">
                   <div className="space-y-0.5 flex-1 pr-2">
                     <p className="font-bold text-coffee-dark">{item.name}</p>
-                    <p className="text-[10px] text-coffee-medium">{item.price.toLocaleString('vi-VN')}đ</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-[10px] text-coffee-medium">{item.price.toLocaleString('vi-VN')}đ</span>
+                      <button
+                        type="button"
+                        onClick={() => handleCycleCupType(idx)}
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold border transition active:scale-95 ${
+                          item.cup_id === 'ing_lyden'
+                            ? 'bg-amber-950 text-amber-200 border-amber-800'
+                            : item.cup_id === 'ing_lyhoavan'
+                            ? 'bg-pink-100 text-pink-700 border-pink-300'
+                            : 'bg-stone-100 text-stone-700 border-stone-300 hover:bg-stone-200'
+                        }`}
+                        title="Bấm để đổi loại ly (Nóng/Hoa văn/Trắng)"
+                      >
+                        {item.cup_id === 'ing_lyden' ? '☕ Ly Đen' : item.cup_id === 'ing_lyhoavan' ? '🌸 Hoa Văn' : '🥤 Ly Trắng'}
+                      </button>
+                    </div>
                   </div>
                   <div className="flex items-center space-x-2">
                     <div className="flex items-center bg-[#FAF6F0] rounded-lg border border-coffee-light overflow-hidden">
@@ -1193,6 +1256,36 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Hủy đơn</span>
+              </button>
+
+              <button
+                onClick={async () => {
+                  try {
+                    await printOrderDirect({
+                      tableName: selectedTable?.table_name || 'Bàn',
+                      staffName: currentUser?.full_name || 'Nhân viên',
+                      orderId: existingOrder.id,
+                      items: existingOrderItems.map(i => ({
+                        name: i.products?.name || i.ten_san_pham || 'Món',
+                        quantity: i.quantity || 1,
+                        price: i.unit_price || 0,
+                        subtotal: i.subtotal || 0,
+                        notes: i.ghi_chu || i.notes
+                      })),
+                      totalAmount: Number(existingOrder.total_amount || 0),
+                      discount: Number(existingOrder.discount || 0),
+                      notes: existingOrder.notes || ''
+                    });
+                    toast.success('Đã gửi lệnh in bill!');
+                  } catch (e) {
+                    toast.error('Không thể in bill.');
+                  }
+                }}
+                className="px-3 py-2 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-xl text-xs font-bold transition flex items-center space-x-1"
+                title="In lại hóa đơn tạm tính"
+              >
+                <FileText className="w-3.5 h-3.5 text-stone-600" />
+                <span>In bill</span>
               </button>
 
               <button

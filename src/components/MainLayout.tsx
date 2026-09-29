@@ -21,6 +21,7 @@ import {
   BarChart3
 } from 'lucide-react';
 import { getCurrentUser, setCurrentUser, isSupabaseConfigured, mockDb, db } from '@/lib/database';
+import GlobalPrintListener from '@/components/GlobalPrintListener';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -504,6 +505,9 @@ export default function MainLayout({ children }: MainLayoutProps) {
           </div>
         </div>
       )}
+
+      {/* Global Auto-Print Listener for Desktop POS */}
+      <GlobalPrintListener />
     </div>
   );
 }

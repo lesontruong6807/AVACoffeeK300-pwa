@@ -50,7 +50,8 @@ import {
   ShoppingBag,
   Save,
   Volume2,
-  PhoneCall
+  PhoneCall,
+  Printer
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -61,6 +62,7 @@ interface CartItem {
   quantity: number;
   subtotal: number;
   notes?: string;
+  cup_id?: string;
 }
 
 // Bảng màu Pastel chuẩn cho các danh mục (khớp 100% ảnh tham chiếu POS)
@@ -272,13 +274,69 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     }
   };
 
-  // Mở modal tách bill
+  // Mở modal tách bill / chia đơn
   const handleOpenSplitModal = () => {
-    setSplitRemainingCart(JSON.parse(JSON.stringify(cart)));
+    let sourceCart = cart;
+    if (sourceCart.length === 0 && existingOrderItems.length > 0) {
+      sourceCart = existingOrderItems.map((i: any) => ({
+        product_id: i.product_id || i.idsp,
+        name: i.products?.name || i.ten_san_pham || i.name || 'Món',
+        price: Number(i.unit_price || i.don_gia || i.price || 0),
+        quantity: Number(i.quantity || i.so_luong || 1),
+        subtotal: Number(i.subtotal || i.thanh_tien || (Number(i.quantity || 1) * Number(i.unit_price || i.don_gia || 0))),
+        notes: i.ghi_chu || i.notes || '',
+        cup_id: i.cup_id || null
+      }));
+      setCart(sourceCart);
+    }
+    setSplitRemainingCart(JSON.parse(JSON.stringify(sourceCart)));
     setSplitCart([]);
     setSplitActionType('pay_now');
     setSplitTargetTableId('');
     setIsSplitModalOpen(true);
+  };
+
+  // Cập nhật số lượng món muốn tách trả tiền riêng trực quan
+  const handleSetSplitItemQty = (product_id: string, newSplitQty: number) => {
+    const originalItem = cart.find(i => i.product_id === product_id);
+    if (!originalItem) return;
+    const clampedQty = Math.max(0, Math.min(originalItem.quantity, newSplitQty));
+
+    let updatedSplit = [...splitCart];
+    const sIdx = updatedSplit.findIndex(i => i.product_id === product_id);
+    if (clampedQty === 0) {
+      if (sIdx >= 0) updatedSplit.splice(sIdx, 1);
+    } else {
+      if (sIdx >= 0) {
+        updatedSplit[sIdx] = {
+          ...updatedSplit[sIdx],
+          quantity: clampedQty,
+          subtotal: clampedQty * originalItem.price
+        };
+      } else {
+        updatedSplit.push({
+          ...originalItem,
+          quantity: clampedQty,
+          subtotal: clampedQty * originalItem.price
+        });
+      }
+    }
+    setSplitCart(updatedSplit);
+
+    let updatedRemaining: CartItem[] = [];
+    cart.forEach(cItem => {
+      const sp = updatedSplit.find(s => s.product_id === cItem.product_id);
+      const spQ = sp ? sp.quantity : 0;
+      const remQ = cItem.quantity - spQ;
+      if (remQ > 0) {
+        updatedRemaining.push({
+          ...cItem,
+          quantity: remQ,
+          subtotal: remQ * cItem.price
+        });
+      }
+    });
+    setSplitRemainingCart(updatedRemaining);
   };
 
   // Chuyển 1 số lượng món sang hóa đơn tách
@@ -341,7 +399,9 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         subtotal: (spItem.quantity + item.quantity) * spItem.price
       };
     } else {
-      updatedSplit.push({ ...item });
+      updatedSplit.push({
+        ...item
+      });
     }
     setSplitCart(updatedSplit);
   };
@@ -523,7 +583,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     }
   };
 
-  // Thanh toán nhanh trực tiếp từ thẻ hóa đơn bếp
+  // Thanh toán nhanh trực tiếp từ thẻ hóa đơn bếp hoặc đơn chưa thanh toán
   const handleQuickPayFromTicket = async (order: any) => {
     const matchedTable = tables.find(t => t.id === order.table_id) || {
       id: order.table_id || 'tb_mangve',
@@ -533,26 +593,122 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     setExistingOrder(order);
 
     let items = order.order_items || [];
-    if (!items || items.length === 0) {
+    const hasValidPrices = items.length > 0 && items.some((i: any) => Number(i.unit_price || i.don_gia || i.price || 0) > 0);
+    if (!hasValidPrices || items.length === 0) {
       try {
-        items = await db.getOrderItems(order.id) || [];
+        const fetched = await db.getOrderItems(order.id);
+        if (fetched && fetched.length > 0) {
+          items = fetched;
+        }
       } catch (_) {}
     }
 
-    const formattedCart: CartItem[] = items.map((i: any) => ({
-      product_id: i.product_id || i.idsp || i.id,
-      name: i.name || i.ten_san_pham || 'Món',
-      price: Number(i.unit_price || i.don_gia || i.price || 0),
-      quantity: Number(i.quantity || i.so_luong || 1),
-      subtotal: Number(i.subtotal || i.thanh_tien || (Number(i.quantity || 1) * Number(i.unit_price || i.don_gia || i.price || 0))),
-      notes: i.ghi_chu || i.notes || ''
-    }));
+    const formattedCart: CartItem[] = items.map((i: any) => {
+      const uPrice = Number(i.unit_price || i.don_gia || i.price || 0);
+      const qty = Number(i.quantity || i.so_luong || 1);
+      const sub = Number(i.subtotal || i.thanh_tien || (qty * uPrice));
+      return {
+        product_id: i.product_id || i.idsp || i.id,
+        name: i.name || i.ten_san_pham || i.products?.name || 'Món',
+        price: uPrice,
+        quantity: qty,
+        subtotal: sub,
+        notes: i.ghi_chu || i.notes || '',
+        cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || null
+      };
+    });
 
+    setExistingOrderItems(items);
     setCart(formattedCart);
     setDiscountValue(Number(order.discount || order.giam_gia || 0));
     setOrderNotes(order.notes || '');
     setCustomerCashGiven(Number(order.total_amount || 0));
     setIsPayModalOpen(true);
+  };
+
+  // Cơ chế 1-chạm đổi loại ly trừ kho nhanh (Ly Đen Nóng -> Ly Hoa Văn -> Ly Trắng)
+  const handleCycleCupType = (index: number) => {
+    setCart(prev => {
+      const next = [...prev];
+      const item = { ...next[index] };
+      const currentCup = item.cup_id || 'ing_lytrang';
+      let newCup = 'ing_lyden';
+
+      if (currentCup === 'ing_lytrang') {
+        newCup = 'ing_lyden';
+      } else if (currentCup === 'ing_lyden') {
+        newCup = 'ing_lyhoavan';
+      } else {
+        newCup = 'ing_lytrang';
+      }
+
+      item.cup_id = newCup;
+      
+      let cleanNotes = (item.notes || '').replace(/\[Ly:\s*ing_ly[a-z]+\]/g, '').replace(/\(Nóng\)/g, '').replace(/\(Làm nóng\)/g, '').trim();
+      if (newCup === 'ing_lyden') {
+        item.notes = `${cleanNotes} [Ly: ing_lyden] (Nóng)`.trim();
+      } else if (newCup === 'ing_lyhoavan') {
+        item.notes = `${cleanNotes} [Ly: ing_lyhoavan]`.trim();
+      } else {
+        item.notes = `${cleanNotes} [Ly: ing_lytrang]`.trim();
+      }
+
+      next[index] = item;
+      return next;
+    });
+  };
+
+  // In hóa đơn tạm tính thủ công (khi khách cần xem hoặc in bổ sung)
+  const handlePrintTemporaryBill = async (customOrder?: any) => {
+    const targetOrder = customOrder || existingOrder;
+    const currentTable = selectedTable || (targetOrder ? tables.find(t => t.id === targetOrder.table_id) : null);
+    const orderId = targetOrder?.id;
+
+    let itemsToPrint = cart;
+    if (itemsToPrint.length === 0 && existingOrderItems.length > 0) {
+      itemsToPrint = existingOrderItems.map((i: any) => ({
+        product_id: i.product_id || i.idsp,
+        name: i.products?.name || i.ten_san_pham || i.name || 'Món',
+        price: Number(i.unit_price || i.don_gia || i.price || 0),
+        quantity: Number(i.quantity || i.so_luong || 1),
+        subtotal: Number(i.subtotal || i.thanh_tien || 0),
+        notes: i.ghi_chu || i.notes || ''
+      }));
+    } else if (itemsToPrint.length === 0 && orderId) {
+      try {
+        const fetched = await db.getOrderItems(orderId);
+        if (fetched) {
+          itemsToPrint = fetched.map((i: any) => ({
+            product_id: i.product_id || i.idsp,
+            name: i.products?.name || i.ten_san_pham || i.name || 'Món',
+            price: Number(i.unit_price || i.don_gia || i.price || 0),
+            quantity: Number(i.quantity || i.so_luong || 1),
+            subtotal: Number(i.subtotal || i.thanh_tien || 0),
+            notes: i.ghi_chu || i.notes || ''
+          }));
+        }
+      } catch (_) {}
+    }
+
+    if (itemsToPrint.length === 0) {
+      toast.info('Chưa có món nào để in hóa đơn!');
+      return;
+    }
+
+    try {
+      await printOrderDirect({
+        orderId: orderId,
+        tableName: currentTable?.table_name || targetOrder?.tables?.table_name || 'Khách mang về',
+        staffName: currentUser?.full_name || 'Admin',
+        totalAmount: finalTotalAmount || targetOrder?.total_amount || 0,
+        discount: discountAmount || targetOrder?.discount || 0,
+        notes: '(HÓA ĐƠN TẠM TÍNH)',
+        items: itemsToPrint
+      }, undefined, undefined, { force: true });
+      toast.success(`🖨️ Đã gửi lệnh in bill (${currentTable?.table_name || 'Bàn'})!`);
+    } catch (e: any) {
+      toast.error('Gặp lỗi khi gửi lệnh in!');
+    }
   };
 
   // Quay lại Sơ đồ bàn an toàn (không để lại màu vàng trên bàn nếu chưa gọi món)
@@ -680,60 +836,13 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
     initPos();
 
-    // Lắng nghe Realtime thay đổi từ Supabase
+    // Lắng nghe Realtime thay đổi từ Supabase để tự động cập nhật sơ đồ bàn & danh sách đơn
     const unsubTables = db.subscribeToTableChanges(() => refreshData());
-
-    // 1. Tự động in dự phòng qua Postgres Database Changes (khi nhân viên lưu đơn / thanh toán vào DB)
-    const unsubOrders = db.subscribeToOrderChanges(async (orderChangePayload?: any) => {
-      refreshData();
-
-      if (orderChangePayload && (orderChangePayload.eventType === 'INSERT' || (orderChangePayload.eventType === 'UPDATE' && orderChangePayload.new?.trang_thai_thanh_toan === 'Đã thanh toán'))) {
-        const newOrder = orderChangePayload.new;
-        if (newOrder && newOrder.id) {
-          const createdAt = newOrder.ngay_tao ? new Date(newOrder.ngay_tao).getTime() : Date.now();
-          if (Date.now() - createdAt < 45000) {
-            console.log('[Desktop POS Counter] Tự động in từ Postgres Change:', newOrder.id);
-            try {
-              const items = await db.getOrderItems(newOrder.id);
-              if (items && items.length > 0) {
-                const currentTables = await db.getTables();
-                const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
-                await printOrderDirect({
-                  orderId: newOrder.id,
-                  tableName: matchedTable?.table_name || 'Khách mang về',
-                  staffName: 'Nhân viên (Điện thoại)',
-                  totalAmount: Number(newOrder.tong_tien || 0),
-                  discount: Number(newOrder.giam_gia || 0),
-                  notes: newOrder.trang_thai_thanh_toan === 'Đã thanh toán' ? '(ĐÃ THANH TOÁN)' : '(LƯU ĐƠN)',
-                  items: items.map((i: any) => ({
-                    name: i.products?.name || i.name || i.ten_san_pham || 'Món',
-                    quantity: Number(i.so_luong || i.quantity || 1),
-                    price: Number(i.unit_price || i.don_gia || i.price || 0),
-                    subtotal: Number(i.thanh_tien || i.subtotal || 0)
-                  }))
-                });
-                toast.success(`🖨️ Đã tự động in đơn (${matchedTable?.table_name || 'Khách mang về'}) từ điện thoại!`);
-              }
-            } catch (autoPrintErr) {
-              console.warn('Lỗi tự động in từ DB change:', autoPrintErr);
-            }
-          }
-        }
-      }
-    });
-
-    // 2. Tự động in siêu tốc qua Supabase Realtime Broadcast (~20ms)
+    const unsubOrders = db.subscribeToOrderChanges(() => refreshData());
     const unsubPrints = onRealtimeEvent('order_update', async (rawPayload: any) => {
+      refreshData();
       const payload = rawPayload?.payload || rawPayload;
-      if (payload?.action === 'PRINT_RECEIPT' && payload?.orderData) {
-        console.log('[Desktop POS Counter] Nhận lệnh in tự động từ điện thoại:', payload.orderData);
-        try {
-          await printOrderDirect(payload.orderData);
-          toast.success(`🖨️ Đã tự động in bill (${payload.orderData.tableName || 'Đơn hàng'}) từ điện thoại!`);
-        } catch (printErr: any) {
-          console.error('[Desktop POS Counter] Lỗi in bill từ điện thoại:', printErr);
-        }
-      } else if (payload?.action === 'PRINT_TEST') {
+      if (payload?.action === 'PRINT_TEST') {
         try {
           const { printTestTicket } = await import('@/lib/printerService');
           await printTestTicket();
@@ -749,10 +858,22 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     };
   }, []);
 
-  // Tính toán số tiền giỏ hàng
-  const totalCartAmount = useMemo(() => {
-    return cart.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0);
-  }, [cart]);
+  // Tính toán số tiền giỏ hàng (linh hoạt bao gồm cả khi thanh toán đơn cũ có sẵn)
+  const baseCartAmount = useMemo(() => {
+    if (cart.length > 0) {
+      return cart.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0);
+    }
+    if (existingOrderItems && existingOrderItems.length > 0) {
+      return existingOrderItems.reduce((sum, item) => {
+        const u = Number(item.unit_price || item.don_gia || item.price || 0);
+        const q = Number(item.quantity || item.so_luong || 1);
+        return sum + (Number(item.subtotal || item.thanh_tien) || (q * u));
+      }, 0);
+    }
+    return Number(existingOrder?.total_amount || 0);
+  }, [cart, existingOrderItems, existingOrder]);
+
+  const totalCartAmount = baseCartAmount;
 
   const discountAmount = useMemo(() => {
     const safeVal = Math.max(0, Number(discountValue) || 0);
@@ -1120,11 +1241,21 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
       if (orderIdToPay) {
         // Đồng bộ danh sách món mới nhất trước khi thanh toán
+        const itemsToSync = cart.length > 0 ? cart : existingOrderItems.map((i: any) => ({
+          product_id: i.product_id || i.idsp,
+          name: i.products?.name || i.name || i.ten_san_pham || 'Món',
+          price: Number(i.unit_price || i.don_gia || i.price || 0),
+          quantity: Number(i.quantity || i.so_luong || 1),
+          subtotal: Number(i.subtotal || i.thanh_tien || (Number(i.quantity || 1) * Number(i.unit_price || i.don_gia || i.price || 0))),
+          notes: i.ghi_chu || i.notes || '',
+          cup_id: i.cup_id || null
+        }));
+
         await db.syncUnpaidOrder(orderIdToPay, {
-          total_amount: finalTotalAmount,
-          discount: discountAmount,
-          notes: orderNotes.trim(),
-          items: cart
+          total_amount: finalTotalAmount || existingOrder?.total_amount || 0,
+          discount: discountAmount || existingOrder?.discount || 0,
+          notes: orderNotes.trim() || existingOrder?.notes || '',
+          items: itemsToSync
         });
       } else if (cart.length > 0) {
         const savedOrder = await db.createOrder({
@@ -1153,38 +1284,37 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       // Cập nhật trạng thái đơn trong danh sách gần đây
       setRecentOrders(prev => prev.map(o => o.id === orderIdToPay ? { ...o, payment_status: 'Đã thanh toán' } : o));
 
-      // 3. In hóa đơn nhiệt câm K80 và mở két tiền tự động
-      try {
-        const printItems = cart.length > 0 
-          ? cart 
-          : existingOrderItems.map(i => ({
-              name: i.products?.name || i.ten_san_pham || 'Món',
-              quantity: i.quantity || 1,
-              price: i.unit_price || 0,
-              subtotal: i.subtotal || 0,
-              notes: i.ghi_chu || ''
-            }));
-
-        await printOrderDirect({
-          tableName: selectedTable?.table_name || 'Khách mang về',
-          staffName: currentUser?.full_name || 'Admin',
-          orderId: orderIdToPay,
-          items: printItems.map(i => ({
+      // 3. Quy tắc in nghiêm ngặt: Đã lưu là in, khi ấn thanh toán tuyệt đối không in thêm!
+      // CHỈ in tự động nếu đây là đơn gọi món và thanh toán ngay tại quầy (không phải đơn đã lưu trước đó)
+      const isPreSavedOrder = !!existingOrder;
+      if (!isPreSavedOrder) {
+        try {
+          const printItems = cart.map(i => ({
             name: i.name,
             quantity: i.quantity,
             price: i.price,
-            subtotal: i.subtotal
-          })),
-          totalAmount: totalCartAmount || existingOrder?.total_amount || 0,
-          discount: discountAmount || existingOrder?.discount || 0,
-          notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-        });
+            subtotal: i.subtotal,
+            notes: i.notes
+          }));
 
-        // Bật mở két tiền qua RJ11
-        await kickCashDrawer();
-      } catch (printErr) {
-        console.warn('In bill hoặc mở két tiền:', printErr);
+          await printOrderDirect({
+            tableName: selectedTable?.table_name || 'Khách mang về',
+            staffName: currentUser?.full_name || 'Admin',
+            orderId: orderIdToPay,
+            items: printItems,
+            totalAmount: finalTotalAmount,
+            discount: discountAmount,
+            notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
+          });
+        } catch (printErr) {
+          console.warn('In bill thanh toán ngay:', printErr);
+        }
       }
+
+      // Luôn kích hoạt mở két tiền tự động qua RJ11
+      try {
+        await kickCashDrawer();
+      } catch (_) {}
 
       // Đồng bộ trạng thái đã thanh toán sang màn hình phụ
       try {
@@ -1715,11 +1845,36 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                         </span>
                         <div className="truncate flex-1">
                           <p className="truncate font-bold leading-tight">{item.name}</p>
-                          {item.notes && (
-                            <p className="text-[10px] text-amber-700 italic truncate font-normal">
-                              📝 {item.notes}
-                            </p>
-                          )}
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCycleCupType(idx);
+                              }}
+                              className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-md border flex items-center gap-1 cursor-pointer transition active:scale-90 ${
+                                item.cup_id === 'ing_lyden'
+                                  ? 'bg-neutral-800 text-amber-200 border-neutral-700'
+                                  : item.cup_id === 'ing_lyhoavan'
+                                  ? 'bg-pink-50 text-pink-700 border-pink-200'
+                                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}
+                              title="Chạm để đổi ly trừ kho (Ly Đen nóng / Ly Trắng / Ly Hoa Văn)"
+                            >
+                              <span>
+                                {item.cup_id === 'ing_lyden'
+                                  ? '☕ Ly Đen (Nóng)'
+                                  : item.cup_id === 'ing_lyhoavan'
+                                  ? '🌸 Ly Hoa Văn'
+                                  : '🥤 Ly Trắng'}
+                              </span>
+                            </button>
+                            {item.notes && (
+                              <p className="text-[10px] text-amber-700 italic truncate font-normal">
+                                📝 {item.notes}
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -1924,8 +2079,17 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                 </button>
               </div>
 
-              {/* NÚT XÓA GIỎ HÀNG & HỦY ĐƠN */}
+              {/* NÚT IN BILL, XÓA GIỎ HÀNG & HỦY ĐƠN */}
               <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handlePrintTemporaryBill()}
+                  className="py-1.5 px-3 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 rounded-lg font-bold text-[11px] transition active:scale-98 cursor-pointer flex items-center gap-1 shadow-2xs"
+                  title="In hóa đơn tạm tính cho khách xem"
+                >
+                  <Printer className="w-3.5 h-3.5 text-amber-700" />
+                  <span>In bill</span>
+                </button>
                 <button
                   onClick={handleClearCart}
                   className="flex-1 py-1.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg font-bold text-[11px] text-gray-500 transition active:scale-98 cursor-pointer"
@@ -2285,21 +2449,25 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          3.7 MODAL TÁCH HÓA ĐƠN (SPLIT BILL)
+          3.7 MODAL TÁCH HÓA ĐƠN / THANH TOÁN RIÊNG (TRỰC QUAN - DỄ HIỂU)
       ───────────────────────────────────────────────────────────── */}
       {isSplitModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] shadow-2xl flex flex-col overflow-hidden border border-gray-200 animate-scaleIn">
+          <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] shadow-2xl flex flex-col overflow-hidden border border-gray-200 animate-scaleIn">
             {/* Header Modal */}
             <div className="p-4 bg-sky-50 border-b border-sky-200 flex items-center justify-between shrink-0">
-              <div>
-                <h3 className="font-extrabold text-base text-sky-950 flex items-center space-x-2">
-                  <Scissors className="w-4 h-4 text-sky-700" />
-                  <span>Tách Hóa Đơn - {selectedTable?.table_name || 'Bàn'}</span>
-                </h3>
-                <p className="text-[11px] text-sky-800">
-                  Chạm nút sang phải để chuyển món sang hóa đơn tách mới
-                </p>
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 bg-sky-600 text-white rounded-xl shadow-2xs">
+                  <Scissors className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-sky-950">
+                    Tách Đơn / Thanh Toán Riêng - {selectedTable?.table_name || 'Bàn'}
+                  </h3>
+                  <p className="text-[11px] text-sky-800">
+                    Chạm nút <span className="font-black">+</span> hoặc <span className="font-black">-</span> để chọn số lượng món khách này muốn trả tiền trước
+                  </p>
+                </div>
               </div>
               <button 
                 onClick={() => setIsSplitModalOpen(false)}
@@ -2309,224 +2477,162 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               </button>
             </div>
 
-            {/* Hai cột danh sách món: Cột trái Giữ lại | Cột phải Tách ra */}
-            <div className="flex-1 grid grid-cols-2 divide-x divide-gray-200 overflow-hidden min-h-[350px]">
-              {/* CỘT TRÁI: HÓA ĐƠN GỐC (GIỮ LẠI) */}
-              <div className="p-4 flex flex-col overflow-hidden bg-gray-50/50">
-                <div className="flex items-center justify-between pb-2 border-b border-gray-200 mb-2 shrink-0">
-                  <span className="font-black text-xs text-gray-800 uppercase">
-                    1. Giữ lại ở {selectedTable?.table_name || 'Bàn'}
-                  </span>
-                  <span className="text-xs font-black text-[#4A3525]">
-                    {splitRemainingCart.reduce((s, i) => s + i.subtotal, 0).toLocaleString('vi-VN')} đ
-                  </span>
-                </div>
-
-                <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                  {splitRemainingCart.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center p-6 text-center text-gray-400">
-                      <p className="text-xs font-bold text-gray-500">Toàn bộ món đã được chuyển sang hóa đơn tách</p>
+            {/* Danh sách món trên bàn để chọn số lượng tách riêng */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-2.5 max-h-[45vh] custom-scrollbar bg-gray-50/50">
+              {cart.map((item) => {
+                const splitItem = splitCart.find(s => s.product_id === item.product_id);
+                const splitQty = splitItem ? splitItem.quantity : 0;
+                const remainQty = item.quantity - splitQty;
+                return (
+                  <div
+                    key={item.product_id}
+                    className={`p-3 rounded-2xl border transition flex items-center justify-between ${
+                      splitQty > 0
+                        ? 'bg-sky-50/80 border-sky-300 shadow-2xs'
+                        : 'bg-white border-gray-200'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0 pr-3">
+                      <p className="font-extrabold text-xs text-gray-900 truncate">{item.name}</p>
+                      <p className="text-[11px] text-gray-500 font-medium">
+                        {item.price.toLocaleString('vi-VN')} đ/ly • Tổng bàn có: <span className="font-bold text-gray-800">{item.quantity} ly</span>
+                      </p>
                     </div>
-                  ) : (
-                    splitRemainingCart.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="p-2.5 bg-white border border-gray-200 rounded-xl flex items-center justify-between shadow-2xs"
-                      >
-                        <div className="flex-1 pr-2">
-                          <p className="font-extrabold text-xs text-gray-900 leading-tight">{item.name}</p>
-                          <p className="text-[10px] text-gray-500 font-semibold">
-                            {item.price.toLocaleString('vi-VN')} đ × {item.quantity} = {item.subtotal.toLocaleString('vi-VN')} đ
-                          </p>
-                        </div>
 
-                        <div className="flex items-center space-x-1 shrink-0">
-                          {item.quantity > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleMoveItemToSplit(idx)}
-                              className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-900 font-black text-xs rounded-lg transition cursor-pointer active:scale-90"
-                              title="Tách 1 phần"
-                            >
-                              -1 →
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => handleMoveAllToSplit(idx)}
-                            className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white font-black text-xs rounded-lg transition cursor-pointer active:scale-90 shadow-2xs"
-                            title="Tách toàn bộ món này"
-                          >
-                            Hết →
-                          </button>
-                        </div>
+                    {/* Bộ chọn số lượng tách riêng */}
+                    <div className="flex items-center space-x-2 shrink-0">
+                      <div className="flex items-center bg-white border border-gray-300 rounded-xl overflow-hidden shadow-2xs">
+                        <button
+                          type="button"
+                          disabled={splitQty <= 0}
+                          onClick={() => handleSetSplitItemQty(item.product_id, splitQty - 1)}
+                          className="w-8 h-8 flex items-center justify-center text-gray-700 hover:bg-gray-100 disabled:opacity-25 transition font-black text-sm cursor-pointer"
+                        >
+                          -
+                        </button>
+                        <span className="w-8 text-center font-black text-xs text-sky-950">
+                          {splitQty}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={remainQty <= 0}
+                          onClick={() => handleSetSplitItemQty(item.product_id, splitQty + 1)}
+                          className="w-8 h-8 flex items-center justify-center text-gray-700 hover:bg-gray-100 disabled:opacity-25 transition font-black text-sm cursor-pointer"
+                        >
+                          +
+                        </button>
                       </div>
-                    ))
-                  )}
-                </div>
-              </div>
 
-              {/* CỘT PHẢI: HÓA ĐƠN TÁCH MỚI */}
-              <div className="p-4 flex flex-col overflow-hidden bg-sky-50/20">
-                <div className="flex items-center justify-between pb-2 border-b border-sky-200 mb-2 shrink-0">
-                  <span className="font-black text-xs text-sky-950 uppercase">
-                    2. Món tách ra ({splitCart.reduce((s, i) => s + i.quantity, 0)} món)
+                      <button
+                        type="button"
+                        onClick={() => handleSetSplitItemQty(item.product_id, splitQty === item.quantity ? 0 : item.quantity)}
+                        className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition border cursor-pointer ${
+                          splitQty === item.quantity
+                            ? 'bg-sky-600 text-white border-sky-600 shadow-2xs'
+                            : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
+                        }`}
+                      >
+                        {splitQty === item.quantity ? 'Bỏ' : 'Hết'}
+                      </button>
+
+                      <div className="w-20 text-right">
+                        <span className="font-black text-xs text-[#4A3525]">
+                          {(splitQty * item.price).toLocaleString('vi-VN')} đ
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 2 Hộp tóm tắt rõ ràng: Khách trả trước & Còn lại ở bàn */}
+            <div className="p-4 bg-white border-t border-gray-200 grid grid-cols-2 gap-3 shrink-0">
+              {/* Cột 1: Khách này trả trước */}
+              <div className="p-3.5 bg-emerald-50/70 border border-emerald-300 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-extrabold uppercase text-emerald-900 tracking-wider">
+                    1. Khách trả trước ({splitCart.reduce((s, i) => s + i.quantity, 0)} ly)
                   </span>
-                  <span className="text-xs font-black text-sky-900">
+                  <span className="font-black text-base text-emerald-950 font-mono">
                     {splitCart.reduce((s, i) => s + i.subtotal, 0).toLocaleString('vi-VN')} đ
                   </span>
                 </div>
 
-                <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                  {splitCart.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center p-6 text-center text-gray-400">
-                      <Scissors className="w-8 h-8 opacity-30 text-sky-600 mb-2" />
-                      <p className="text-xs font-bold text-gray-500">Chưa có món nào được chọn để tách</p>
-                      <p className="text-[10px] text-gray-400">Nhấn nút "→" bên trái để chuyển món sang đây</p>
-                    </div>
-                  ) : (
-                    splitCart.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="p-2.5 bg-white border border-sky-200 rounded-xl flex items-center justify-between shadow-2xs"
-                      >
-                        <div className="flex items-center space-x-1 shrink-0 pr-2">
-                          <button
-                            type="button"
-                            onClick={() => handleReturnItemFromSplit(idx)}
-                            className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-black text-xs rounded-lg transition cursor-pointer active:scale-90"
-                            title="Trả lại 1 phần"
-                          >
-                            ← 1
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleReturnAllFromSplit(idx)}
-                            className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 font-black text-xs rounded-lg transition cursor-pointer active:scale-90"
-                            title="Trả lại toàn bộ"
-                          >
-                            ← Hết
-                          </button>
-                        </div>
-
-                        <div className="flex-1 text-right">
-                          <p className="font-extrabold text-xs text-gray-900 leading-tight">{item.name}</p>
-                          <p className="text-[10px] text-sky-800 font-bold">
-                            SL: {item.quantity} | {item.subtotal.toLocaleString('vi-VN')} đ
-                          </p>
-                        </div>
-                      </div>
-                    ))
-                  )}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setSplitPaymentMethod('Tiền mặt')}
+                    className={`flex-1 py-1.5 rounded-xl text-[11px] font-bold border transition cursor-pointer flex items-center justify-center gap-1 ${
+                      splitPaymentMethod === 'Tiền mặt'
+                        ? 'bg-emerald-700 text-white border-emerald-700 shadow-2xs'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <DollarSign className="w-3.5 h-3.5" />
+                    <span>Tiền mặt</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSplitPaymentMethod('Chuyển khoản')}
+                    className={`flex-1 py-1.5 rounded-xl text-[11px] font-bold border transition cursor-pointer flex items-center justify-center gap-1 ${
+                      splitPaymentMethod === 'Chuyển khoản'
+                        ? 'bg-emerald-700 text-white border-emerald-700 shadow-2xs'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    <span>MoMo</span>
+                  </button>
                 </div>
+              </div>
 
-                {/* TÙY CHỌN ĐÍCH ĐẾN CHO PHẦN TÁCH */}
-                <div className="pt-3 border-t border-sky-200 shrink-0 space-y-2">
-                  <div className="text-[11px] font-black text-gray-700 uppercase">Hướng xử lý phần tách:</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSplitActionType('pay_now')}
-                      className={`py-2 px-2.5 rounded-xl border text-center transition font-bold text-xs flex items-center justify-center space-x-1.5 cursor-pointer ${
-                        splitActionType === 'pay_now'
-                          ? 'bg-[#4A3525] text-white border-[#4A3525] shadow-xs'
-                          : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                      }`}
-                    >
-                      <CreditCard className="w-3.5 h-3.5" />
-                      <span>Thanh toán ngay</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setSplitActionType('move_table')}
-                      className={`py-2 px-2.5 rounded-xl border text-center transition font-bold text-xs flex items-center justify-center space-x-1.5 cursor-pointer ${
-                        splitActionType === 'move_table'
-                          ? 'bg-[#4A3525] text-white border-[#4A3525] shadow-xs'
-                          : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                      }`}
-                    >
-                      <ArrowRightLeft className="w-3.5 h-3.5" />
-                      <span>Chuyển sang bàn khác</span>
-                    </button>
-                  </div>
-
-                  {splitActionType === 'pay_now' ? (
-                    <div className="flex items-center space-x-2 pt-1">
-                      <span className="text-xs font-semibold text-gray-600">Hình thức:</span>
-                      <button
-                        type="button"
-                        onClick={() => setSplitPaymentMethod('Tiền mặt')}
-                        className={`px-3 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${
-                          splitPaymentMethod === 'Tiền mặt' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-gray-700'
-                        }`}
-                      >
-                        Tiền mặt
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSplitPaymentMethod('Chuyển khoản')}
-                        className={`px-3 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${
-                          splitPaymentMethod === 'Chuyển khoản' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-gray-700'
-                        }`}
-                      >
-                        Chuyển khoản
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="pt-1">
-                      <select
-                        value={splitTargetTableId}
-                        onChange={(e) => setSplitTargetTableId(e.target.value)}
-                        className="w-full h-8 px-2.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-800 focus:outline-none focus:border-sky-500"
-                      >
-                        <option value="">-- Chọn bàn trống để chuyển phần tách sang --</option>
-                        {tables
-                          .filter(t => t.id !== selectedTable?.id && t.status === 'Trống')
-                          .map(t => (
-                            <option key={t.id} value={t.id}>{t.table_name}</option>
-                          ))}
-                      </select>
-                    </div>
-                  )}
+              {/* Cột 2: Còn lại trên bàn */}
+              <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-2xl space-y-1.5 flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase text-gray-600 tracking-wider">
+                    2. Còn lại ở bàn ({splitRemainingCart.reduce((s, i) => s + i.quantity, 0)} ly)
+                  </span>
+                  <span className="font-extrabold text-sm text-[#4A3525] font-mono">
+                    {splitRemainingCart.reduce((s, i) => s + i.subtotal, 0).toLocaleString('vi-VN')} đ
+                  </span>
                 </div>
+                <p className="text-[10px] text-gray-500 italic">
+                  Các món còn lại sẽ tiếp tục được lưu trên bàn để khách tiếp theo trả
+                </p>
               </div>
             </div>
 
-            {/* Footer Modal */}
+            {/* Footer Modal Action Buttons */}
             <div className="p-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between shrink-0">
-              <div className="text-xs text-gray-500 font-semibold">
-                Tổng thanh toán phần tách: <span className="font-black text-[#4A3525] text-sm">{splitCart.reduce((s, i) => s + i.subtotal, 0).toLocaleString('vi-VN')} đ</span>
-              </div>
+              <button
+                type="button"
+                onClick={() => setIsSplitModalOpen(false)}
+                className="px-4 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold text-xs rounded-xl hover:bg-gray-100 transition cursor-pointer"
+              >
+                Đóng
+              </button>
 
-              <div className="flex items-center space-x-2">
-                <button
-                  type="button"
-                  onClick={() => setIsSplitModalOpen(false)}
-                  className="px-4 py-2 bg-white border border-gray-300 text-gray-700 font-bold text-xs rounded-xl hover:bg-gray-100 transition cursor-pointer"
-                >
-                  Hủy
-                </button>
-
-                <button
-                  type="button"
-                  disabled={splitCart.length === 0 || splitting || (splitActionType === 'move_table' && !splitTargetTableId)}
-                  onClick={handleConfirmSplit}
-                  className="px-6 py-2 bg-sky-700 hover:bg-sky-800 text-white font-black text-xs rounded-xl shadow-md transition disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
-                >
-                  {splitting ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Đang xử lý...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Check className="w-4 h-4" />
-                      <span>{splitActionType === 'pay_now' ? 'Xác nhận & Thu tiền ngay' : 'Xác nhận tách bàn'}</span>
-                    </>
-                  )}
-                </button>
-              </div>
+              <button
+                type="button"
+                disabled={splitCart.length === 0 || splitting}
+                onClick={handleConfirmSplit}
+                className="px-6 py-2.5 bg-emerald-700 hover:bg-emerald-800 active:scale-95 text-white font-black text-xs rounded-xl shadow-md transition disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
+              >
+                {splitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Đang xử lý...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>
+                      Xác nhận Thu {splitCart.reduce((s, i) => s + i.subtotal, 0).toLocaleString('vi-VN')} đ & In bill riêng
+                    </span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>
@@ -2941,6 +3047,16 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                           className="px-3 py-1.5 bg-white hover:bg-gray-100 border border-gray-300 text-gray-700 rounded-xl text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer"
                         >
                           <span>Mở bàn</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handlePrintTemporaryBill(order)}
+                          className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer shadow-2xs"
+                          title="In lại hóa đơn tạm tính cho khách xem"
+                        >
+                          <Printer className="w-3.5 h-3.5 text-amber-700" />
+                          <span>In hoá đơn</span>
                         </button>
 
                         <button
