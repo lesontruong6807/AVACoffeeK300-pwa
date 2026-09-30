@@ -137,3 +137,49 @@ export async function syncCustomerDisplay(payload: CustomerDisplayPayload): Prom
     }
   }
 }
+
+/**
+ * Bật/tắt chế độ toàn màn hình (Fullscreen / Thu nhỏ cửa sổ) cho Desktop POS
+ */
+export async function toggleTauriFullscreen(): Promise<boolean> {
+  if (isTauriEnvironment()) {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const appWindow = getCurrentWindow();
+      const isFull = await appWindow.isFullscreen();
+      await appWindow.setFullscreen(!isFull);
+      return !isFull;
+    } catch (e) {
+      console.warn('[TauriPOS] Lỗi toggle fullscreen:', e);
+    }
+  }
+
+  if (typeof document !== 'undefined') {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen().catch(() => {});
+      return true;
+    } else {
+      if (document.exitFullscreen) {
+        await document.exitFullscreen().catch(() => {});
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Kiểm tra trạng thái Toàn màn hình hiện tại
+ */
+export async function isTauriFullscreen(): Promise<boolean> {
+  if (isTauriEnvironment()) {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      return await getCurrentWindow().isFullscreen();
+    } catch (e) {}
+  }
+  if (typeof document !== 'undefined') {
+    return !!document.fullscreenElement;
+  }
+  return false;
+}

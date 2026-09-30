@@ -15,6 +15,7 @@ import {
   openCustomerDisplayWindow, 
   kickCashDrawer 
 } from '@/lib/tauriPOS';
+import TauriFullscreenButton from '@/components/TauriFullscreenButton';
 import { 
   Coffee, 
   Users, 
@@ -1541,13 +1542,10 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             <Eye className="w-3.5 h-3.5" />
           </button>
 
-          <button
-            onClick={toggleFullscreen}
+          <TauriFullscreenButton 
             className="p-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 rounded-lg text-xs transition cursor-pointer"
-            title="Bật/Tắt Toàn màn hình"
-          >
-            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-          </button>
+            iconClassName="w-3.5 h-3.5"
+          />
 
           {/* Avatar User Nâu Cà Phê */}
           <div className="w-7 h-7 rounded-full bg-[#4A3525] text-white flex items-center justify-center font-bold text-xs shadow-xs">

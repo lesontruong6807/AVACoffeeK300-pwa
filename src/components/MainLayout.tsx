@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { getCurrentUser, setCurrentUser, isSupabaseConfigured, mockDb, db } from '@/lib/database';
 import GlobalPrintListener from '@/components/GlobalPrintListener';
+import TauriFullscreenButton from '@/components/TauriFullscreenButton';
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -355,7 +356,13 @@ export default function MainLayout({ children }: MainLayoutProps) {
             <span className="text-[10px] text-coffee-accent font-semibold block leading-none mt-0.5">K300</span>
           </div>
         </div>
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2.5">
+          {/* Nút Fullscreen thu nhỏ / phóng to riêng cho POS Exe */}
+          <TauriFullscreenButton 
+            className="p-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs transition cursor-pointer border border-white/15 flex items-center justify-center"
+            iconClassName="w-4 h-4"
+          />
+
           {/* User Display Mobile */}
           <div className="text-xs text-right hidden sm:block">
             <p className="font-medium text-coffee-accent">{currentUser?.full_name}</p>
@@ -449,12 +456,19 @@ export default function MainLayout({ children }: MainLayoutProps) {
             )}
           </div>
 
-          {/* User selector dropdown in Desktop Header */}
-          <div className="relative">
-            <button 
-              onClick={() => setIsUserDropdownOpen(!isUserDropdownOpen)}
-              className="flex items-center space-x-3 px-4 py-2 hover:bg-coffee-light rounded-xl transition-all duration-200 border border-coffee-accent/30 bg-coffee-cream/20"
-            >
+          <div className="flex items-center space-x-3">
+            {/* Nút Fullscreen thu nhỏ / phóng to riêng cho POS Exe */}
+            <TauriFullscreenButton 
+              className="px-3 py-2 bg-coffee-cream/40 hover:bg-coffee-light border border-coffee-accent/40 text-coffee-dark hover:text-coffee-primary rounded-xl transition-all duration-200 cursor-pointer shadow-xs flex items-center space-x-1.5 text-xs font-bold"
+              iconClassName="w-4 h-4"
+            />
+
+            {/* User selector dropdown in Desktop Header */}
+            <div className="relative">
+              <button 
+                onClick={() => setIsUserDropdownOpen(!isUserDropdownOpen)}
+                className="flex items-center space-x-3 px-4 py-2 hover:bg-coffee-light rounded-xl transition-all duration-200 border border-coffee-accent/30 bg-coffee-cream/20"
+              >
               <div className="p-1.5 bg-coffee-primary rounded-lg text-white">
                 <UserCheck className="w-4 h-4" />
               </div>
@@ -479,7 +493,8 @@ export default function MainLayout({ children }: MainLayoutProps) {
               </div>
             )}
           </div>
-        </header>
+        </div>
+      </header>
 
         {/* MOBILE SESSION INFO REMOVED */}
 
