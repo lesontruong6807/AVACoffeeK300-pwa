@@ -1332,6 +1332,9 @@ const mapOrderToClient = (o: any) => {
     }
   }
 
+  const isKitchenDone = Boolean(orderNote && orderNote.includes('Đã pha chế'));
+  const cleanNote = orderNote ? orderNote.replace(/\[?Đã pha chế\]?/gi, '').trim() : '';
+
   return {
     id: o.id,
     table_id: o.id_ban,
@@ -1342,7 +1345,8 @@ const mapOrderToClient = (o: any) => {
     payment_method: o.phuong_thuc_thanh_toan,
     created_at: o.ngay_tao,
     paid_at: o.ngay_thanh_toan,
-    notes: orderNote,
+    notes: cleanNote,
+    kitchen_done: isKitchenDone,
     tables: o.danhsachban ? { table_name: o.danhsachban.ten_ban } : null,
     users: o.nguoidung ? { full_name: o.nguoidung.ho_ten } : null,
     order_items: o.hoadondetail && Array.isArray(o.hoadondetail) ? o.hoadondetail.map((d: any) => {
@@ -2053,7 +2057,7 @@ export const db = {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
-  // Tải danh sách đơn hàng gần đây (cả đã thanh toán & chưa thanh toán) cho Bếp / Barista (Loại bỏ các đơn đã hủy)
+  // Tải danh sách đơn hàng gần đây (cả đã thanh toán & chưa thanh toán) cho Bếp / Barista (Loại bỏ các đơn đã hủy & đơn đã xong pha chế)
   async getRecentOrders(limit = 40) {
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase
@@ -2066,6 +2070,7 @@ export const db = {
         `)
         .neq('trang_thai_thanh_toan', 'Đã hủy')
         .neq('trang_thai_thanh_toan', 'Chờ duyệt hủy')
+        .or('ghi_chu.is.null,ghi_chu.not.ilike.*Đã pha chế*')
         .order('ngay_tao', { ascending: false })
         .limit(limit);
 
@@ -2077,7 +2082,7 @@ export const db = {
     const tables = mockDb.getTables();
     const users = mockDb.getUsers();
     return orders
-      .filter(o => o.payment_status !== 'Đã hủy' && (o as any).payment_status !== 'Chờ duyệt hủy')
+      .filter(o => o.payment_status !== 'Đã hủy' && (o as any).payment_status !== 'Chờ duyệt hủy' && !(o.notes?.includes('Đã pha chế')))
       .slice(0, limit)
       .map(order => ({
         ...order,
@@ -2085,6 +2090,46 @@ export const db = {
         users: users.find(u => u.id === order.staff_id) || null
       }))
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  },
+
+  // Đánh dấu đơn hàng bếp / barista đã pha chế xong (Lưu vĩnh viễn vào DB để khi cài lại app POS không bị hiện lại)
+  async markKitchenOrderDone(orderId: string) {
+    if (isSupabaseConfigured && supabase) {
+      const { data: current } = await supabase
+        .from('hoadon')
+        .select('ghi_chu')
+        .eq('id', orderId)
+        .maybeSingle();
+
+      let newNote = '[Đã pha chế]';
+      if (current?.ghi_chu) {
+        if (!current.ghi_chu.includes('Đã pha chế')) {
+          newNote = `${current.ghi_chu.trim()} [Đã pha chế]`;
+        } else {
+          newNote = current.ghi_chu;
+        }
+      }
+
+      await supabase
+        .from('hoadon')
+        .update({ ghi_chu: newNote })
+        .eq('id', orderId);
+
+      broadcastRealtimeEvent('order_update');
+      return true;
+    } else {
+      const orders = mockDb.getOrders();
+      const idx = orders.findIndex(o => o.id === orderId);
+      if (idx !== -1) {
+        const curNote = orders[idx].notes || '';
+        if (!curNote.includes('Đã pha chế')) {
+          orders[idx].notes = `${curNote.trim()} [Đã pha chế]`.trim();
+          mockDb.setOrders(orders);
+        }
+      }
+      broadcastRealtimeEvent('order_update');
+      return true;
+    }
   },
 
   // Chuyển bàn: Chuyển toàn bộ đơn hàng từ bàn nguồn sang bàn đích (bàn đích phải đang trống)

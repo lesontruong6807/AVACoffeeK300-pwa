@@ -220,8 +220,8 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     } catch (_) {}
   };
 
-  // Đánh dấu đơn bếp đã làm xong và tự động biến mất
-  const handleMarkKitchenOrderDone = (orderId: string, e?: React.MouseEvent) => {
+  // Đánh dấu đơn bếp đã làm xong và tự động biến mất (Đồng bộ vĩnh viễn vào DB)
+  const handleMarkKitchenOrderDone = async (orderId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const todayKey = new Date().toLocaleDateString('en-CA');
     setCompletedKitchenOrderIds(prev => {
@@ -233,6 +233,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     });
 
     toast.success('Đã hoàn thành pha chế đơn hàng!');
+
+    try {
+      await db.markKitchenOrderDone(orderId);
+    } catch (err) {
+      console.warn('Lỗi lưu trạng thái pha chế vào server:', err);
+    }
   };
 
   // Xử lý chuyển bàn phục vụ
@@ -1413,14 +1419,31 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       });
   }, [products, searchTerm, selectedCategoryId, yesterdaySales]);
 
-  // DANH SÁCH HÓA ĐƠN CHỜ PHA CHẾ (CẢ ĐÃ THANH TOÁN HOẶC CHƯA THANH TOÁN ĐỀU PHẢI HIỆN CHO BẾP LÀM, LOẠI BỎ ĐƠN ĐÃ HỦY)
+  // DANH SÁCH HÓA ĐƠN CHỜ PHA CHẾ (CẢ ĐÃ THANH TOÁN HOẶC CHƯA THANH TOÁN ĐỀU PHẢI HIỆN CHO BẾP LÀM, LOẠI BỎ ĐƠN ĐÃ HỦY / ĐÃ XONG / ĐƠN CŨ)
   const pendingKitchenOrders = useMemo(() => {
-    return recentOrders.filter(order => 
-      !completedKitchenOrderIds.includes(order.id) &&
-      order.payment_status !== 'Đã hủy' &&
-      order.payment_status !== 'Chờ duyệt hủy' &&
-      (order as any).status !== 'cancelled'
-    );
+    const now = Date.now();
+    const todayVN = new Date().toLocaleDateString('en-CA');
+    return recentOrders.filter(order => {
+      // 1. Đã bấm xong ở phiên làm việc này hoặc đã lưu trạng thái trong DB
+      if (completedKitchenOrderIds.includes(order.id) || order.kitchen_done) return false;
+      if (order.notes?.includes('Đã pha chế') || (order as any).ghi_chu?.includes('Đã pha chế')) return false;
+
+      // 2. Đơn đã hủy hoặc chờ duyệt hủy
+      if (order.payment_status === 'Đã hủy' || order.payment_status === 'Chờ duyệt hủy' || (order as any).status === 'cancelled') return false;
+
+      // 3. Với các đơn ĐÃ THANH TOÁN: Chỉ hiện nếu được tạo trong ngày hôm nay VÀ trong vòng 90 phút
+      // (Tránh trường hợp cài lại app exe bị hiện lại hàng loạt đơn đã thanh toán từ ca cũ/ngày trước)
+      if (order.payment_status === 'Đã thanh toán') {
+        const orderDate = new Date(order.created_at);
+        const orderDateVN = orderDate.toLocaleDateString('en-CA');
+        const minutesAgo = Math.floor((now - orderDate.getTime()) / 60000);
+        if (orderDateVN !== todayVN || minutesAgo > 90) {
+          return false;
+        }
+      }
+
+      return true;
+    });
   }, [recentOrders, completedKitchenOrderIds]);
 
   // Toggle Fullscreen
@@ -1644,11 +1667,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                           <p className="text-xs text-gray-400 italic">Đơn #{order.id.slice(0, 6)}</p>
                         )}
 
-                        {order.notes && (
-                          <p className="text-xs text-amber-950 bg-amber-50 p-1.5 rounded-lg border border-amber-200 font-semibold mt-1">
-                            Ghi chú: {order.notes}
-                          </p>
-                        )}
+                        {(() => {
+                          const note = (order.notes || '').replace(/\[?Đã pha chế\]?/gi, '').trim();
+                          return note ? (
+                            <p className="text-xs text-amber-950 bg-amber-50 p-1.5 rounded-lg border border-amber-200 font-semibold mt-1">
+                              Ghi chú: {note}
+                            </p>
+                          ) : null;
+                        })()}
                       </div>
 
                       {/* Nút hành động ở chân vé */}
@@ -2826,11 +2852,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                 ) : (
                   <p className="text-gray-500 italic">Đơn #{selectedKitchenTicket.id.slice(0, 8)}</p>
                 )}
-                {selectedKitchenTicket.notes && (
-                  <p className="text-amber-800 font-medium pt-1 border-t border-gray-200">
-                    📝 Ghi chú: {selectedKitchenTicket.notes}
-                  </p>
-                )}
+                {(() => {
+                  const note = (selectedKitchenTicket.notes || '').replace(/\[?Đã pha chế\]?/gi, '').trim();
+                  return note ? (
+                    <p className="text-amber-800 font-medium pt-1 border-t border-gray-200">
+                      📝 Ghi chú: {note}
+                    </p>
+                  ) : null;
+                })()}
               </div>
             </div>
 
