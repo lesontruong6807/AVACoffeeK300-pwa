@@ -248,11 +248,13 @@ export function exportRevenueToExcel(
     wsData.push(['Ly Hoa Văn', data.sales.lyHoaVan]);
     wsData.push([]);
     wsData.push(['CHI TIẾT MÓN ĂN ĐÃ BÁN (SẮP XẾP GIẢM DẦN)']);
-    wsData.push(['STT', 'Tên sản phẩm', 'Số lượng bán', 'Đơn giá', 'Thành tiền']);
+    wsData.push(['STT', 'Tên sản phẩm', 'Hình thức', 'Số lượng bán', 'Đơn giá', 'Thành tiền']);
     data.sales.sortedSales.forEach((item, idx) => {
+      const formType = (item as any).type || ((item as any).isTakeaway ? 'Mang đi' : (item.name.includes('(Mang đi)') ? 'Mang đi' : 'Tại quán'));
       wsData.push([
         idx + 1,
         item.name,
+        formType,
         `${item.quantity} ly`,
         fmtVND(item.price),
         fmtVND(item.subtotal)
@@ -458,29 +460,34 @@ export function exportRevenueToPDF(
     doc.setFont('TimesNewRoman', 'bold');
     doc.text('CHI TIẾT MÓN ĂN ĐÃ BÁN (XẾP HẠNG GIẢM DẦN)', 14, salesY + 10);
 
-    const salesBody = data.sales.sortedSales.map((item, idx) => [
-      idx + 1,
-      item.name,
-      `${item.quantity} ly`,
-      fmtVND(item.price),
-      fmtVND(item.subtotal)
-    ]);
+    const salesBody = data.sales.sortedSales.map((item, idx) => {
+      const formType = (item as any).type || ((item as any).isTakeaway ? 'Mang đi' : (item.name.includes('(Mang đi)') ? 'Mang đi' : 'Tại quán'));
+      return [
+        idx + 1,
+        item.name,
+        formType,
+        `${item.quantity} ly`,
+        fmtVND(item.price),
+        fmtVND(item.subtotal)
+      ];
+    });
 
     autoTable(doc, {
       startY: salesY + 14,
-      head: [['STT', 'Tên sản phẩm', 'Số lượng bán', 'Đơn giá', 'Thành tiền']],
+      head: [['STT', 'Tên sản phẩm', 'Hình thức', 'Số lượng bán', 'Đơn giá', 'Thành tiền']],
       body: salesBody,
       styles: { font: 'TimesNewRoman', fontSize: 8, cellPadding: 2.5 },
       headStyles: { fillColor: [74, 53, 37], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9 },
       columnStyles: {
-        0: { cellWidth: 15, halign: 'center' },
-        1: { cellWidth: 75 },
-        2: { cellWidth: 25, halign: 'center' },
-        3: { cellWidth: 25, halign: 'right' },
-        4: { cellWidth: 40, halign: 'right', fontStyle: 'bold' }
+        0: { cellWidth: 12, halign: 'center' },
+        1: { cellWidth: 60 },
+        2: { cellWidth: 24, halign: 'center' },
+        3: { cellWidth: 24, halign: 'center' },
+        4: { cellWidth: 28, halign: 'right' },
+        5: { cellWidth: 34, halign: 'right', fontStyle: 'bold' }
       },
       alternateRowStyles: { fillColor: [250, 246, 240] },
-      margin: { left: 14, right: 14 },
+      margin: { left: 14, right: 14 }
     });
   }
 
@@ -794,7 +801,7 @@ export function exportProductSalesToExcel(
     ['Ly Trắng Hoa Văn', salesData.lyHoaVan],
     [],
     ['DANH SÁCH MÓN ĂN BÁN RA (SẮP XẾP SỐ LƯỢNG GIẢM DẦN)'],
-    ['STT', 'Tên sản phẩm', 'Số lượng bán', 'Đơn giá', 'Thành tiền']
+    ['STT', 'Tên sản phẩm', 'Hình thức', 'Số lượng bán', 'Đơn giá', 'Thành tiền']
   ];
 
   let totalQty = 0;
@@ -803,9 +810,11 @@ export function exportProductSalesToExcel(
   salesData.sortedSales.forEach((item, idx) => {
     totalQty += item.quantity;
     totalRevenue += item.subtotal;
+    const formType = (item as any).type || ((item as any).isTakeaway ? 'Mang đi' : (item.name.includes('(Mang đi)') ? 'Mang đi' : 'Tại quán'));
     wsData.push([
       idx + 1,
       item.name,
+      formType,
       `${item.quantity} ly`,
       fmtVND(item.price),
       fmtVND(item.subtotal)
@@ -813,12 +822,13 @@ export function exportProductSalesToExcel(
   });
 
   wsData.push([]);
-  wsData.push(['TỔNG CỘNG', '', `${totalQty} ly`, '', fmtVND(totalRevenue)]);
+  wsData.push(['TỔNG CỘNG', '', '', `${totalQty} ly`, '', fmtVND(totalRevenue)]);
 
   const ws = XLSX.utils.aoa_to_sheet(wsData);
   ws['!cols'] = [
-    { wch: 10 },
-    { wch: 35 },
+    { wch: 8 },
+    { wch: 32 },
+    { wch: 14 },
     { wch: 16 },
     { wch: 16 },
     { wch: 20 }
@@ -887,9 +897,11 @@ export function exportProductSalesToPDF(
   const salesTableData = salesData.sortedSales.map((item, idx) => {
     totalQty += item.quantity;
     totalRevenue += item.subtotal;
+    const formType = (item as any).type || ((item as any).isTakeaway ? 'Mang đi' : (item.name.includes('(Mang đi)') ? 'Mang đi' : 'Tại quán'));
     return [
       idx + 1,
       item.name,
+      formType,
       `${item.quantity} ly`,
       fmtVND(item.price),
       fmtVND(item.subtotal)
@@ -899,6 +911,7 @@ export function exportProductSalesToPDF(
   salesTableData.push([
     '',
     'TỔNG CỘNG',
+    '',
     `${totalQty} ly`,
     '',
     fmtVND(totalRevenue)
@@ -906,17 +919,18 @@ export function exportProductSalesToPDF(
 
   autoTable(doc, {
     startY: finalY + 14,
-    head: [['STT', 'Tên sản phẩm', 'Số lượng bán', 'Đơn giá', 'Thành tiền']],
+    head: [['STT', 'Tên sản phẩm', 'Hình thức', 'Số lượng bán', 'Đơn giá', 'Thành tiền']],
     body: salesTableData,
     styles: { font: 'TimesNewRoman', fontSize: 8.5, cellPadding: 2.5 },
     headStyles: { fillColor: [74, 53, 37], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 9 },
     alternateRowStyles: { fillColor: [250, 246, 240] },
     columnStyles: {
-      0: { cellWidth: 12, halign: 'center' },
-      1: { cellWidth: 70 },
-      2: { cellWidth: 30, halign: 'center', fontStyle: 'bold' },
-      3: { cellWidth: 30, halign: 'right' },
-      4: { cellWidth: 40, halign: 'right', fontStyle: 'bold' }
+      0: { cellWidth: 10, halign: 'center' },
+      1: { cellWidth: 55 },
+      2: { cellWidth: 25, halign: 'center' },
+      3: { cellWidth: 25, halign: 'center', fontStyle: 'bold' },
+      4: { cellWidth: 28, halign: 'right' },
+      5: { cellWidth: 35, halign: 'right', fontStyle: 'bold' }
     },
     margin: { left: 14, right: 14 }
   });

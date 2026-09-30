@@ -167,7 +167,63 @@ export default function GlobalPrintListener() {
       }
     });
 
+    // ─────────────────────────────────────────────────────────────
+    // 3. BỘ QUÉT DỰ PHÒNG CHẠY NGẦM ĐẢM BẢO KHÔNG BỎ SÓT LỆNH IN
+    //    (Ngay cả khi app minimized / mở YouTube / mạng giật)
+    // ─────────────────────────────────────────────────────────────
+    const checkRecentUnprintedOrders = async () => {
+      if (!isDesktop) return;
+      try {
+        const unpaid = await db.getUnpaidOrders();
+        const now = Date.now();
+        for (const order of unpaid) {
+          const createdAt = order.created_at ? new Date(order.created_at).getTime() : 0;
+          // Nếu đơn tạo trong vòng 2 phút gần đây và chưa in
+          if (now - createdAt < 120000) {
+            if (!printedOrdersTracker.has(order.id) && tryAcquirePrintLock(order.id, 'create')) {
+              console.log(`[GlobalPrintListener Poller] Tự động in đơn mới chưa in: ${order.id}`);
+              const items = await db.getOrderItems(order.id);
+              if (items && items.length > 0) {
+                const currentTables = await db.getTables();
+                const matchedTable = currentTables.find((t: any) => t.id === order.table_id);
+                await printOrderDirect({
+                  orderId: order.id,
+                  tableName: matchedTable?.table_name || 'Khách mang về',
+                  staffName: 'Nhân viên (Điện thoại)',
+                  totalAmount: Number(order.total_amount || 0),
+                  discount: Number(order.discount || 0),
+                  notes: '(LƯU ĐƠN)',
+                  items: items.map((i: any) => ({
+                    name: i.products?.name || i.name || i.ten_san_pham || 'Món',
+                    quantity: Number(i.so_luong || i.quantity || 1),
+                    price: Number(i.unit_price || i.don_gia || i.price || 0),
+                    subtotal: Number(i.thanh_tien || i.subtotal || 0),
+                    notes: i.ghi_chu || ''
+                  }))
+                });
+                printedOrdersTracker.set(order.id, {
+                  printedAt: Date.now(),
+                  itemCount: items.length,
+                  itemIds: items.map((i: any) => i.id || i.product_id)
+                });
+                toast.success(`🖨️ Đã in phiếu bếp (${matchedTable?.table_name || 'Khách mang về'})!`);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // silent catch
+      }
+    };
+
+    const pollerInterval = setInterval(checkRecentUnprintedOrders, 4000);
+    window.addEventListener('focus', checkRecentUnprintedOrders);
+    window.addEventListener('visibilitychange', checkRecentUnprintedOrders);
+
     return () => {
+      clearInterval(pollerInterval);
+      window.removeEventListener('focus', checkRecentUnprintedOrders);
+      window.removeEventListener('visibilitychange', checkRecentUnprintedOrders);
       unsubRealtime();
       unsubPostgres();
       isListeningRef.current = false;

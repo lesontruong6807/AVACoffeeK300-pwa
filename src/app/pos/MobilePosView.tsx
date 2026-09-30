@@ -47,6 +47,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
   const [tables, setTables] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
+  const [recipes, setRecipes] = useState<any[]>([]);
   const [yesterdaySales, setYesterdaySales] = useState<{ [productId: string]: number }>({});
   const [loading, setLoading] = useState(true);
 
@@ -78,12 +79,14 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
 
   const refreshTables = async () => {
     try {
-      const [tablesData, unpaidData] = await Promise.all([
+      const [tablesData, unpaidData, recipesData] = await Promise.all([
         db.getTables(),
-        db.getUnpaidOrders()
+        db.getUnpaidOrders(),
+        db.getRecipes()
       ]);
       setTables(tablesData);
       setUnpaidOrders(unpaidData);
+      if (recipesData) setRecipes(recipesData);
       try {
         localStorage.setItem('ava_pos_cache_tables', JSON.stringify(tablesData));
         localStorage.setItem('ava_pos_cache_unpaid', JSON.stringify(unpaidData));
@@ -117,17 +120,19 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
       }
 
       try {
-        const [tablesData, categoriesData, productsData, unpaidData] = await Promise.all([
+        const [tablesData, categoriesData, productsData, unpaidData, recipesData] = await Promise.all([
           db.getTables(),
           db.getCategories(),
           db.getProducts(),
-          db.getUnpaidOrders()
+          db.getUnpaidOrders(),
+          db.getRecipes()
         ]);
         
         setTables(tablesData);
         setCategories(categoriesData);
         setProducts(productsData);
         setUnpaidOrders(unpaidData);
+        if (recipesData) setRecipes(recipesData);
         
         try {
           localStorage.setItem('ava_pos_cache_tables', JSON.stringify(tablesData));
@@ -204,6 +209,11 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
     }
     const unitPrice = getProductPrice(product);
 
+    // Tự động gán ly mặc định từ công thức của món
+    const prodRecipes = recipes.filter(r => r.product_id === product.id);
+    const cupRecipe = prodRecipes.find(r => r.ingredient_id === 'ing_lyden' || r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lyhoavan');
+    const defaultCupId = cupRecipe?.ingredient_id || 'ing_lytrang';
+
     setCart((prev) => {
       const existing = prev.find(item => item.product_id === product.id);
       if (existing) {
@@ -218,7 +228,9 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
         name: product.name,
         price: unitPrice,
         quantity: 1,
-        subtotal: unitPrice
+        subtotal: unitPrice,
+        cup_id: defaultCupId,
+        notes: `[Ly: ${defaultCupId}]`
       }];
     });
   };
@@ -253,7 +265,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
       let cupLabel = '';
       if (!item.cup_id || item.cup_id === 'ing_lytrang') {
         nextCupId = 'ing_lyden';
-        cupLabel = 'Ly Đen (Nóng)';
+        cupLabel = 'Ly Đen';
       } else if (item.cup_id === 'ing_lyden') {
         nextCupId = 'ing_lyhoavan';
         cupLabel = 'Ly Hoa Văn';
@@ -262,7 +274,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
         cupLabel = 'Ly Trắng';
       }
 
-      let cleanNotes = (item.notes || '').replace(/\[Ly:\s*ing_ly[a-z]+\]/g, '').trim();
+      let cleanNotes = (item.notes || '').replace(/\[Ly:\s*ing_ly[a-z]+\]/g, '').replace(/\(Nóng\)/g, '').replace(/\(Làm nóng\)/g, '').trim();
       const updatedNotes = cleanNotes 
         ? `${cleanNotes} [Ly: ${nextCupId}]`
         : `[Ly: ${nextCupId}]`;

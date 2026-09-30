@@ -200,6 +200,7 @@ export default function AdminPage() {
   const [viewMode, setViewMode] = useState<'calendar' | 'table'>('calendar');
   const [currentCalDate, setCurrentCalDate] = useState<Date>(() => new Date());
   const [selectedCalendarDay, setSelectedCalendarDay] = useState<Date | null>(null);
+  const [salesTypeTab, setSalesTypeTab] = useState<'all' | 'dinein' | 'takeaway'>('all');
 
   useEffect(() => {
     if (attStartDate) {
@@ -1413,24 +1414,49 @@ export default function AdminPage() {
     return true;
   });
 
-  // --- Tính toán thống kê bán hàng Admin ---
+  // --- Tính toán thống kê bán hàng Admin (Phân tách Tại quán & Mang đi) ---
   const rangeOrderItems = allOrderItems.filter(item => paidOrders.some(o => o.id === item.order_id));
-  const salesMap: { [key: string]: { name: string; quantity: number; price: number; subtotal: number } } = {};
+  const salesMap: { 
+    [key: string]: { 
+      id: string;
+      product_id: string;
+      name: string; 
+      baseName: string;
+      isTakeaway: boolean;
+      type: 'Tại quán' | 'Mang đi';
+      quantity: number; 
+      price: number; 
+      subtotal: number;
+    } 
+  } = {};
   
   rangeOrderItems.forEach(item => {
     const prodId = item.product_id;
     const qty = Number(item.quantity || 0);
     const price = Number(item.unit_price || item.products?.price || 0);
-    if (!salesMap[prodId]) {
-      salesMap[prodId] = {
-        name: item.products?.name || item.ten_san_pham || 'Sản phẩm',
+    const parentOrder = paidOrders.find(o => o.id === item.order_id);
+    const isTakeaway = parentOrder?.table_id === 'tb_mangve' || parentOrder?.tables?.table_name === 'Khách mang về';
+    const key = `${prodId}_${isTakeaway ? 'takeaway' : 'dinein'}`;
+    const rawName = item.products?.name || item.ten_san_pham || 'Sản phẩm';
+
+    if (!salesMap[key]) {
+      salesMap[key] = {
+        id: key,
+        product_id: prodId,
+        baseName: rawName,
+        name: isTakeaway ? `${rawName} (Mang đi)` : rawName,
+        isTakeaway,
+        type: isTakeaway ? 'Mang đi' : 'Tại quán',
         quantity: 0,
         price: price,
         subtotal: 0
       };
     }
-    salesMap[prodId].quantity += qty;
-    salesMap[prodId].subtotal += (qty * price);
+    salesMap[key].quantity += qty;
+    salesMap[key].subtotal += (Number(item.subtotal) || (qty * price));
+    if (!salesMap[key].price && price) {
+      salesMap[key].price = price;
+    }
   });
 
   const sortedSales = Object.values(salesMap).sort((a, b) => b.quantity - a.quantity);
@@ -1442,17 +1468,30 @@ export default function AdminPage() {
   rangeOrderItems.forEach(item => {
     const prodId = item.product_id;
     const qty = Number(item.quantity || 0);
-    const prodRecipes = recipes.filter(r => r.product_id === prodId);
-    
-    prodRecipes.forEach(r => {
-      if (r.ingredient_id === 'ing_lyden') {
-        lyDen += Number(r.quantity_needed || 0) * qty;
-      } else if (r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lytratac') {
-        lyTrang += Number(r.quantity_needed || 0) * qty;
-      } else if (r.ingredient_id === 'ing_lyhoavan') {
-        lyHoaVan += Number(r.quantity_needed || 0) * qty;
-      }
-    });
+
+    // Kiểm tra xem món có chỉ định đổi ly riêng không
+    let customCup = (item as any).cup_id;
+    if (!customCup && item.notes) {
+      const m = item.notes.match(/\[Ly:\s*(ing_ly[a-z]+)\]/);
+      if (m) customCup = m[1];
+    }
+
+    if (customCup) {
+      if (customCup === 'ing_lyden') lyDen += qty;
+      else if (customCup === 'ing_lyhoavan') lyHoaVan += qty;
+      else lyTrang += qty;
+    } else {
+      const prodRecipes = recipes.filter(r => r.product_id === prodId);
+      prodRecipes.forEach(r => {
+        if (r.ingredient_id === 'ing_lyden') {
+          lyDen += Number(r.quantity_needed || 0) * qty;
+        } else if (r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lytratac') {
+          lyTrang += Number(r.quantity_needed || 0) * qty;
+        } else if (r.ingredient_id === 'ing_lyhoavan') {
+          lyHoaVan += Number(r.quantity_needed || 0) * qty;
+        }
+      });
+    }
   });
 
   const totalLy = lyDen + lyTrang + lyHoaVan;
@@ -3048,133 +3087,226 @@ export default function AdminPage() {
       )}
 
       {/* 2.5. TAB BÁO CÁO BÁN HÀNG (SẢN PHẨM & LY) */}
-      {adminTab === 'sales' && (
-        <div className="space-y-6">
-          {/* Bộ lọc khoảng ngày */}
-          <div className="bg-white p-5 rounded-3xl border border-coffee-light flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
-            <div className="flex flex-wrap items-center gap-3.5 text-xs">
-              <div className="flex items-center space-x-2">
-                <span className="font-bold text-coffee-medium">Từ ngày:</span>
-                <input
-                  type="date"
-                  value={repStartDate}
-                  onChange={(e) => setRepStartDate(e.target.value)}
-                  className="h-10 px-3 bg-[#FAF6F0] rounded-xl border-none focus:ring-1 focus:ring-coffee-primary font-bold text-coffee-dark"
-                />
+      {adminTab === 'sales' && (() => {
+        const filteredSales = sortedSales.filter((item: any) => {
+          if (salesTypeTab === 'all') return true;
+          if (salesTypeTab === 'takeaway') return item.isTakeaway;
+          return !item.isTakeaway;
+        });
+        const totalFilteredQty = filteredSales.reduce((acc: number, item: any) => acc + item.quantity, 0);
+        const totalFilteredRevenue = filteredSales.reduce((acc: number, item: any) => acc + item.subtotal, 0);
+
+        return (
+          <div className="space-y-6">
+            {/* Bộ lọc khoảng ngày & Phân loại hình thức */}
+            <div className="bg-white p-5 rounded-3xl border border-coffee-light flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-sm">
+              <div className="flex flex-wrap items-center gap-3.5 text-xs">
+                <div className="flex items-center space-x-2">
+                  <span className="font-bold text-coffee-medium">Từ ngày:</span>
+                  <input
+                    type="date"
+                    value={repStartDate}
+                    onChange={(e) => setRepStartDate(e.target.value)}
+                    className="h-10 px-3 bg-[#FAF6F0] rounded-xl border-none focus:ring-1 focus:ring-coffee-primary font-bold text-coffee-dark"
+                  />
+                </div>
+                <div className="flex items-center space-x-2">
+                  <span className="font-bold text-coffee-medium">Đến ngày:</span>
+                  <input
+                    type="date"
+                    value={repEndDate}
+                    onChange={(e) => setRepEndDate(e.target.value)}
+                    className="h-10 px-3 bg-[#FAF6F0] rounded-xl border-none focus:ring-1 focus:ring-coffee-primary font-bold text-coffee-dark"
+                  />
+                </div>
               </div>
-              <div className="flex items-center space-x-2">
-                <span className="font-bold text-coffee-medium">Đến ngày:</span>
-                <input
-                  type="date"
-                  value={repEndDate}
-                  onChange={(e) => setRepEndDate(e.target.value)}
-                  className="h-10 px-3 bg-[#FAF6F0] rounded-xl border-none focus:ring-1 focus:ring-coffee-primary font-bold text-coffee-dark"
-                />
+
+              {/* Tabs Lọc: Tất cả món / Tại quán / Mang đi */}
+              <div className="flex flex-wrap items-center gap-2 bg-[#FAF6F0] p-1.5 rounded-2xl border border-coffee-light/60">
+                <button
+                  onClick={() => setSalesTypeTab('all')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition cursor-pointer flex items-center space-x-1.5 ${
+                    salesTypeTab === 'all'
+                      ? 'bg-coffee-primary text-white shadow-sm'
+                      : 'text-coffee-medium hover:text-coffee-dark hover:bg-white/60'
+                  }`}
+                >
+                  <span>🌟 Tất cả món</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    salesTypeTab === 'all' ? 'bg-white/20 text-white' : 'bg-coffee-light/40 text-coffee-dark'
+                  }`}>
+                    {sortedSales.length}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => setSalesTypeTab('dinein')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition cursor-pointer flex items-center space-x-1.5 ${
+                    salesTypeTab === 'dinein'
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-blue-800 hover:bg-blue-100/60'
+                  }`}
+                >
+                  <span>🪑 Tại quán</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    salesTypeTab === 'dinein' ? 'bg-white/20 text-white' : 'bg-blue-200/70 text-blue-900'
+                  }`}>
+                    {sortedSales.filter((i: any) => !i.isTakeaway).length}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => setSalesTypeTab('takeaway')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition cursor-pointer flex items-center space-x-1.5 ${
+                    salesTypeTab === 'takeaway'
+                      ? 'bg-amber-600 text-white shadow-sm'
+                      : 'text-amber-800 hover:bg-amber-100/60'
+                  }`}
+                >
+                  <span>🛵 Mang đi</span>
+                  <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    salesTypeTab === 'takeaway' ? 'bg-white/20 text-white' : 'bg-amber-200/70 text-amber-900'
+                  }`}>
+                    {sortedSales.filter((i: any) => i.isTakeaway).length}
+                  </span>
+                </button>
               </div>
             </div>
-            <div className="text-xs text-coffee-medium">
-              Tổng số món ăn bán ra: <strong>{sortedSales.reduce((acc: number, item: any) => acc + item.quantity, 0)} ly</strong>.
-            </div>
-          </div>
 
-          {/* Header Báo Cáo Bán Hàng */}
-          <div className="bg-white p-5 rounded-3xl border border-coffee-light flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
-            <div>
-              <h3 className="font-extrabold text-sm text-coffee-dark uppercase tracking-wider">🛍️ Báo cáo Bán hàng & Sử dụng ly</h3>
-              <p className="text-xs text-coffee-medium mt-1">Thống kê chi tiết các món ăn và các loại ly xuất bán từ <strong>{new Date(repStartDate).toLocaleDateString('vi-VN')}</strong> đến <strong>{new Date(repEndDate).toLocaleDateString('vi-VN')}</strong>.</p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                onClick={() => exportProductSalesToExcel({
-                  totalLy, lyDen, lyTrang, lyHoaVan, sortedSales
-                }, repStartDate, repEndDate)}
-                className="px-3.5 py-2.5 bg-green-50 hover:bg-green-100 text-green-700 text-xs font-bold rounded-xl transition border border-green-200 flex items-center space-x-1.5 shadow-sm"
-              >
-                📊 <span>Xuất Excel Bán Hàng</span>
-              </button>
-              <button
-                onClick={() => exportProductSalesToPDF({
-                  totalLy, lyDen, lyTrang, lyHoaVan, sortedSales
-                }, repStartDate, repEndDate)}
-                className="px-3.5 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold rounded-xl transition border border-red-200 flex items-center space-x-1.5 shadow-sm"
-              >
-                📄 <span>Xuất PDF Bán Hàng</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Grid Thống Kê Các Loại Ly */}
-          <div className="bg-white p-6 rounded-3xl border border-coffee-light shadow-sm space-y-4">
-            <h4 className="font-extrabold text-sm text-coffee-dark uppercase tracking-wider flex items-center justify-between border-b border-coffee-light pb-2.5">
-              <span>🥤 Thống kê các loại ly đã sử dụng</span>
-              <span className="text-xs text-coffee-medium">Tổng số: <strong>{totalLy} ly</strong></span>
-            </h4>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-[#FAF6F0] p-5 rounded-2xl border border-coffee-light/60">
-              <div className="text-center space-y-1">
-                <span className="text-[10px] text-coffee-medium uppercase font-bold block">Tổng số ly</span>
-                <span className="font-black text-xl text-coffee-primary">{totalLy}</span>
+            {/* Header Báo Cáo Bán Hàng */}
+            <div className="bg-white p-5 rounded-3xl border border-coffee-light flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+              <div>
+                <h3 className="font-extrabold text-sm text-coffee-dark uppercase tracking-wider">🛍️ Báo cáo Bán hàng & Sử dụng ly</h3>
+                <p className="text-xs text-coffee-medium mt-1">Thống kê chi tiết từng dòng món ăn Tại quán và Mang đi từ <strong>{new Date(repStartDate).toLocaleDateString('vi-VN')}</strong> đến <strong>{new Date(repEndDate).toLocaleDateString('vi-VN')}</strong>.</p>
               </div>
-              <div className="text-center space-y-1 border-l border-coffee-light/60">
-                <span className="text-[10px] text-coffee-medium uppercase font-bold block">Ly Đen AVA</span>
-                <span className="font-black text-xl text-coffee-dark">{lyDen}</span>
-              </div>
-              <div className="text-center space-y-1 border-l border-coffee-light/60">
-                <span className="text-[10px] text-coffee-medium uppercase font-bold block">Ly Trắng AVA</span>
-                <span className="font-black text-xl text-coffee-dark">{lyTrang}</span>
-              </div>
-              <div className="text-center space-y-1 border-l border-coffee-light/60">
-                <span className="text-[10px] text-coffee-medium uppercase font-bold block">Ly Hoa Văn</span>
-                <span className="font-black text-xl text-coffee-dark">{lyHoaVan}</span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => exportProductSalesToExcel({
+                    totalLy, lyDen, lyTrang, lyHoaVan, sortedSales: filteredSales
+                  }, repStartDate, repEndDate)}
+                  className="px-3.5 py-2.5 bg-green-50 hover:bg-green-100 text-green-700 text-xs font-bold rounded-xl transition border border-green-200 flex items-center space-x-1.5 shadow-sm"
+                >
+                  📊 <span>Xuất Excel Bán Hàng</span>
+                </button>
+                <button
+                  onClick={() => exportProductSalesToPDF({
+                    totalLy, lyDen, lyTrang, lyHoaVan, sortedSales: filteredSales
+                  }, repStartDate, repEndDate)}
+                  className="px-3.5 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold rounded-xl transition border border-red-200 flex items-center space-x-1.5 shadow-sm"
+                >
+                  📄 <span>Xuất PDF Bán Hàng</span>
+                </button>
               </div>
             </div>
-          </div>
 
-          {/* Bảng liệt kê chi tiết các món ăn bán chạy nhất */}
-          <div className="bg-white p-6 rounded-3xl border border-coffee-light shadow-sm space-y-4">
-            <h4 className="font-extrabold text-sm text-coffee-dark uppercase tracking-wider border-b border-coffee-light pb-2.5">
-              📋 Danh sách món ăn bán ra (Xếp theo số lượng giảm dần)
-            </h4>
+            {/* Grid Thống Kê Các Loại Ly */}
+            <div className="bg-white p-6 rounded-3xl border border-coffee-light shadow-sm space-y-4">
+              <h4 className="font-extrabold text-sm text-coffee-dark uppercase tracking-wider flex items-center justify-between border-b border-coffee-light pb-2.5">
+                <span>🥤 Thống kê các loại ly đã sử dụng</span>
+                <span className="text-xs text-coffee-medium">Tổng số: <strong>{totalLy} ly</strong></span>
+              </h4>
 
-            {sortedSales.length === 0 ? (
-              <p className="text-xs text-coffee-medium/70 italic text-center py-8">Không có dữ liệu món ăn bán ra trong khoảng thời gian này.</p>
-            ) : (
-              <div className="overflow-x-auto border border-coffee-light rounded-2xl bg-white shadow-sm">
-                <table className="w-full text-xs text-left min-w-[500px]">
-                  <thead>
-                    <tr className="bg-[#FAF6F0] text-coffee-medium font-bold border-b border-coffee-light/60 uppercase tracking-wider text-[10px] whitespace-nowrap">
-                      <th className="p-3.5 w-12 text-center">STT</th>
-                      <th className="p-3.5">Tên món</th>
-                      <th className="p-3.5 text-center">Số lượng</th>
-                      <th className="p-3.5 text-right">Đơn giá</th>
-                      <th className="p-3.5 text-right">Thành tiền</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-coffee-light/50">
-                    {sortedSales.map((item: any, idx: number) => (
-                      <tr key={idx} className="hover:bg-[#FAF6F0]/20 transition whitespace-nowrap">
-                        <td className="p-3.5 text-center text-coffee-medium font-bold">{idx + 1}</td>
-                        <td className="p-3.5 font-extrabold text-coffee-dark">{item.name}</td>
-                        <td className="p-3.5 text-center">
-                          <span className="font-extrabold text-coffee-primary bg-coffee-accent/25 px-2.5 py-0.5 rounded-lg text-[11px] whitespace-nowrap">
-                            {item.quantity} ly
-                          </span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-[#FAF6F0] p-5 rounded-2xl border border-coffee-light/60">
+                <div className="text-center space-y-1">
+                  <span className="text-[10px] text-coffee-medium uppercase font-bold block">Tổng số ly</span>
+                  <span className="font-black text-xl text-coffee-primary">{totalLy}</span>
+                </div>
+                <div className="text-center space-y-1 border-l border-coffee-light/60">
+                  <span className="text-[10px] text-coffee-medium uppercase font-bold block">Ly Đen AVA</span>
+                  <span className="font-black text-xl text-coffee-dark">{lyDen}</span>
+                </div>
+                <div className="text-center space-y-1 border-l border-coffee-light/60">
+                  <span className="text-[10px] text-coffee-medium uppercase font-bold block">Ly Trắng AVA</span>
+                  <span className="font-black text-xl text-coffee-dark">{lyTrang}</span>
+                </div>
+                <div className="text-center space-y-1 border-l border-coffee-light/60">
+                  <span className="text-[10px] text-coffee-medium uppercase font-bold block">Ly Hoa Văn</span>
+                  <span className="font-black text-xl text-coffee-dark">{lyHoaVan}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bảng liệt kê chi tiết các món ăn bán ra (Phân tách Tại quán / Mang đi) */}
+            <div className="bg-white p-6 rounded-3xl border border-coffee-light shadow-sm space-y-4">
+              <div className="flex items-center justify-between border-b border-coffee-light pb-2.5">
+                <h4 className="font-extrabold text-sm text-coffee-dark uppercase tracking-wider">
+                  📋 Danh sách món ăn bán ra ({salesTypeTab === 'all' ? 'Tất cả' : salesTypeTab === 'takeaway' ? 'Mang đi' : 'Tại quán'})
+                </h4>
+                <span className="text-xs font-bold text-coffee-medium">
+                  {totalFilteredQty} ly • <strong className="text-coffee-primary">{totalFilteredRevenue.toLocaleString('vi-VN')}đ</strong>
+                </span>
+              </div>
+
+              {filteredSales.length === 0 ? (
+                <p className="text-xs text-coffee-medium/70 italic text-center py-8">Không có dữ liệu món ăn bán ra trong nhóm này.</p>
+              ) : (
+                <div className="overflow-x-auto border border-coffee-light rounded-2xl bg-white shadow-sm">
+                  <table className="w-full text-xs text-left min-w-[550px]">
+                    <thead>
+                      <tr className="bg-[#FAF6F0] text-coffee-medium font-bold border-b border-coffee-light/60 uppercase tracking-wider text-[10px] whitespace-nowrap">
+                        <th className="p-3.5 w-12 text-center">STT</th>
+                        <th className="p-3.5">Tên món</th>
+                        <th className="p-3.5 text-center">Hình thức</th>
+                        <th className="p-3.5 text-center">Số lượng</th>
+                        <th className="p-3.5 text-right">Đơn giá</th>
+                        <th className="p-3.5 text-right">Thành tiền</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-coffee-light/50">
+                      {filteredSales.map((item: any, idx: number) => (
+                        <tr key={item.id || idx} className="hover:bg-[#FAF6F0]/20 transition whitespace-nowrap">
+                          <td className="p-3.5 text-center text-coffee-medium font-bold">{idx + 1}</td>
+                          <td className="p-3.5 font-extrabold text-coffee-dark">
+                            <span>{item.name}</span>
+                          </td>
+                          <td className="p-3.5 text-center">
+                            {item.isTakeaway ? (
+                              <span className="inline-flex items-center gap-1 font-bold text-amber-700 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-lg text-[10px]">
+                                🛵 Mang đi
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 font-bold text-blue-700 bg-blue-50 border border-blue-200/80 px-2 py-0.5 rounded-lg text-[10px]">
+                                🪑 Tại quán
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3.5 text-center">
+                            <span className="font-extrabold text-coffee-primary bg-coffee-accent/25 px-2.5 py-0.5 rounded-lg text-[11px] whitespace-nowrap">
+                              {item.quantity} ly
+                            </span>
+                          </td>
+                          <td className="p-3.5 text-right font-medium text-coffee-medium">
+                            {item.price.toLocaleString('vi-VN')}đ
+                          </td>
+                          <td className="p-3.5 text-right font-black text-coffee-primary">
+                            {item.subtotal.toLocaleString('vi-VN')}đ
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-[#FAF6F0]/80 font-bold border-t-2 border-coffee-light text-coffee-dark text-xs">
+                        <td colSpan={3} className="p-3.5 uppercase tracking-wider text-coffee-medium">
+                          TỔNG CỘNG ({salesTypeTab === 'all' ? 'TẤT CẢ MÓN' : salesTypeTab === 'takeaway' ? 'MANG ĐI' : 'TẠI QUÁN'}):
                         </td>
-                        <td className="p-3.5 text-right font-medium text-coffee-medium">
-                          {item.price.toLocaleString('vi-VN')}đ
+                        <td className="p-3.5 text-center font-black text-coffee-primary text-sm">
+                          {totalFilteredQty} ly
                         </td>
-                        <td className="p-3.5 text-right font-black text-coffee-primary">
-                          {item.subtotal.toLocaleString('vi-VN')}đ
+                        <td className="p-3.5 text-right text-coffee-medium">
+                          -
+                        </td>
+                        <td className="p-3.5 text-right font-black text-coffee-primary text-sm">
+                          {totalFilteredRevenue.toLocaleString('vi-VN')}đ
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 2.5 TAB BÁO CÁO KHO THEO KHOẢNG NGÀY */}
       {adminTab === 'inventory' && (

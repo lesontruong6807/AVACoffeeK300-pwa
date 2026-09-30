@@ -292,6 +292,28 @@ const MOCK_PRODUCTS = [
     image_url: '/products/CP007.png',
     status: 'Còn hàng' as const
   },
+  {
+    id: 'CP008',
+    category_id: 'c_caphe',
+    name: 'Đen đá lớn',
+    price: 40000,
+    takeaway_price: 30000,
+    dinein_price: 40000,
+    cost_price: 8000,
+    image_url: '/products/CP001.png',
+    status: 'Còn hàng' as const
+  },
+  {
+    id: 'CP009',
+    category_id: 'c_caphe',
+    name: 'Sữa đá lớn',
+    price: 48000,
+    takeaway_price: 35000,
+    dinein_price: 48000,
+    cost_price: 10000,
+    image_url: '/products/CP002.png',
+    status: 'Còn hàng' as const
+  },
   // Thức uống khác (TUK)
   {
     id: 'TUK001',
@@ -804,6 +826,16 @@ export const MOCK_RECIPES = [
   // 7. Americano (CP007)
   { id: 'rec_cp7_1', product_id: 'CP007', ingredient_id: 'ing_caphe', quantity_needed: 20, unit: 'g' },
   { id: 'rec_cp7_2', product_id: 'CP007', ingredient_id: 'ing_lytrang', quantity_needed: 1, unit: 'cái' },
+
+  // 7.1 Đen đá lớn (CP008)
+  { id: 'rec_cp8_1', product_id: 'CP008', ingredient_id: 'ing_caphe', quantity_needed: 25, unit: 'g' },
+  { id: 'rec_cp8_2', product_id: 'CP008', ingredient_id: 'ing_duong', quantity_needed: 12, unit: 'g' },
+  { id: 'rec_cp8_3', product_id: 'CP008', ingredient_id: 'ing_lytrang', quantity_needed: 1, unit: 'cái' },
+
+  // 7.2 Sữa đá lớn (CP009)
+  { id: 'rec_cp9_1', product_id: 'CP009', ingredient_id: 'ing_caphe', quantity_needed: 25, unit: 'g' },
+  { id: 'rec_cp9_2', product_id: 'CP009', ingredient_id: 'ing_suadac', quantity_needed: 45, unit: 'g' },
+  { id: 'rec_cp9_3', product_id: 'CP009', ingredient_id: 'ing_lyhoavan', quantity_needed: 1, unit: 'cái' },
 
   // 8. Cacao sữa
   { id: 'rec_tuk1_1', product_id: 'TUK001', ingredient_id: 'ing_cacao', quantity_needed: 10, unit: 'g' },

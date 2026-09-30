@@ -21,6 +21,7 @@
         "minWidth": 1024,
         "minHeight": 768,
         "zoomHotkeysEnabled": false,
+        "additionalBrowserArgs": "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding",
         "url": "pos.html"
       },
       {
