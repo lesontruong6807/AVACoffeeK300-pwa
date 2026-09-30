@@ -21,7 +21,6 @@ import {
   BarChart3
 } from 'lucide-react';
 import { getCurrentUser, setCurrentUser, isSupabaseConfigured, mockDb, db } from '@/lib/database';
-import GlobalPrintListener from '@/components/GlobalPrintListener';
 import TauriFullscreenButton from '@/components/TauriFullscreenButton';
 
 interface MainLayoutProps {
@@ -241,7 +240,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
   if (isPosScreen) {
     return (
       <div className="w-full h-[100dvh] overflow-hidden bg-[#FAF6F0] text-coffee-dark font-sans select-none flex flex-col">
-        <GlobalPrintListener />
         {children}
         {/* Floating Toast Notification */}
         {toastMessage && (
@@ -522,8 +520,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
         </div>
       )}
 
-      {/* Global Auto-Print Listener for Desktop POS */}
-      <GlobalPrintListener />
     </div>
   );
 }

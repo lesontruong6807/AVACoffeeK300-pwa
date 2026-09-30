@@ -264,16 +264,19 @@ export function tryAcquirePrintLock(orderId: string, action: 'create' | 'pay' | 
   }
 
   // 2. Khóa tức thì chống race-condition (ví dụ Broadcast và Postgres Changes cùng đến cách nhau < 2.5s)
-  const anyKey = `any_${orderId}`;
-  const lastAny = printedOrderHistory.get(anyKey);
-  if (lastAny && (now - lastAny) < 2500) {
-    console.log(`[PrintLock] Đơn ${orderId} vừa in qua kênh khác cách đây ${now - lastAny}ms. Bỏ qua.`);
-    return false;
+  // Chỉ áp dụng cho 'create', TUYỆT ĐỐI không dùng khóa này để chặn hành động 'pay' của khách!
+  if (action !== 'pay') {
+    const anyKey = `any_${orderId}`;
+    const lastAny = printedOrderHistory.get(anyKey);
+    if (lastAny && (now - lastAny) < 2500) {
+      console.log(`[PrintLock] Đơn ${orderId} vừa in qua kênh khác cách đây ${now - lastAny}ms. Bỏ qua.`);
+      return false;
+    }
+    printedOrderHistory.set(anyKey, now);
   }
 
   // Giành khóa in thành công
   printedOrderHistory.set(actionKey, now);
-  printedOrderHistory.set(anyKey, now);
 
   // Tự động dọn dẹp các mục cũ hơn 2 phút
   if (printedOrderHistory.size > 200) {

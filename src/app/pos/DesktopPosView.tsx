@@ -866,7 +866,13 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       }
     });
 
+    // Tự động mở và căn chỉnh Màn hình phụ 11.6 inch FullScreen tại Màn hình 2
+    const timerCust = setTimeout(() => {
+      openCustomerDisplayWindow().catch(() => {});
+    }, 1200);
+
     return () => {
+      clearTimeout(timerCust);
       unsubTables();
       unsubOrders();
       unsubPrints();
@@ -1231,7 +1237,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
           totalAmount: finalTotalAmount,
           discount: discountAmount,
           notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
-        });
+        }, undefined, undefined, { force: true });
       } catch (printErr) {
         console.warn('Lỗi in khi lưu đơn:', printErr);
       }
@@ -1327,7 +1333,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-          });
+          }, undefined, undefined, { force: true });
         } catch (printErr) {
           console.warn('In bill thanh toán ngay:', printErr);
         }

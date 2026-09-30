@@ -8,31 +8,44 @@ pub fn open_or_focus_customer_display(app: &AppHandle) -> Result<(), String> {
         if let Ok(monitors) = app.available_monitors() {
             if monitors.len() > 1 {
                 // Có từ 2 màn hình trở lên (Màn hình chính 15.6" + Màn hình phụ 11.6")
-                // Màn hình phụ thường là màn hình thứ 2 trong danh sách
-                let secondary_monitor = &monitors[1];
-                let pos = secondary_monitor.position();
-                let size = secondary_monitor.size();
+                // Chọn màn hình có tọa độ khác với màn hình chính (main window)
+                let target_monitor = if let Some(main_win) = app.get_webview_window("main") {
+                    if let Ok(Some(main_mon)) = main_win.current_monitor() {
+                        monitors.iter().find(|m| m.position() != main_mon.position()).unwrap_or(&monitors[1])
+                    } else {
+                        &monitors[1]
+                    }
+                } else {
+                    &monitors[1]
+                };
+
+                let pos = target_monitor.position();
+                let size = target_monitor.size();
 
                 println!(
                     "[CustomerDisplay] Phát hiện màn hình phụ tại ({}, {}), kích thước {}x{}",
                     pos.x, pos.y, size.width, size.height
                 );
 
+                let _ = window.set_fullscreen(false);
                 let _ = window.set_position(PhysicalPosition::new(pos.x, pos.y));
                 let _ = window.set_size(PhysicalSize::new(size.width, size.height));
+                let _ = window.show();
+                let _ = window.unminimize();
                 let _ = window.set_fullscreen(true);
             } else {
                 // Chỉ có 1 màn hình (chế độ chạy thử nghiệm)
                 println!("[CustomerDisplay] Chỉ phát hiện 1 màn hình. Hiển thị cửa sổ phụ dạng nổi.");
                 let _ = window.set_size(PhysicalSize::new(1024, 600));
+                let _ = window.show();
+                let _ = window.unminimize();
                 let _ = window.set_fullscreen(false);
             }
+        } else {
+            let _ = window.show();
+            let _ = window.unminimize();
         }
 
-        // Hiển thị cửa sổ và đưa lên trên
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
         Ok(())
     } else {
         Err("Không tìm thấy cửa sổ 'customer_display' trong cấu hình tauri.conf.json.".to_string())

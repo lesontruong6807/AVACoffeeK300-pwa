@@ -299,7 +299,17 @@ pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(
     {
         let printer = match target_printer {
             Some(name) if !name.trim().is_empty() => name,
-            _ => win32_spooler::get_default_printer()?,
+            _ => {
+                let available = win32_spooler::list_printers().unwrap_or_default();
+                if let Some(pos_p) = available.iter().find(|p| {
+                    let low = p.to_lowercase();
+                    low.contains("pos") || low.contains("80") || low.contains("zy") || low.contains("receipt") || low.contains("thermal")
+                }) {
+                    pos_p.clone()
+                } else {
+                    win32_spooler::get_default_printer()?
+                }
+            }
         };
         win32_spooler::raw_print(&printer, data)
     }

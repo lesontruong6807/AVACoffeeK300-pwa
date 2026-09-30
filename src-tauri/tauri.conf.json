@@ -28,7 +28,7 @@
       {
         "title": "AVA Coffee - Màn Hình Khách Hàng",
         "label": "customer_display",
-        "fullscreen": false,
+        "fullscreen": true,
         "resizable": true,
         "width": 1024,
         "height": 600,

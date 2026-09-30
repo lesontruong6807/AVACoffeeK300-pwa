@@ -30,20 +30,19 @@ export default function GlobalPrintListener() {
       const orderData = payload.orderData;
       const orderId = orderData.orderId;
       const isManual = payload.isManualReprint || orderData.isManualReprint;
-      const isPayment = payload.isPayment || orderData.notes?.includes('(ĐÃ THANH TOÁN)') || orderData.notes?.includes('ĐÃ THANH TOÁN');
 
-      // Quy tắc nghiêm ngặt: Nếu là lệnh thanh toán mà đơn đã được in lúc lưu trước đó -> TUYỆT ĐỐI KHÔNG IN LẠI
-      if (isPayment && !isManual && orderId) {
-        const existingTrack = printedOrdersTracker.get(orderId);
-        if (existingTrack) {
-          console.log(`[GlobalPrintListener] Bỏ qua in tự động khi thanh toán vì đơn ${orderId} đã in lúc lưu.`);
+      // Chống in trùng lặp nếu đơn này vừa in trong vòng 10 giây qua kênh này
+      if (orderId && !isManual) {
+        const tracked = printedOrdersTracker.get(orderId);
+        if (tracked && (Date.now() - tracked.printedAt < 10000)) {
+          console.log(`[GlobalPrintListener] Bỏ qua vì đơn ${orderId} đã được in cách đây ${Date.now() - tracked.printedAt}ms.`);
           return;
         }
       }
 
       console.log('[GlobalPrintListener] Nhận lệnh in từ Web app điện thoại:', orderData);
       try {
-        await printOrderDirect(orderData, undefined, undefined, { force: !!isManual });
+        await printOrderDirect(orderData, undefined, undefined, { force: true });
         
         if (orderId) {
           const items = orderData.items || [];
@@ -78,25 +77,30 @@ export default function GlobalPrintListener() {
       const createdAt = newOrder.ngay_tao ? new Date(newOrder.ngay_tao).getTime() : Date.now();
       const isRecent = Date.now() - createdAt < 45000;
 
-      // TRƯỜNG HỢP 1: TẠO ĐƠN MỚI (LƯU ĐƠN)
+      // TRƯỜNG HỢP 1: TẠO ĐƠN MỚI TỪ ĐIỆN THOẠI (DỰ PHÒNG KHI BROADCAST BỊ LỠ)
       if (eventType === 'INSERT' && isRecent) {
-        // Chỉ in nếu chưa từng in
-        if (printedOrdersTracker.has(orderId)) return;
-        if (!tryAcquirePrintLock(orderId, 'create')) return;
+        if (orderId && printedOrdersTracker.has(orderId)) return;
+
+        // Chờ 600ms để hoadondetail hoàn tất chèn vào Supabase
+        await new Promise(r => setTimeout(r, 600));
+        if (orderId && printedOrdersTracker.has(orderId)) return;
 
         try {
           const items = await db.getOrderItems(orderId);
           if (items && items.length > 0) {
+            if (orderId && printedOrdersTracker.has(orderId)) return;
+
             const currentTables = await db.getTables();
             const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
-            
+            const isPaid = newOrder.trang_thai_thanh_toan === 'Đã thanh toán';
+
             await printOrderDirect({
               orderId: newOrder.id,
               tableName: matchedTable?.table_name || 'Khách mang về',
               staffName: 'Nhân viên (Điện thoại)',
               totalAmount: Number(newOrder.tong_tien || 0),
               discount: Number(newOrder.giam_gia || 0),
-              notes: '(LƯU ĐƠN)',
+              notes: isPaid ? '(ĐÃ THANH TOÁN)' : '(LƯU ĐƠN)',
               items: items.map((i: any) => ({
                 name: i.products?.name || i.name || i.ten_san_pham || 'Món',
                 quantity: Number(i.so_luong || i.quantity || 1),
@@ -104,7 +108,7 @@ export default function GlobalPrintListener() {
                 subtotal: Number(i.thanh_tien || i.subtotal || 0),
                 notes: i.ghi_chu || ''
               }))
-            });
+            }, undefined, undefined, { force: true });
 
             printedOrdersTracker.set(orderId, {
               printedAt: Date.now(),
@@ -112,7 +116,7 @@ export default function GlobalPrintListener() {
               itemIds: items.map((i: any) => i.id || i.product_id)
             });
 
-            toast.success(`🖨️ Đã in phiếu bếp (${matchedTable?.table_name || 'Khách mang về'}) từ điện thoại!`);
+            toast.success(`🖨️ Đã in phiếu order (${matchedTable?.table_name || 'Khách mang về'}) từ điện thoại!`);
           }
         } catch (printErr) {
           console.warn('[GlobalPrintListener] Lỗi in tự động từ INSERT:', printErr);
@@ -160,9 +164,8 @@ export default function GlobalPrintListener() {
           }
         }
       }
-      // TRƯỜNG HỢP 3: UPDATE SANG 'Đã thanh toán' -> TUYỆT ĐỐI BỎ QUA KHÔNG IN LẠI
+      // TRƯỜNG HỢP 3: UPDATE SANG 'Đã thanh toán' -> Tuân thủ quy tắc không in lặp nếu đã in trước đó
       else if (eventType === 'UPDATE' && newOrder.trang_thai_thanh_toan === 'Đã thanh toán') {
-        // Đã lưu là in, khi ấn thanh toán là tuyệt đối không in thêm!
         console.log(`[GlobalPrintListener] Đơn ${orderId} đã thanh toán - tuân thủ quy tắc không in lặp.`);
       }
     });
@@ -180,10 +183,10 @@ export default function GlobalPrintListener() {
           const createdAt = order.created_at ? new Date(order.created_at).getTime() : 0;
           // Nếu đơn tạo trong vòng 2 phút gần đây và chưa in
           if (now - createdAt < 120000) {
-            if (!printedOrdersTracker.has(order.id) && tryAcquirePrintLock(order.id, 'create')) {
-              console.log(`[GlobalPrintListener Poller] Tự động in đơn mới chưa in: ${order.id}`);
+            if (!printedOrdersTracker.has(order.id)) {
               const items = await db.getOrderItems(order.id);
               if (items && items.length > 0) {
+                if (printedOrdersTracker.has(order.id)) continue;
                 const currentTables = await db.getTables();
                 const matchedTable = currentTables.find((t: any) => t.id === order.table_id);
                 await printOrderDirect({
@@ -200,7 +203,7 @@ export default function GlobalPrintListener() {
                     subtotal: Number(i.thanh_tien || i.subtotal || 0),
                     notes: i.ghi_chu || ''
                   }))
-                });
+                }, undefined, undefined, { force: true });
                 printedOrdersTracker.set(order.id, {
                   printedAt: Date.now(),
                   itemCount: items.length,
