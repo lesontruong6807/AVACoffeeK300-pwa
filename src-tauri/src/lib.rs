@@ -34,10 +34,12 @@ pub fn run() {
                 http_server::start_http_print_server(3333);
             });
 
-            // 2. Tự động mở màn hình phụ nếu phát hiện máy POS có từ 2 màn hình trở lên (chờ 1.5s để webview ổn định)
+            // 2. Tự động mở màn hình phụ nếu phát hiện máy POS có từ 2 màn hình trở lên (chờ 1.5s và retry 3.5s để webview ổn định)
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(1500));
+                let _ = customer_screen::open_or_focus_customer_display(&app_handle);
+                std::thread::sleep(std::time::Duration::from_millis(2000));
                 let _ = customer_screen::open_or_focus_customer_display(&app_handle);
             });
             Ok(())

@@ -41,9 +41,13 @@ pub fn open_or_focus_customer_display(app: &AppHandle) -> Result<(), String> {
                 let _ = window.unminimize();
                 let _ = window.set_fullscreen(false);
             }
-        } else {
-            let _ = window.show();
-            let _ = window.unminimize();
+        }
+
+        // Hiển thị và trả lại focus cho màn hình chính main
+        let _ = window.show();
+        let _ = window.unminimize();
+        if let Some(main_win) = app.get_webview_window("main") {
+            let _ = main_win.set_focus();
         }
 
         Ok(())

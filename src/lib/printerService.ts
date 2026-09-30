@@ -241,67 +241,120 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
 
 // =========================================================================
 // BỘ NHỚ ĐỆM CHỐNG IN TRÙNG LẶP TOÀN CỤC (GLOBAL PRINT LOCK ENGINE)
-// Đảm bảo 1 đơn hàng khi lưu hay thanh toán chỉ in đúng 1 lần duy nhất
+// NGUYÊN TẮC: Mỗi bill in 1 lần trừ khi thêm món mới hoặc tự chọn in lại!
 // =========================================================================
-const printedOrderHistory = new Map<string, number>();
+export interface PrintedOrderRecord {
+  printedAt: number;
+  itemCount: number;
+  itemIds: string[];
+  totalAmount?: number;
+  isPaid?: boolean;
+}
+
+const printedOrderHistory = new Map<string, PrintedOrderRecord>();
+
+// Khôi phục từ sessionStorage nếu người dùng tải lại trang trong cùng phiên bán hàng
+if (typeof window !== 'undefined') {
+  try {
+    const raw = sessionStorage.getItem('ava_printed_orders_cache');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      for (const [k, v] of Object.entries(parsed)) {
+        printedOrderHistory.set(k, v as PrintedOrderRecord);
+      }
+    }
+  } catch (_) {}
+}
+
+function persistPrintedOrders() {
+  if (typeof window !== 'undefined') {
+    try {
+      const obj: Record<string, PrintedOrderRecord> = {};
+      const now = Date.now();
+      let count = 0;
+      for (const [k, v] of printedOrderHistory.entries()) {
+        if (now - v.printedAt < 24 * 60 * 60 * 1000 && count < 300) {
+          obj[k] = v;
+          count++;
+        }
+      }
+      sessionStorage.setItem('ava_printed_orders_cache', JSON.stringify(obj));
+    } catch (_) {}
+  }
+}
 
 /**
- * Kiểm tra và giành quyền in cho một đơn hàng (Deduplication Lock)
- * @param orderId Mã đơn hàng (ord_..., OD-..., hoặc ID database)
- * @param action Loại hành động ('create' | 'pay' | 'any')
- * @returns boolean true nếu được phép in, false nếu đơn đã in gần đây
+ * Kiểm tra xem đơn hàng đã từng được in chưa.
+ * @param orderId Mã đơn hàng
+ * @param currentItemCount Số lượng món hiện tại (nếu có thêm món mới, trả về false để in phiếu món mới)
  */
-export function tryAcquirePrintLock(orderId: string, action: 'create' | 'pay' | 'any' = 'any'): boolean {
-  if (!orderId) return true;
-  const now = Date.now();
+export function isOrderAlreadyPrinted(orderId: string, currentItemCount?: number): boolean {
+  if (!orderId) return false;
+  const record = printedOrderHistory.get(orderId);
+  if (!record) return false;
 
-  // 1. Khóa chống in lặp theo từng hành động cụ thể ('create' hoặc 'pay') trong vòng 8 giây
-  const actionKey = `${orderId}_${action}`;
-  const lastAction = printedOrderHistory.get(actionKey);
-  if (lastAction && (now - lastAction) < 8000) {
-    console.log(`[PrintLock] Đơn ${orderId} (${action}) vừa in cách đây ${now - lastAction}ms. Bỏ qua.`);
+  // NGUYÊN TẮC VÀNG: Nếu số lượng món hiện tại nhiều hơn số món đã in -> có món mới bổ sung
+  if (typeof currentItemCount === 'number' && currentItemCount > record.itemCount) {
     return false;
-  }
-
-  // 2. Khóa tức thì chống race-condition (ví dụ Broadcast và Postgres Changes cùng đến cách nhau < 2.5s)
-  // Chỉ áp dụng cho 'create', TUYỆT ĐỐI không dùng khóa này để chặn hành động 'pay' của khách!
-  if (action !== 'pay') {
-    const anyKey = `any_${orderId}`;
-    const lastAny = printedOrderHistory.get(anyKey);
-    if (lastAny && (now - lastAny) < 2500) {
-      console.log(`[PrintLock] Đơn ${orderId} vừa in qua kênh khác cách đây ${now - lastAny}ms. Bỏ qua.`);
-      return false;
-    }
-    printedOrderHistory.set(anyKey, now);
-  }
-
-  // Giành khóa in thành công
-  printedOrderHistory.set(actionKey, now);
-
-  // Tự động dọn dẹp các mục cũ hơn 2 phút
-  if (printedOrderHistory.size > 200) {
-    const cutoff = now - 120000;
-    for (const [k, v] of printedOrderHistory.entries()) {
-      if (v < cutoff) printedOrderHistory.delete(k);
-    }
   }
 
   return true;
 }
 
+export function getPrintedOrderInfo(orderId: string): PrintedOrderRecord | undefined {
+  if (!orderId) return undefined;
+  return printedOrderHistory.get(orderId);
+}
+
 /**
- * Xóa khóa in của đơn hàng (dùng khi hủy đơn hoặc muốn cho phép in lại)
+ * Đánh dấu đơn hàng đã được in vào sổ lưu vết toàn cục
+ */
+export function markOrderAsPrinted(
+  orderId: string,
+  detailsOrAction?: {
+    itemCount?: number;
+    itemIds?: string[];
+    totalAmount?: number;
+    isPaid?: boolean;
+  } | 'create' | 'pay'
+) {
+  if (!orderId) return;
+  const existing = printedOrderHistory.get(orderId);
+
+  let details: Partial<PrintedOrderRecord> = {};
+  if (typeof detailsOrAction === 'object' && detailsOrAction !== null) {
+    details = detailsOrAction;
+  } else if (typeof detailsOrAction === 'string') {
+    details = { isPaid: detailsOrAction === 'pay' };
+  }
+
+  const updated: PrintedOrderRecord = {
+    printedAt: Date.now(),
+    itemCount: details.itemCount ?? existing?.itemCount ?? 0,
+    itemIds: details.itemIds ?? existing?.itemIds ?? [],
+    totalAmount: details.totalAmount ?? existing?.totalAmount,
+    isPaid: details.isPaid ?? existing?.isPaid ?? false
+  };
+
+  printedOrderHistory.set(orderId, updated);
+  persistPrintedOrders();
+}
+
+/**
+ * Xóa trạng thái đã in (khi hủy đơn)
  */
 export function clearPrintLock(orderId: string) {
   if (!orderId) return;
-  printedOrderHistory.delete(`any_${orderId}`);
-  printedOrderHistory.delete(`${orderId}_create`);
-  printedOrderHistory.delete(`${orderId}_pay`);
-  printedOrderHistory.delete(`${orderId}_any`);
+  printedOrderHistory.delete(orderId);
+  persistPrintedOrders();
 }
 
-export function markOrderAsPrinted(orderId: string, action: 'create' | 'pay' = 'create') {
-  // Để printOrderDirect tự động quản lý khóa an toàn, tránh deadlock tự chặn chính mình
+/**
+ * Kiểm tra quyền in nhanh
+ */
+export function tryAcquirePrintLock(orderId: string, action: 'create' | 'pay' | 'any' = 'any'): boolean {
+  if (!orderId) return true;
+  return !isOrderAlreadyPrinted(orderId);
 }
 
 // In hóa đơn trực tiếp (Tự động chuyển đổi giữa POS Desktop USB và Mobile Wi-Fi Print)
@@ -312,16 +365,24 @@ export async function printOrderDirect(
   options?: { force?: boolean }
 ): Promise<void> {
   const orderId = orderData.orderId;
-  const action: 'create' | 'pay' = (orderData.notes?.includes('ĐÃ THANH TOÁN') || orderData.notes?.includes('(ĐÃ THANH TOÁN)'))
-    ? 'pay'
-    : 'create';
+  const itemCount = orderData.items?.length || 0;
 
-  // Khóa chống in trùng lặp: Nếu không ép buộc in (re-print), chỉ in đúng 1 lần
+  // NGUYÊN TẮC: Mỗi bill in đúng một lần trừ khi thêm món mới, hoặc người dùng chủ động in lại (options.force)
   if (!options?.force && orderId) {
-    if (!tryAcquirePrintLock(orderId, action)) {
-      console.log(`[printOrderDirect] Bỏ qua vì đơn ${orderId} (${action}) đã được in trước đó.`);
+    if (isOrderAlreadyPrinted(orderId, itemCount)) {
+      console.log(`[printOrderDirect] Bỏ qua vì đơn ${orderId} đã được in trước đó (${itemCount} món). Không in trùng.`);
       return;
     }
+  }
+
+  // Đánh dấu ngay lập tức trước khi in để chặn đứng mọi race-condition từ Supabase Realtime / Postgres Changes
+  if (orderId) {
+    markOrderAsPrinted(orderId, {
+      itemCount: itemCount,
+      itemIds: (orderData.items || []).map((i: any) => i.product_id || i.id || i.name),
+      totalAmount: orderData.totalAmount,
+      isPaid: orderData.notes?.includes('ĐÃ THANH TOÁN') || orderData.notes?.includes('(ĐÃ THANH TOÁN)')
+    });
   }
 
   const storeSettings = db.getStoreSettingsSync();

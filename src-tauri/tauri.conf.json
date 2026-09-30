@@ -14,8 +14,7 @@
       {
         "title": "AVA Coffee K300 - POS System",
         "label": "main",
-        "fullscreen": false,
-        "maximized": true,
+        "fullscreen": true,
         "resizable": true,
         "width": 1920,
         "height": 1080,
@@ -28,7 +27,7 @@
       {
         "title": "AVA Coffee - Màn Hình Khách Hàng",
         "label": "customer_display",
-        "fullscreen": true,
+        "fullscreen": false,
         "resizable": true,
         "width": 1024,
         "height": 600,
