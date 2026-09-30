@@ -1242,7 +1242,7 @@ export default function AdminPage() {
   });
 
   const rangeRestockLogs = inventoryLogs.filter(l => {
-    if (l.type !== 'Nhập kho' || l.status === 'Từ chối') return false;
+    if (l.type !== 'Nhập kho' || l.status !== 'Đã duyệt') return false;
     const t = new Date(l.created_at).getTime();
     return t >= repStartT && t <= repEndT;
   });
@@ -1529,7 +1529,7 @@ export default function AdminPage() {
     // Tính ngược từ tồn kho thực tế hiện tại
     const logsAfterEnd = ingLogs.filter(l => new Date(l.created_at).getTime() > endT);
     const netChangeAfterEnd = logsAfterEnd
-      .filter(l => l.status !== 'Từ chối')
+      .filter(l => l.status === 'Đã duyệt')
       .reduce((sum, l) => sum + Number(l.change_amount || 0), 0);
 
     const endingStockVal = Math.max(0, Number(ing.stock_quantity || 0) - netChangeAfterEnd);
@@ -1541,17 +1541,17 @@ export default function AdminPage() {
 
     const refilled = logsInRange
       .filter(l => 
-        (l.type === 'Nhập kho' && l.status !== 'Từ chối') ||
-        (l.type === 'Hao hụt/Cân lại' && l.change_amount > 0 && l.status !== 'Từ chối') ||
-        (l.type === 'Khác' && l.change_amount > 0 && l.status !== 'Từ chối')
+        (l.type === 'Nhập kho' && l.status === 'Đã duyệt') ||
+        (l.type === 'Hao hụt/Cân lại' && l.change_amount > 0 && l.status === 'Đã duyệt') ||
+        (l.type === 'Khác' && l.change_amount > 0 && l.status === 'Đã duyệt')
       )
       .reduce((sum, l) => sum + Number(l.change_amount || 0), 0);
 
     const sold = logsInRange
       .filter(l => 
         (l.type === 'Bán hàng') ||
-        (l.type === 'Hao hụt/Cân lại' && l.change_amount < 0 && l.status !== 'Từ chối') ||
-        (l.type === 'Khác' && l.change_amount < 0 && l.status !== 'Từ chối')
+        (l.type === 'Hao hụt/Cân lại' && l.change_amount < 0 && l.status === 'Đã duyệt') ||
+        (l.type === 'Khác' && l.change_amount < 0 && l.status === 'Đã duyệt')
       )
       .reduce((sum, l) => sum + Math.abs(Number(l.change_amount || 0)), 0);
 
@@ -1564,7 +1564,7 @@ export default function AdminPage() {
       .filter(l => 
         ((l.type === 'Hao hụt/Cân lại' && l.change_amount < 0) ||
          (l.type === 'Khác' && l.change_amount < 0)) &&
-        l.status !== 'Từ chối'
+        l.status === 'Đã duyệt'
       )
       .map(l => ({
         id: l.id,
@@ -1579,7 +1579,7 @@ export default function AdminPage() {
     const refundLogs = logsInRange
       .filter(l => 
         l.change_amount > 0 &&
-        l.status !== 'Từ chối' &&
+        l.status === 'Đã duyệt' &&
         (l.type === 'Khác' || (l.note && l.note.toLowerCase().includes('hủy đơn')))
       )
       .map(l => ({
@@ -1594,7 +1594,7 @@ export default function AdminPage() {
     const restockLogs = logsInRange
       .filter(l => 
         l.type === 'Nhập kho' &&
-        l.status !== 'Từ chối' &&
+        l.status === 'Đã duyệt' &&
         !(l.note && l.note.toLowerCase().includes('hủy đơn'))
       )
       .map(l => ({
@@ -1610,7 +1610,7 @@ export default function AdminPage() {
       .filter(l => 
         l.type === 'Hao hụt/Cân lại' &&
         l.change_amount > 0 &&
-        l.status !== 'Từ chối'
+        l.status === 'Đã duyệt'
       )
       .map(l => ({
         id: l.id,

@@ -130,7 +130,7 @@ export default function InventoryPage() {
   const todayStr = new Date().toLocaleDateString('en-CA');
 
   const todayRestockCost = logs
-    .filter(l => l.type === 'Nhập kho' && l.status !== 'Từ chối' && new Date(l.created_at).toLocaleDateString('en-CA') === todayStr)
+    .filter(l => l.type === 'Nhập kho' && l.status === 'Đã duyệt' && new Date(l.created_at).toLocaleDateString('en-CA') === todayStr)
     .reduce((sum, l) => sum + Number(l.cost || 0), 0);
 
   // --- XỬ LÝ NHẬP THÊM (RESTOCK) ---
@@ -307,7 +307,7 @@ export default function InventoryPage() {
     // Tính ngược từ tồn kho thực tế hiện tại
     const logsAfterEnd = ingLogs.filter(l => new Date(l.created_at).getTime() > endT);
     const netChangeAfterEnd = logsAfterEnd
-      .filter(l => l.status !== 'Từ chối')
+      .filter(l => l.status === 'Đã duyệt')
       .reduce((sum, l) => sum + Number(l.change_amount || 0), 0);
 
     const closingStock = Math.max(0, currentStockQty - netChangeAfterEnd);
@@ -319,17 +319,17 @@ export default function InventoryPage() {
 
     const refilled = logsInRange
       .filter(l => 
-        (l.type === 'Nhập kho' && l.status !== 'Từ chối') ||
-        (l.type === 'Hao hụt/Cân lại' && l.change_amount > 0 && l.status !== 'Từ chối') ||
-        (l.type === 'Khác' && l.change_amount > 0 && l.status !== 'Từ chối')
+        (l.type === 'Nhập kho' && l.status === 'Đã duyệt') ||
+        (l.type === 'Hao hụt/Cân lại' && l.change_amount > 0 && l.status === 'Đã duyệt') ||
+        (l.type === 'Khác' && l.change_amount > 0 && l.status === 'Đã duyệt')
       )
       .reduce((sum, l) => sum + Number(l.change_amount || 0), 0);
 
     const sold = logsInRange
       .filter(l => 
         (l.type === 'Bán hàng') ||
-        (l.type === 'Hao hụt/Cân lại' && l.change_amount < 0 && l.status !== 'Từ chối') ||
-        (l.type === 'Khác' && l.change_amount < 0 && l.status !== 'Từ chối')
+        (l.type === 'Hao hụt/Cân lại' && l.change_amount < 0 && l.status === 'Đã duyệt') ||
+        (l.type === 'Khác' && l.change_amount < 0 && l.status === 'Đã duyệt')
       )
       .reduce((sum, l) => sum + Math.abs(Number(l.change_amount || 0)), 0);
 
@@ -342,7 +342,7 @@ export default function InventoryPage() {
       .filter(l => 
         ((l.type === 'Hao hụt/Cân lại' && l.change_amount < 0) ||
          (l.type === 'Khác' && l.change_amount < 0)) &&
-        l.status !== 'Từ chối'
+        l.status === 'Đã duyệt'
       )
       .map(l => ({
         id: l.id,
@@ -357,7 +357,7 @@ export default function InventoryPage() {
     const refundLogs = logsInRange
       .filter(l => 
         l.change_amount > 0 &&
-        l.status !== 'Từ chối' &&
+        l.status === 'Đã duyệt' &&
         (l.type === 'Khác' || (l.note && l.note.toLowerCase().includes('hủy đơn')))
       )
       .map(l => ({
@@ -372,7 +372,7 @@ export default function InventoryPage() {
     const restockLogs = logsInRange
       .filter(l => 
         l.type === 'Nhập kho' &&
-        l.status !== 'Từ chối' &&
+        l.status === 'Đã duyệt' &&
         !(l.note && l.note.toLowerCase().includes('hủy đơn'))
       )
       .map(l => ({
@@ -388,7 +388,7 @@ export default function InventoryPage() {
       .filter(l => 
         l.type === 'Hao hụt/Cân lại' &&
         l.change_amount > 0 &&
-        l.status !== 'Từ chối'
+        l.status === 'Đã duyệt'
       )
       .map(l => ({
         id: l.id,

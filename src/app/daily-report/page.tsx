@@ -114,7 +114,7 @@ export default function DailyReportPage() {
   });
 
   const todayLogs = inventoryLogs.filter(l => {
-    return getVnDate(l.created_at) === todayVn && l.type === 'Nhập kho' && l.status !== 'Từ chối';
+    return getVnDate(l.created_at) === todayVn && l.type === 'Nhập kho' && l.status === 'Đã duyệt';
   });
 
   // 2. Phân loại theo Ca làm việc (theo chuẩn giờ Việt Nam)

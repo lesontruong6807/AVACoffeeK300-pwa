@@ -3946,23 +3946,29 @@ export const db = {
 
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.from('nghiphep').insert([{
+        id: newReq.id,
         id_nhan_vien: req.user_id,
         ngay_bat_dau: req.start_date,
         ngay_ket_thuc: req.end_date,
-        ly_do: req.reason
+        ly_do: req.reason,
+        ngay_nop: newReq.submitted_at,
+        trang_thai: 'Chờ duyệt'
       }]).select();
+      broadcastRealtimeEvent('attendance_update');
       if (!error && data) return mapLeaveRequestToClient(data[0]);
     }
 
     const requests = mockDb.getLeaveRequests();
     requests.push(newReq);
     mockDb.setLeaveRequests(requests);
+    broadcastRealtimeEvent('attendance_update');
     return newReq;
   },
 
   async approveLeaveRequest(id: string, status: 'Đã duyệt' | 'Từ chối') {
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.from('nghiphep').update({ trang_thai: status }).eq('id', id).select();
+      broadcastRealtimeEvent('attendance_update');
       if (!error && data) return mapLeaveRequestToClient(data[0]);
     }
     const requests = mockDb.getLeaveRequests();
@@ -3970,6 +3976,7 @@ export const db = {
     if (idx !== -1) {
       requests[idx].status = status;
       mockDb.setLeaveRequests(requests);
+      broadcastRealtimeEvent('attendance_update');
       return requests[idx];
     }
     return null;
@@ -4312,76 +4319,11 @@ export const db = {
       note: payload.note || '',
       staff_id: payload.staff_id,
       created_at: new Date().toISOString(),
-      status: 'Đã duyệt' as 'Chờ duyệt' | 'Đã duyệt' | 'Từ chối'
+      status: 'Chờ duyệt' as 'Chờ duyệt' | 'Đã duyệt' | 'Từ chối'
     };
 
-    const ingredients = await this.getIngredients();
-
-    // 1. Nếu là món có trong danh mục kho -> Cộng tồn kho ngay lập tức
-    if (!isCustom && payload.ingredient_id) {
-      const ing = ingredients.find(i => i.id === payload.ingredient_id);
-      const donGiaNhap = payload.change_amount > 0 ? (payload.cost / payload.change_amount) : 0;
-      const v_ton_hien_tai = Number(ing?.stock_quantity || 0);
-      const v_gia_von_cu = Number((ing as any)?.gia_von_trung_binh || (ing as any)?.don_gia_nhap || 0);
-      const newQty = v_ton_hien_tai + payload.change_amount;
-      
-      let newGiaVon = v_gia_von_cu;
-      if (newQty > 0 && payload.cost > 0) {
-        newGiaVon = Math.round(((v_ton_hien_tai * v_gia_von_cu) + payload.cost) / newQty * 100) / 100;
-      } else if (payload.cost > 0) {
-        newGiaVon = donGiaNhap;
-      }
-
-      if (ing) {
-        ing.stock_quantity = newQty;
-        (ing as any).don_gia_nhap = donGiaNhap;
-        (ing as any).gia_von_trung_binh = newGiaVon;
-      }
-
-      if (isSupabaseConfigured && supabase) {
-        // CẬP NHẬT TỒN KHO THỰC TẾ TRÊN SUPABASE NGAY LẬP TỨC
-        await supabase
-          .from('nguyenlieu')
-          .update({
-            so_luong_ton: newQty,
-            don_gia_nhap: donGiaNhap,
-            gia_von_trung_binh: newGiaVon
-          })
-          .eq('id', payload.ingredient_id);
-
-        // Tạo phiếu nhập kho và chi tiết phiếu nhập
-        const phieuId = generateShortId('phieu_');
-        const maPhieu = 'PNK-' + generateShortId('').toUpperCase();
-        
-        await supabase.from('phieunhapkho').insert({
-          id: phieuId,
-          ma_phieu: maPhieu,
-          id_nhan_vien: payload.staff_id,
-          nha_cung_cap: 'AVA Coffee Supplier',
-          tong_tien: payload.cost,
-          ghi_chu: payload.note || 'Nhập kho nguyên liệu',
-          ngay_nhap: new Date().toISOString()
-        });
-
-        await supabase.from('chitietnhapkho').insert({
-          id: generateShortId('ct_'),
-          id_phieu_nhap: phieuId,
-          id_nguyen_lieu: payload.ingredient_id,
-          so_luong: payload.change_amount,
-          don_gia_nhap: donGiaNhap,
-          thanh_tien: payload.cost
-        });
-      } else {
-        mockDb.setIngredients(ingredients);
-        // Tự động tính toán lại giá vốn của các sản phẩm sử dụng nguyên liệu này (offline fallback)
-        try {
-          await this.recalculateProductsCostPriceByIngredient(payload.ingredient_id);
-        } catch (err) {
-          console.error('Error recalculating cost price:', err);
-        }
-      }
-    }
-
+    // QUAN TRỌNG: Chỉ ghi nhận yêu cầu nhập kho với trạng thái 'Chờ duyệt'.
+    // Tuyệt đối CHƯA cộng kho hay tạo phiếu nhập kho cho đến khi Admin bấm "Phê duyệt"!
     if (isSupabaseConfigured && supabase) {
       await supabase.from('lichsukho').insert([{
         id: logId,
@@ -4392,7 +4334,7 @@ export const db = {
         chi_phi: payload.cost,
         ghi_chu: payload.note || '',
         id_nhan_vien: payload.staff_id,
-        trang_thai: 'Đã duyệt'
+        trang_thai: 'Chờ duyệt'
       }]);
     } else {
       const logs = mockDb.getInventoryLogs();
@@ -4513,8 +4455,8 @@ export const db = {
   },
 
   // Kiểm kho Cuối ngày / Cuối tuần (Stocktake)
-  // Cập nhật tồn kho NGAY LẬP TỨC, nhưng ghi nhận trạng thái "Chờ duyệt" để Admin xác nhận.
-  // Nếu Admin từ chối → hoàn lại tồn kho về lúc ban đầu.
+  // Chỉ ghi nhận phiếu kiểm kho với trạng thái "Chờ duyệt".
+  // Tuyệt đối CHƯA thay đổi tồn kho thực tế cho đến khi Admin bấm "Phê duyệt"!
   async submitStocktake(payload: {
     ingredient_id: string;
     actual_stock: number;
@@ -4549,22 +4491,11 @@ export const db = {
         id_nhan_vien: payload.staff_id,
         trang_thai: 'Chờ duyệt'
       }]);
-
-      // 2. Cập nhật trực tiếp số lượng tồn kho thực tế trong nguyenlieu (cập nhật liền)
-      await supabase.from('nguyenlieu')
-        .update({ so_luong_ton: payload.actual_stock })
-        .eq('id', payload.ingredient_id);
+      // KHÔNG cập nhật nguyenlieu.so_luong_ton ở đây! Chỉ cập nhật khi Admin duyệt.
     } else {
       const logs = mockDb.getInventoryLogs();
       logs.push(newLog);
       mockDb.setInventoryLogs(logs);
-
-      const ingredients = mockDb.getIngredients();
-      const ingIdx = ingredients.findIndex(i => i.id === payload.ingredient_id);
-      if (ingIdx !== -1) {
-        ingredients[ingIdx].stock_quantity = payload.actual_stock;
-        mockDb.setIngredients(ingredients);
-      }
     }
 
     broadcastRealtimeEvent('inventory_update');
@@ -4573,41 +4504,143 @@ export const db = {
   },
 
   // Admin Phê duyệt / Từ chối đơn Nhập kho & Kiểm kho
-  // Logic: Cả Nhập kho lẫn Kiểm kho đều cập nhật tồn kho NGAY khi submit.
-  // → Duyệt = giữ nguyên (chỉ đổi trạng thái).
-  // → Từ chối = hoàn lại tồn kho về trạng thái trước khi submit.
+  // Quy trình chuẩn:
+  // - Submit: Chỉ ghi log trạng thái 'Chờ duyệt', tồn kho nguyenlieu CHƯA thay đổi.
+  // - Phê duyệt ('Đã duyệt'): Áp dụng thay đổi tồn kho vào nguyenlieu, tính lại giá vốn & tạo phiếu nhập kho nếu là Nhập kho.
+  // - Từ chối ('Từ chối'): Chỉ chuyển trạng thái log sang 'Từ chối', không đụng vào tồn kho.
   async approveInventoryLog(id: string, status: 'Đã duyệt' | 'Từ chối') {
-    const logs = await this.getInventoryLogs();
-    const targetLog = logs.find(l => l.id === id);
-    if (!targetLog) return null;
+    let resultLog: any = null;
 
-    targetLog.status = status;
+    if (isSupabaseConfigured && supabase) {
+      const { data: logRow, error: logErr } = await supabase
+        .from('lichsukho')
+        .select('*')
+        .eq('id', id)
+        .single();
 
-    // Khi TỪ CHỐI: Hoàn lại tồn kho vì tồn kho đã được cập nhật ngay khi submit
-    if (status === 'Từ chối' && targetLog.ingredient_id) {
-      const ingredients = await this.getIngredients();
-      const ing = ingredients.find(i => i.id === targetLog.ingredient_id);
-      if (ing) {
-        // Trừ lại change_amount (Nhập kho: change > 0 → trừ bớt; Kiểm kho dư: change > 0 → trừ bớt; Kiểm kho thiếu: change < 0 → cộng lại)
-        ing.stock_quantity = Math.max(0, Number(ing.stock_quantity) - targetLog.change_amount);
-        if (isSupabaseConfigured && supabase) {
-          await supabase.from('nguyenlieu').update({ so_luong_ton: ing.stock_quantity }).eq('id', targetLog.ingredient_id);
-        } else {
+      if (logErr || !logRow) return null;
+      if (logRow.trang_thai === status) return logRow;
+
+      const ingId = logRow.id_nguyen_lieu;
+      const changeAmount = Number(logRow.so_luong_thay_doi || 0);
+      const cost = Number(logRow.chi_phi || 0);
+      const logType = logRow.loai_giao_dich;
+
+      if (status === 'Đã duyệt' && ingId) {
+        const { data: ing } = await supabase
+          .from('nguyenlieu')
+          .select('*')
+          .eq('id', ingId)
+          .single();
+
+        if (ing) {
+          const v_ton_hien_tai = Number(ing.so_luong_ton || 0);
+          const v_gia_von_cu = Number(ing.gia_von_trung_binh || ing.don_gia_nhap || 0);
+          const newQty = Math.max(0, v_ton_hien_tai + changeAmount);
+
+          if (logType === 'Nhập kho') {
+            const donGiaNhap = changeAmount > 0 ? (cost / changeAmount) : 0;
+            let newGiaVon = v_gia_von_cu;
+            if (newQty > 0 && cost > 0) {
+              newGiaVon = Math.round(((v_ton_hien_tai * v_gia_von_cu) + cost) / newQty * 100) / 100;
+            } else if (cost > 0) {
+              newGiaVon = donGiaNhap;
+            }
+
+            await supabase
+              .from('nguyenlieu')
+              .update({
+                so_luong_ton: newQty,
+                don_gia_nhap: donGiaNhap > 0 ? donGiaNhap : (ing.don_gia_nhap || 0),
+                gia_von_trung_binh: newGiaVon
+              })
+              .eq('id', ingId);
+
+            // Tạo phiếu nhập kho và chi tiết phiếu nhập
+            const phieuId = generateShortId('phieu_');
+            const maPhieu = 'PNK-' + generateShortId('').toUpperCase();
+
+            await supabase.from('phieunhapkho').insert({
+              id: phieuId,
+              ma_phieu: maPhieu,
+              id_nhan_vien: logRow.id_nhan_vien,
+              nha_cung_cap: 'AVA Coffee Supplier',
+              tong_tien: cost,
+              ghi_chu: logRow.ghi_chu || 'Nhập kho nguyên liệu',
+              ngay_nhap: new Date().toISOString()
+            });
+
+            await supabase.from('chitietnhapkho').insert({
+              id: generateShortId('ct_'),
+              id_phieu_nhap: phieuId,
+              id_nguyen_lieu: ingId,
+              so_luong: changeAmount,
+              don_gia_nhap: donGiaNhap,
+              thanh_tien: cost
+            });
+
+            try {
+              await this.recalculateProductsCostPriceByIngredient(ingId);
+            } catch (err) {
+              console.error('Lỗi tính lại giá vốn sản phẩm:', err);
+            }
+          } else {
+            // Hao hụt/Cân lại hoặc các loại điều chỉnh kho khác
+            await supabase
+              .from('nguyenlieu')
+              .update({ so_luong_ton: newQty })
+              .eq('id', ingId);
+          }
+        }
+      }
+
+      await supabase.from('lichsukho').update({ trang_thai: status }).eq('id', id);
+      resultLog = { ...logRow, trang_thai: status };
+    } else {
+      const logs = mockDb.getInventoryLogs();
+      const targetLog = logs.find(l => l.id === id);
+      if (!targetLog) return null;
+      if (targetLog.status === status) return targetLog;
+
+      targetLog.status = status;
+
+      if (status === 'Đã duyệt' && targetLog.ingredient_id) {
+        const ingredients = mockDb.getIngredients();
+        const ing = ingredients.find(i => i.id === targetLog.ingredient_id);
+        if (ing) {
+          const v_ton_hien_tai = Number(ing.stock_quantity || 0);
+          const newQty = Math.max(0, v_ton_hien_tai + targetLog.change_amount);
+          ing.stock_quantity = newQty;
+
+          if (targetLog.type === 'Nhập kho') {
+            const donGiaNhap = targetLog.change_amount > 0 ? (targetLog.cost / targetLog.change_amount) : 0;
+            const v_gia_von_cu = Number((ing as any).gia_von_trung_binh || (ing as any).don_gia_nhap || 0);
+            let newGiaVon = v_gia_von_cu;
+            if (newQty > 0 && targetLog.cost > 0) {
+              newGiaVon = Math.round(((v_ton_hien_tai * v_gia_von_cu) + targetLog.cost) / newQty * 100) / 100;
+            } else if (targetLog.cost > 0) {
+              newGiaVon = donGiaNhap;
+            }
+            (ing as any).don_gia_nhap = donGiaNhap > 0 ? donGiaNhap : (ing as any).don_gia_nhap;
+            (ing as any).gia_von_trung_binh = newGiaVon;
+
+            try {
+              await this.recalculateProductsCostPriceByIngredient(targetLog.ingredient_id);
+            } catch (err) {
+              console.error('Lỗi tính lại giá vốn sản phẩm mock:', err);
+            }
+          }
           mockDb.setIngredients(ingredients);
         }
       }
-    }
-    // Khi DUYỆT: Không cần làm gì với tồn kho vì đã cập nhật ngay khi submit rồi
 
-    if (isSupabaseConfigured && supabase) {
-      await supabase.from('lichsukho').update({ trang_thai: status }).eq('id', id);
-    } else {
       mockDb.setInventoryLogs(logs);
+      resultLog = targetLog;
     }
 
     broadcastRealtimeEvent('inventory_update');
     broadcastRealtimeEvent('report_update');
-    return targetLog;
+    return resultLog;
   },
 
   // --- BATCH APPROVE (Duyệt hàng loạt) ---
@@ -4632,12 +4665,8 @@ export const db = {
   },
 
   async approveAllInventoryLogs(ids: string[], status: 'Đã duyệt' | 'Từ chối') {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.from('lichsukho').update({ trang_thai: status }).in('id', ids);
-    } else {
-      const logs = mockDb.getInventoryLogs();
-      ids.forEach(id => { const l = logs.find(x => x.id === id); if (l) l.status = status; });
-      mockDb.setInventoryLogs(logs);
+    for (const id of ids) {
+      await this.approveInventoryLog(id, status);
     }
     broadcastRealtimeEvent('inventory_update');
     broadcastRealtimeEvent('report_update');
