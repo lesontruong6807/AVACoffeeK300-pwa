@@ -1640,7 +1640,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
           <button
             onClick={async () => {
-              await openCustomerDisplayWindow();
+              const ok = await openCustomerDisplayWindow();
+              if (ok) {
+                toast.success('🖥️ Đã bật màn hình phụ hiển thị cho khách!');
+              } else {
+                toast.error('⚠️ Không thể kết nối màn hình phụ!');
+              }
             }}
             className="p-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 rounded-lg text-xs transition cursor-pointer"
             title="Mở màn hình phụ 11.6 inch cho khách xem"

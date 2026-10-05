@@ -147,8 +147,14 @@ export async function toggleTauriFullscreen(): Promise<boolean> {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const appWindow = getCurrentWindow();
       const isFull = await appWindow.isFullscreen();
-      await appWindow.setFullscreen(!isFull);
-      return !isFull;
+      if (isFull) {
+        await appWindow.setFullscreen(false);
+        await appWindow.maximize();
+        return false;
+      } else {
+        await appWindow.setFullscreen(true);
+        return true;
+      }
     } catch (e) {
       console.warn('[TauriPOS] Lỗi toggle fullscreen:', e);
     }

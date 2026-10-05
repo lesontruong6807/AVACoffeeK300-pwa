@@ -15,6 +15,7 @@
         "title": "AVA Coffee K300 - POS System",
         "label": "main",
         "fullscreen": true,
+        "maximized": true,
         "resizable": true,
         "width": 1920,
         "height": 1080,

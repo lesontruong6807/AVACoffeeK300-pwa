@@ -660,6 +660,28 @@ const MOCK_PRODUCTS = [
     image_url: '/products/NE004.png',
     status: 'Còn hàng' as const
   },
+  {
+    id: 'NE005',
+    category_id: 'c_nuocep',
+    name: 'Nước ép thơm',
+    price: 30000,
+    takeaway_price: 30000,
+    dinein_price: 38000,
+    cost_price: 8000,
+    image_url: '/products/NE005.png',
+    status: 'Còn hàng' as const
+  },
+  {
+    id: 'NE006',
+    category_id: 'c_nuocep',
+    name: 'Nước ép mix',
+    price: 30000,
+    takeaway_price: 30000,
+    dinein_price: 38000,
+    cost_price: 8000,
+    image_url: '/products/NE006.png',
+    status: 'Còn hàng' as const
+  },
   // Nước đóng chai
   {
     id: 'N002',
@@ -1020,6 +1042,14 @@ export const MOCK_RECIPES = [
   // 38. Nước ép dưa hấu (NE004)
   { id: 'rec_ne4_1', product_id: 'NE004', ingredient_id: 'ing_duong', quantity_needed: 25, unit: 'g' },
   { id: 'rec_ne4_2', product_id: 'NE004', ingredient_id: 'ing_lyhoavan', quantity_needed: 1, unit: 'cái' },
+
+  // 39. Nước ép thơm (NE005)
+  { id: 'rec_ne5_1', product_id: 'NE005', ingredient_id: 'ing_duong', quantity_needed: 25, unit: 'g' },
+  { id: 'rec_ne5_2', product_id: 'NE005', ingredient_id: 'ing_lyhoavan', quantity_needed: 1, unit: 'cái' },
+
+  // 40. Nước ép mix (NE006)
+  { id: 'rec_ne6_1', product_id: 'NE006', ingredient_id: 'ing_duong', quantity_needed: 25, unit: 'g' },
+  { id: 'rec_ne6_2', product_id: 'NE006', ingredient_id: 'ing_lyhoavan', quantity_needed: 1, unit: 'cái' },
 
   // Nước đóng chai
   { id: 'rec_n2', product_id: 'N002', ingredient_id: 'ing_n002', quantity_needed: 1, unit: 'lon' },

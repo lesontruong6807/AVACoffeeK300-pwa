@@ -38,9 +38,17 @@ pub fn run() {
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(1500));
-                let _ = customer_screen::open_or_focus_customer_display(&app_handle);
+                if let Ok(monitors) = app_handle.available_monitors() {
+                    if monitors.len() > 1 {
+                        let _ = customer_screen::open_or_focus_customer_display(&app_handle);
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_millis(2000));
-                let _ = customer_screen::open_or_focus_customer_display(&app_handle);
+                if let Ok(monitors) = app_handle.available_monitors() {
+                    if monitors.len() > 1 {
+                        let _ = customer_screen::open_or_focus_customer_display(&app_handle);
+                    }
+                }
             });
             Ok(())
         })

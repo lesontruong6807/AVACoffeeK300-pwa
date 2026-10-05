@@ -42,6 +42,8 @@ Công thức pha nước:
 36. Nước ép táo: 30ml nước đường, 1 Ly trắng hoa văn AVA
 37. Nước ép cam: 30ml nước đường, 1 Ly trắng hoa văn AVA
 38. Nước ép dưa hấu: 30ml nước đường, 1 Ly trắng hoa văn AVA
+39. Nước ép thơm: 30ml nước đường, 1 Ly trắng hoa văn AVA
+40. Nước ép mix: 30ml nước đường, 1 Ly trắng hoa văn AVA
 
 Topping:
 1. Kem muối: 60ml kem muối (30.27g kem béo, 1.33g sữa đặc, 2ml sữa tươi, 0.67g muối biển)
