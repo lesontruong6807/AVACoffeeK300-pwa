@@ -54,6 +54,7 @@ import {
   exportFullDatabaseToExcel
 } from '@/lib/exportUtils';
 import { printTestTicket } from '@/lib/printerService';
+import { compressProductImage, estimateBase64SizeKB } from '@/lib/imageUtils';
 
 const generateShortId = (prefix: string = '') => {
   return `${prefix}${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
@@ -136,6 +137,8 @@ export default function AdminPage() {
   const [prodBaseCost, setProdBaseCost] = useState(0);
   const [prodCategoryId, setProdCategoryId] = useState('');
   const [prodImageUrl, setProdImageUrl] = useState('');
+  const [isCompressingImage, setIsCompressingImage] = useState(false);
+  const [prodImageSizeKB, setProdImageSizeKB] = useState<number | null>(null);
   const [prodStatus, setProdStatus] = useState<'Còn hàng' | 'Hết hàng'>('Còn hàng');
   const [prodRecipeList, setProdRecipeList] = useState<Array<{
     id: string;
@@ -552,6 +555,7 @@ export default function AdminPage() {
     setProdBaseCost(0);
     setProdCategoryId(categories[0]?.id || '');
     setProdImageUrl('');
+    setProdImageSizeKB(null);
     setProdStatus('Còn hàng');
     setProdRecipeList([]);
     setIsAddingNewCategory(false);
@@ -568,6 +572,7 @@ export default function AdminPage() {
     setProdBaseCost(prod.base_cost || 0);
     setProdCategoryId(prod.category_id);
     setProdImageUrl(prod.image_url || '');
+    setProdImageSizeKB(prod.image_url ? estimateBase64SizeKB(prod.image_url) : null);
     setProdStatus(prod.status);
     setIsAddingNewCategory(false);
     setNewCategoryName('');
@@ -610,23 +615,33 @@ export default function AdminPage() {
     }
   };
 
-  // Upload hình ảnh từ máy và chuyển sang DataURL
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Upload hình ảnh từ máy và nén tự động sang WebP Base64 chuẩn hóa
+  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Reset file input để có thể chọn lại cùng file nếu muốn
+    e.target.value = '';
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      toast.error('Ảnh có kích thước quá lớn (> 2MB). Vui lòng chọn ảnh nhẹ hơn!');
-      return;
+
+    setIsCompressingImage(true);
+    try {
+      // Tự động scale tối đa 400x400 và nén WebP chất lượng 0.82 (dung lượng chỉ ~15-30KB)
+      const result = await compressProductImage(file, 400, 0.82);
+      setProdImageUrl(result.dataUrl);
+      setProdImageSizeKB(result.sizeKB);
+      toast.success(`Đã nén tối ưu & tải ảnh lên thành công (~${result.sizeKB} KB)!`);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || 'Không thể xử lý hình ảnh này!');
+    } finally {
+      setIsCompressingImage(false);
     }
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const base64 = event.target?.result as string;
-      if (base64) {
-        setProdImageUrl(base64);
-        toast.success('Đã tải ảnh lên thành công!');
-      }
-    };
-    reader.readAsDataURL(file);
+  };
+
+  // Gỡ ảnh món ăn (quay về logo mặc định)
+  const handleRemoveImage = () => {
+    setProdImageUrl('');
+    setProdImageSizeKB(null);
+    toast.success('Đã gỡ ảnh món. Món sẽ dùng logo mặc định của quán!');
   };
 
   // Thêm nguyên liệu kho thông thường vào công thức món
@@ -5406,32 +5421,96 @@ export default function AdminPage() {
                 </div>
 
                 {/* 3. Hình ảnh món */}
-                <div className="space-y-1.5 bg-[#FAF6F0] p-4 rounded-2xl border border-coffee-light/70">
-                  <label className="font-bold text-coffee-medium uppercase block">Hình ảnh đồ uống</label>
+                <div className="space-y-2.5 bg-[#FAF6F0] p-4 rounded-2xl border border-coffee-light/70">
+                  <div className="flex items-center justify-between">
+                    <label className="font-bold text-coffee-medium uppercase block">Hình ảnh đồ uống</label>
+                    {prodImageUrl ? (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        <span>{prodImageSizeKB ? `Chuẩn WebP (~${prodImageSizeKB} KB)` : 'Ảnh sẵn sàng'}</span>
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-coffee-medium italic">Chưa có ảnh (sử dụng logo mặc định)</span>
+                    )}
+                  </div>
+
                   <div className="flex items-center gap-4">
-                    <div className="w-16 h-16 rounded-2xl border border-coffee-light overflow-hidden bg-white shrink-0 flex items-center justify-center shadow-inner">
-                      {prodImageUrl ? (
-                        <img src={prodImageUrl} alt="Preview" className="w-full h-full object-cover" />
+                    {/* Hộp xem trước ảnh */}
+                    <div className="relative w-20 h-20 rounded-2xl border-2 border-dashed border-coffee-light overflow-hidden bg-white shrink-0 flex items-center justify-center shadow-inner group">
+                      {isCompressingImage ? (
+                        <div className="flex flex-col items-center justify-center text-coffee-primary p-2 text-center">
+                          <Loader2 className="w-6 h-6 animate-spin mb-1 text-coffee-accent" />
+                          <span className="text-[9px] font-bold">Đang nén...</span>
+                        </div>
+                      ) : prodImageUrl ? (
+                        <>
+                          <img 
+                            src={prodImageUrl} 
+                            alt="Preview" 
+                            className="w-full h-full object-cover" 
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src = '/logo.jpg';
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={handleRemoveImage}
+                            className="absolute inset-0 bg-black/60 text-white opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center transition text-[10px] font-bold"
+                            title="Xóa ảnh này"
+                          >
+                            <Trash2 className="w-4 h-4 mb-0.5 text-red-300" />
+                            <span>Gỡ ảnh</span>
+                          </button>
+                        </>
                       ) : (
                         <Coffee className="w-8 h-8 text-coffee-light" />
                       )}
                     </div>
+
+                    {/* Nút upload & thông tin */}
                     <div className="flex-1 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <label className="px-3.5 py-2 bg-white hover:bg-coffee-light border border-coffee-light rounded-xl font-bold text-coffee-primary cursor-pointer transition text-xs inline-flex items-center gap-1.5 shadow-sm">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className={`px-3.5 py-2 bg-white hover:bg-coffee-light border border-coffee-light rounded-xl font-bold text-coffee-primary cursor-pointer transition text-xs inline-flex items-center gap-1.5 shadow-sm ${
+                          isCompressingImage ? 'opacity-50 pointer-events-none' : ''
+                        }`}>
                           <Upload className="w-3.5 h-3.5" />
-                          <span>Tải ảnh từ máy</span>
-                          <input type="file" accept="image/*" onChange={handleImageFileChange} className="hidden" />
+                          <span>{prodImageUrl ? 'Đổi ảnh khác' : 'Tải ảnh từ máy / điện thoại'}</span>
+                          <input 
+                            type="file" 
+                            accept="image/*" 
+                            onChange={handleImageFileChange} 
+                            className="hidden" 
+                            disabled={isCompressingImage}
+                          />
                         </label>
-                        <span className="text-[11px] text-coffee-medium">hoặc dán link bên dưới:</span>
+
+                        {prodImageUrl && (
+                          <button
+                            type="button"
+                            onClick={handleRemoveImage}
+                            className="px-3 py-2 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-xl font-bold text-xs inline-flex items-center gap-1 transition shadow-sm"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Xóa ảnh</span>
+                          </button>
+                        )}
                       </div>
-                      <input
-                        type="text"
-                        value={prodImageUrl}
-                        onChange={(e) => setProdImageUrl(e.target.value)}
-                        placeholder="VD: /products/CP001.png hoặc https://..."
-                        className="w-full bg-white px-3.5 py-2 rounded-xl border border-coffee-light text-coffee-dark placeholder-coffee-medium/60 text-xs"
-                      />
+
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-coffee-medium leading-relaxed">
+                          ⚡ <strong>Tự động tối ưu WebP (~20KB):</strong> Lưu vĩnh viễn trên Supabase Cloud Database. Đồng bộ tức thì và xem được trên mọi máy tính, điện thoại nhân viên và App POS exe!
+                        </p>
+                        <input
+                          type="text"
+                          value={prodImageUrl}
+                          onChange={(e) => {
+                            setProdImageUrl(e.target.value);
+                            setProdImageSizeKB(e.target.value ? estimateBase64SizeKB(e.target.value) : null);
+                          }}
+                          placeholder="Hoặc dán URL/đường dẫn ảnh: /products/CP001.png hoặc https://..."
+                          className="w-full bg-white px-3.5 py-1.5 rounded-xl border border-coffee-light text-coffee-dark placeholder-coffee-medium/60 text-xs"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
