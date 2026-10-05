@@ -32,7 +32,7 @@
         "resizable": true,
         "width": 1024,
         "height": 600,
-        "visible": false,
+        "visible": true,
         "url": "customer-display.html"
       }
     ],

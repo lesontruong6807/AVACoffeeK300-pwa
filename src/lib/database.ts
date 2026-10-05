@@ -1867,7 +1867,9 @@ export const db = {
   async createProductWithRecipe(
     productData: {
       name: string;
-      price: number;
+      price?: number;
+      takeaway_price?: number;
+      dinein_price?: number;
       category_id: string;
       image_url?: string;
       status: 'Còn hàng' | 'Hết hàng';
@@ -1889,14 +1891,19 @@ export const db = {
     }
     calculatedCost = Math.round(calculatedCost);
 
+    const takeawayPrice = Number(productData.takeaway_price ?? productData.price ?? 0);
+    const dineinPrice = Number(productData.dinein_price ?? productData.price ?? 0);
+
     if (isSupabaseConfigured && supabase) {
-      // 1. Tạo sản phẩm (dùng chính xác cột don_gia trong schema CSDL)
+      // 1. Tạo sản phẩm (dùng chính xác cột don_gia, gia_mang_ve, gia_ngoi_lai trong schema CSDL)
       const { data: newProd, error: prodErr } = await supabase
         .from('sanpham')
         .insert([{
           id: prodId,
           ten_san_pham: productData.name.trim(),
-          don_gia: Number(productData.price),
+          don_gia: takeawayPrice,
+          gia_mang_ve: takeawayPrice,
+          gia_ngoi_lai: dineinPrice,
           gia_von: calculatedCost,
           id_danh_muc: productData.category_id,
           hinh_anh: productData.image_url || '/logo.jpg',
@@ -1931,7 +1938,9 @@ export const db = {
       const newProd = {
         id: prodId,
         name: productData.name.trim(),
-        price: Number(productData.price),
+        price: takeawayPrice,
+        takeaway_price: takeawayPrice,
+        dinein_price: dineinPrice,
         cost_price: calculatedCost,
         category_id: productData.category_id,
         image_url: productData.image_url || '/logo.jpg',
@@ -1965,7 +1974,9 @@ export const db = {
     productId: string,
     productData: {
       name: string;
-      price: number;
+      price?: number;
+      takeaway_price?: number;
+      dinein_price?: number;
       category_id: string;
       image_url?: string;
       status: 'Còn hàng' | 'Hết hàng';
@@ -1985,13 +1996,18 @@ export const db = {
     }
     calculatedCost = Math.round(calculatedCost);
 
+    const takeawayPrice = Number(productData.takeaway_price ?? productData.price ?? 0);
+    const dineinPrice = Number(productData.dinein_price ?? productData.price ?? 0);
+
     if (isSupabaseConfigured && supabase) {
-      // 1. Cập nhật thông tin món (dùng chính xác cột don_gia trong schema CSDL)
+      // 1. Cập nhật thông tin món (dùng chính xác cột don_gia, gia_mang_ve, gia_ngoi_lai trong schema CSDL)
       const { data: updatedProd, error: prodErr } = await supabase
         .from('sanpham')
         .update({
           ten_san_pham: productData.name.trim(),
-          don_gia: Number(productData.price),
+          don_gia: takeawayPrice,
+          gia_mang_ve: takeawayPrice,
+          gia_ngoi_lai: dineinPrice,
           gia_von: calculatedCost,
           id_danh_muc: productData.category_id,
           hinh_anh: productData.image_url || '/logo.jpg',
@@ -2028,7 +2044,9 @@ export const db = {
         products[pIdx] = {
           ...products[pIdx],
           name: productData.name.trim(),
-          price: Number(productData.price),
+          price: takeawayPrice,
+          takeaway_price: takeawayPrice,
+          dinein_price: dineinPrice,
           cost_price: calculatedCost,
           category_id: productData.category_id,
           image_url: productData.image_url || '/logo.jpg',

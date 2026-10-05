@@ -38,7 +38,8 @@ import {
   FileSpreadsheet,
   FileJson,
   Database,
-  ShieldAlert
+  ShieldAlert,
+  Search
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { 
@@ -128,6 +129,10 @@ export default function AdminPage() {
   const [editingProduct, setEditingProduct] = useState<any>(null);
   const [prodName, setProdName] = useState('');
   const [prodPrice, setProdPrice] = useState(0);
+  const [prodTakeawayPrice, setProdTakeawayPrice] = useState(0);
+  const [prodDineinPrice, setProdDineinPrice] = useState(0);
+  const [prodSearchQuery, setProdSearchQuery] = useState('');
+  const [prodSelectedCategory, setProdSelectedCategory] = useState('all');
   const [prodBaseCost, setProdBaseCost] = useState(0);
   const [prodCategoryId, setProdCategoryId] = useState('');
   const [prodImageUrl, setProdImageUrl] = useState('');
@@ -542,6 +547,8 @@ export default function AdminPage() {
     setEditingProduct(null);
     setProdName('');
     setProdPrice(0);
+    setProdTakeawayPrice(0);
+    setProdDineinPrice(0);
     setProdBaseCost(0);
     setProdCategoryId(categories[0]?.id || '');
     setProdImageUrl('');
@@ -556,6 +563,8 @@ export default function AdminPage() {
     setEditingProduct(prod);
     setProdName(prod.name);
     setProdPrice(prod.price);
+    setProdTakeawayPrice(prod.takeaway_price ?? prod.price ?? 0);
+    setProdDineinPrice(prod.dinein_price ?? prod.price ?? 0);
     setProdBaseCost(prod.base_cost || 0);
     setProdCategoryId(prod.category_id);
     setProdImageUrl(prod.image_url || '');
@@ -731,7 +740,9 @@ export default function AdminPage() {
       toast.error('Vui lòng nhập tên đồ uống!');
       return;
     }
-    if (prodPrice <= 0) {
+    const takeaway = Number(prodTakeawayPrice || 0);
+    const dinein = Number(prodDineinPrice || 0);
+    if (takeaway <= 0 && dinein <= 0) {
       toast.error('Vui lòng nhập giá bán lớn hơn 0đ!');
       return;
     }
@@ -743,9 +754,13 @@ export default function AdminPage() {
     setSavingProduct(true);
     try {
       const cleanRecipes = flattenRecipeRows();
+      const finalTakeaway = takeaway > 0 ? takeaway : dinein;
+      const finalDinein = dinein > 0 ? dinein : takeaway;
       const productPayload = {
         name: prodName.trim(),
-        price: Number(prodPrice),
+        price: finalTakeaway,
+        takeaway_price: finalTakeaway,
+        dinein_price: finalDinein,
         category_id: prodCategoryId,
         image_url: prodImageUrl || '/logo.jpg',
         status: prodStatus,
@@ -3639,89 +3654,163 @@ export default function AdminPage() {
       )}
 
       {/* 3. TAB QUẢN LÝ THỰC ĐƠN */}
-      {adminTab === 'products' && (
-        <div className="space-y-6">
-          <div className="bg-white p-6 rounded-3xl shadow-sm border border-coffee-light flex items-center justify-between">
-            <div className="space-y-1">
-              <h3 className="font-extrabold text-lg text-coffee-dark">Danh Sách Đồ Uống</h3>
-              <p className="text-xs text-coffee-medium">Cập nhật giá bán, trạng thái còn hàng/hết hàng và thêm đồ uống mới.</p>
-            </div>
-            <button
-              onClick={openAddProduct}
-              className="px-4 py-2.5 bg-coffee-primary hover:bg-coffee-dark text-white font-bold text-xs rounded-2xl transition flex items-center space-x-1.5 shadow"
-            >
-              <Plus className="w-4 h-4 text-coffee-accent" />
-              <span>Thêm đồ uống</span>
-            </button>
-          </div>
+      {adminTab === 'products' && (() => {
+        const q = prodSearchQuery.trim().toLowerCase();
+        const filteredAdminProducts = products.filter(prod => {
+          const matchesSearch = !q || prod.name.toLowerCase().includes(q) || prod.id.toLowerCase().includes(q);
+          const matchesCat = prodSelectedCategory === 'all' || prod.category_id === prodSelectedCategory;
+          return matchesSearch && matchesCat;
+        });
 
-          {/* Grid hiển thị sản phẩm */}
-          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-6">
-            {products.map((prod) => (
-              <div key={prod.id} className="bg-white rounded-3xl overflow-hidden border border-coffee-light flex flex-col shadow-sm">
-                <div className="relative h-28 sm:h-40 bg-coffee-light">
-                  {prod.image_url ? (
-                    <img 
-                      src={prod.image_url} 
-                      alt={prod.name} 
-                      className="w-full h-full object-cover" 
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = '/logo.jpg';
-                      }}
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-coffee-medium">
-                      <Clock className="w-8 h-8 sm:w-12 sm:h-12" />
-                    </div>
-                  )}
-                  <span className={`absolute top-2 right-2 sm:top-3 sm:right-3 text-[8px] sm:text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase ${
-                    prod.status === 'Còn hàng' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                  }`}>
-                    {prod.status}
-                  </span>
-                </div>
-
-                <div className="p-3 sm:p-4 flex-1 flex flex-col justify-between space-y-2.5">
-                  <div>
-                    <h4 className="font-extrabold text-coffee-dark text-xs sm:text-sm line-clamp-2 leading-tight">{prod.name}</h4>
-                    <p className="text-[10px] text-coffee-medium mt-0.5">
-                      Danh mục: <strong>{categories.find(c => c.id === prod.category_id)?.name || 'Khác'}</strong>
-                    </p>
-                  </div>
-
-                  <div className="text-[10px] sm:text-xs space-y-1">
-                    <p className="flex justify-between">
-                      <span className="text-coffee-medium">Giá vốn:</span>
-                      <strong className="text-coffee-medium">{(prod.cost_price || 0).toLocaleString('vi-VN')}đ</strong>
-                    </p>
-                    <p className="flex justify-between">
-                      <span className="text-coffee-medium">Giá bán:</span>
-                      <strong className="text-coffee-primary">{prod.price.toLocaleString('vi-VN')}đ</strong>
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-coffee-light/50">
-                    <button
-                      onClick={() => openEditProduct(prod)}
-                      className="py-1.5 bg-[#FAF6F0] hover:bg-coffee-accent text-coffee-primary text-[10px] sm:text-xs font-bold rounded-xl transition flex items-center justify-center space-x-0.5 sm:space-x-1"
-                    >
-                      <Edit className="w-3.5 h-3.5" />
-                      <span>Sửa</span>
-                    </button>
-                    <button
-                      onClick={() => handleDeleteProduct(prod.id)}
-                      className="py-1.5 bg-red-50 hover:bg-red-100 text-red-600 text-[10px] sm:text-xs font-bold rounded-xl transition flex items-center justify-center space-x-0.5 sm:space-x-1"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Xoá</span>
-                    </button>
-                  </div>
-                </div>
+        return (
+          <div className="space-y-6">
+            <div className="bg-white p-6 rounded-3xl shadow-sm border border-coffee-light flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <h3 className="font-extrabold text-lg text-coffee-dark">Danh Sách Đồ Uống</h3>
+                <p className="text-xs text-coffee-medium">Cập nhật giá mang đi, giá tại quán, trạng thái còn hàng/hết hàng và thêm đồ uống mới.</p>
               </div>
-            ))}
+              <button
+                onClick={openAddProduct}
+                className="px-4 py-2.5 bg-coffee-primary hover:bg-coffee-dark text-white font-bold text-xs rounded-2xl transition flex items-center space-x-1.5 shadow w-fit"
+              >
+                <Plus className="w-4 h-4 text-coffee-accent" />
+                <span>Thêm đồ uống</span>
+              </button>
+            </div>
+
+            {/* Thanh Tìm Kiếm & Bộ Lọc Phân Loại Danh Mục (Cà phê, Trà, Nước ép, v.v.) */}
+            <div className="bg-white p-4 rounded-3xl shadow-sm border border-coffee-light space-y-3">
+              <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
+                <div className="relative w-full sm:w-80">
+                  <input
+                    type="text"
+                    placeholder="Tìm theo tên món hoặc mã món..."
+                    value={prodSearchQuery}
+                    onChange={(e) => setProdSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2.5 rounded-2xl border border-coffee-light focus:border-coffee-primary focus:ring-2 focus:ring-coffee-primary/20 outline-none text-xs text-coffee-dark bg-[#FAF6F0]"
+                  />
+                  <Search className="w-4 h-4 text-coffee-medium/60 absolute left-3 top-3" />
+                </div>
+                <span className="text-xs text-coffee-medium font-semibold">
+                  Hiển thị: <strong className="text-coffee-primary">{filteredAdminProducts.length}</strong> / {products.length} món
+                </span>
+              </div>
+
+              {/* Danh sách phân loại danh mục */}
+              <div className="flex items-center space-x-2 overflow-x-auto pb-1 scrollbar-thin">
+                <button
+                  type="button"
+                  onClick={() => setProdSelectedCategory('all')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
+                    prodSelectedCategory === 'all'
+                      ? 'bg-coffee-primary text-white shadow-xs'
+                      : 'bg-[#FAF6F0] text-coffee-dark hover:bg-coffee-light border border-coffee-light/60'
+                  }`}
+                >
+                  Tất cả ({products.length})
+                </button>
+                {categories.map((cat) => {
+                  const count = products.filter(p => p.category_id === cat.id).length;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setProdSelectedCategory(cat.id)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
+                        prodSelectedCategory === cat.id
+                          ? 'bg-coffee-primary text-white shadow-xs'
+                          : 'bg-[#FAF6F0] text-coffee-dark hover:bg-coffee-light border border-coffee-light/60'
+                      }`}
+                    >
+                      {cat.name} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Grid hiển thị sản phẩm */}
+            {filteredAdminProducts.length === 0 ? (
+              <div className="bg-white p-12 rounded-3xl border border-coffee-light text-center space-y-2">
+                <p className="font-bold text-coffee-medium">Không tìm thấy món đồ uống nào phù hợp</p>
+                <p className="text-xs text-coffee-medium/80">Thử thay đổi từ khóa tìm kiếm hoặc chọn danh mục khác.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-6">
+                {filteredAdminProducts.map((prod) => (
+                  <div key={prod.id} className="bg-white rounded-3xl overflow-hidden border border-coffee-light flex flex-col shadow-sm">
+                    <div className="relative h-28 sm:h-40 bg-coffee-light">
+                      {prod.image_url ? (
+                        <img 
+                          src={prod.image_url} 
+                          alt={prod.name} 
+                          className="w-full h-full object-cover" 
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = '/logo.jpg';
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-coffee-medium">
+                          <Clock className="w-8 h-8 sm:w-12 sm:h-12" />
+                        </div>
+                      )}
+                      <span className={`absolute top-2 right-2 sm:top-3 sm:right-3 text-[8px] sm:text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase ${
+                        prod.status === 'Còn hàng' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                        {prod.status}
+                      </span>
+                      <span className="absolute bottom-2 left-2 text-[9px] font-bold px-1.5 py-0.5 bg-coffee-dark/80 text-coffee-accent rounded">
+                        {prod.id}
+                      </span>
+                    </div>
+
+                    <div className="p-3 sm:p-4 flex-1 flex flex-col justify-between space-y-2.5">
+                      <div>
+                        <h4 className="font-extrabold text-coffee-dark text-xs sm:text-sm line-clamp-2 leading-tight">{prod.name}</h4>
+                        <p className="text-[10px] text-coffee-medium mt-0.5">
+                          Danh mục: <strong>{categories.find(c => c.id === prod.category_id)?.name || 'Khác'}</strong>
+                        </p>
+                      </div>
+
+                      <div className="text-[10px] sm:text-xs space-y-1 bg-[#FAF6F0] p-2 rounded-xl border border-coffee-light/60">
+                        <p className="flex justify-between">
+                          <span className="text-coffee-medium">Giá vốn:</span>
+                          <strong className="text-coffee-medium">{(prod.cost_price || 0).toLocaleString('vi-VN')}đ</strong>
+                        </p>
+                        <p className="flex justify-between">
+                          <span className="text-amber-800 font-semibold">Mang đi:</span>
+                          <strong className="text-amber-700 font-black">{(prod.takeaway_price ?? prod.price ?? 0).toLocaleString('vi-VN')}đ</strong>
+                        </p>
+                        <p className="flex justify-between">
+                          <span className="text-coffee-primary font-semibold">Tại quán:</span>
+                          <strong className="text-coffee-primary font-black">{(prod.dinein_price ?? prod.price ?? 0).toLocaleString('vi-VN')}đ</strong>
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-coffee-light/50">
+                        <button
+                          onClick={() => openEditProduct(prod)}
+                          className="py-1.5 bg-[#FAF6F0] hover:bg-coffee-accent text-coffee-primary text-[10px] sm:text-xs font-bold rounded-xl transition flex items-center justify-center space-x-0.5 sm:space-x-1"
+                        >
+                          <Edit className="w-3.5 h-3.5" />
+                          <span>Sửa</span>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteProduct(prod.id)}
+                          className="py-1.5 bg-red-50 hover:bg-red-100 text-red-600 text-[10px] sm:text-xs font-bold rounded-xl transition flex items-center justify-center space-x-0.5 sm:space-x-1"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Xoá</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 4. TAB QUẢN LÝ NHÂN VIÊN */}
       {adminTab === 'staff' && (
@@ -5182,8 +5271,9 @@ export default function AdminPage() {
       {/* POPUP FORM CRUD SẢN PHẨM MỞ RỘNG (ĐỊNH MỨC & GIÁ VỐN) */}
       {isProductModalOpen && (() => {
         const estCost = calculateTotalEstimatedCost();
-        const profit = Number(prodPrice || 0) - estCost;
-        const profitMargin = Number(prodPrice || 0) > 0 ? Math.round((profit / Number(prodPrice)) * 100) : 0;
+        const refPrice = Number(prodTakeawayPrice || prodDineinPrice || 0);
+        const profit = refPrice - estCost;
+        const profitMargin = refPrice > 0 ? Math.round((profit / refPrice) * 100) : 0;
 
         return (
           <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm overflow-y-auto p-3 sm:p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] flex justify-center items-start sm:items-center">
@@ -5194,7 +5284,7 @@ export default function AdminPage() {
                     {editingProduct ? 'Cập nhật đồ uống & Định mức' : 'Thêm đồ uống mới'}
                   </h3>
                   <p className="text-xs text-coffee-medium mt-0.5">
-                    Tùy chỉnh phân loại, tải ảnh, cài đặt công thức nguyên liệu kho & nguyên liệu pha sẵn
+                    Tùy chỉnh giá mang đi, giá tại quán, phân loại, ảnh, và công thức định lượng trừ kho
                   </p>
                 </div>
                 <button onClick={() => setIsProductModalOpen(false)} className="p-1.5 hover:bg-coffee-light rounded-xl text-coffee-medium">
@@ -5203,8 +5293,8 @@ export default function AdminPage() {
               </div>
 
               <form onSubmit={handleSaveProduct} className="space-y-5 text-xs">
-                {/* 1. Thông tin cơ bản */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* 1. Thông tin cơ bản & 2 mức giá */}
+                <div className="space-y-3">
                   {/* Tên món */}
                   <div className="space-y-1.5">
                     <label className="font-bold text-coffee-medium uppercase">Tên đồ uống *</label>
@@ -5212,25 +5302,47 @@ export default function AdminPage() {
                       type="text"
                       value={prodName}
                       onChange={(e) => setProdName(e.target.value)}
-                      placeholder="VD: Cà phê sữa muối..."
+                      placeholder="VD: Cà phê sữa muối, Nước ép thơm..."
                       className="w-full bg-[#FAF6F0] px-4 py-2.5 rounded-2xl border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark font-medium"
                       required
                     />
                   </div>
 
-                  {/* Giá bán */}
-                  <div className="space-y-1.5">
-                    <label className="font-bold text-coffee-medium uppercase">Giá bán (VND) *</label>
-                    <input
-                      type="number"
-                      value={prodPrice || ''}
-                      onChange={(e) => setProdPrice(Number(e.target.value))}
-                      placeholder="VD: 25000"
-                      className="w-full bg-[#FAF6F0] px-4 py-2.5 rounded-2xl border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark font-bold"
-                      min={0}
-                      step={1000}
-                      required
-                    />
+                  {/* 2 mục giá: Giá mang đi & Giá tại quán */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="font-bold text-coffee-medium uppercase flex items-center justify-between">
+                        <span>Giá mang đi (VND) *</span>
+                        <span className="text-[10px] text-amber-700 font-extrabold uppercase bg-amber-100 px-1.5 py-0.5 rounded">Takeaway</span>
+                      </label>
+                      <input
+                        type="number"
+                        value={prodTakeawayPrice || ''}
+                        onChange={(e) => setProdTakeawayPrice(Number(e.target.value))}
+                        placeholder="VD: 25000"
+                        className="w-full bg-[#FAF6F0] px-4 py-2.5 rounded-2xl border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark font-bold"
+                        min={0}
+                        step={1000}
+                        required
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="font-bold text-coffee-medium uppercase flex items-center justify-between">
+                        <span>Giá tại quán (VND) *</span>
+                        <span className="text-[10px] text-coffee-primary font-extrabold uppercase bg-coffee-cream/40 px-1.5 py-0.5 rounded">Tại quán</span>
+                      </label>
+                      <input
+                        type="number"
+                        value={prodDineinPrice || ''}
+                        onChange={(e) => setProdDineinPrice(Number(e.target.value))}
+                        placeholder="VD: 30000"
+                        className="w-full bg-[#FAF6F0] px-4 py-2.5 rounded-2xl border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark font-bold"
+                        min={0}
+                        step={1000}
+                        required
+                      />
+                    </div>
                   </div>
                 </div>
 
