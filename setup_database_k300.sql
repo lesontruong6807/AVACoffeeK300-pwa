@@ -182,7 +182,7 @@ CREATE TABLE public.chiphivanhang (
 CREATE TABLE public.chamcong (
     id TEXT PRIMARY KEY DEFAULT public.generate_short_id('log_'),
     id_nhan_vien TEXT REFERENCES public.nguoidung(id) ON DELETE CASCADE NOT NULL,
-    ca_lam TEXT NOT NULL DEFAULT 'Ca sáng (05:30 - 12:00)',
+    ca_lam TEXT NOT NULL DEFAULT 'Ca sáng (06:30 - 12:00)',
     gio_vao TIMESTAMP WITH TIME ZONE NOT NULL,
     gio_ra TIMESTAMP WITH TIME ZONE,
     thoi_gian_thuc_vao TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,

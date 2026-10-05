@@ -207,7 +207,7 @@ export function exportRevenueToExcel(
   if (data.shifts) {
     wsData.push([]);
     wsData.push(['PHÂN BỔ THEO CA LÀM VIỆC (DÒNG TIỀN)']);
-    wsData.push(['CA SÁNG (05:30 - 12:00)']);
+    wsData.push(['CA SÁNG (06:30 - 12:00)']);
     wsData.push(['Số lượng đơn hàng ca sáng', `${data.shifts.morning.ordersCount} đơn`]);
     wsData.push(['Doanh thu thực thu ca sáng', fmtVND(data.shifts.morning.actualRevenue)]);
     wsData.push(['Tiền mặt thu được (Ca sáng)', fmtVND(data.shifts.morning.cash)]);
@@ -215,7 +215,7 @@ export function exportRevenueToExcel(
     wsData.push(['Chi phí nhập kho trong ca sáng', `-${fmtVND(data.shifts.morning.restockCost)}`]);
     wsData.push(['Tiền mặt thực thu trong két (Ca sáng)', fmtVND(data.shifts.morning.netCash)]);
     wsData.push([]);
-    wsData.push(['CA CHIỀU (16:00 - 21:00)']);
+    wsData.push(['CA CHIỀU (12:00 - 17:30)']);
     wsData.push(['Số lượng đơn hàng ca chiều', `${data.shifts.afternoon.ordersCount} đơn`]);
     wsData.push(['Doanh thu thực thu ca chiều', fmtVND(data.shifts.afternoon.actualRevenue)]);
     wsData.push(['Tiền mặt thu được (Ca chiều)', fmtVND(data.shifts.afternoon.cash)]);
@@ -269,7 +269,7 @@ export function exportRevenueToExcel(
     const disc = Number(order.discount || 0);
     const d = new Date(order.created_at);
     const mins = d.getHours() * 60 + d.getMinutes();
-    const shiftName = mins < (14 * 60) ? 'Ca Sáng' : 'Ca Chiều';
+    const shiftName = mins < (12 * 60) ? 'Ca Sáng' : 'Ca Chiều';
 
     wsData.push([
       idx + 1,
@@ -376,7 +376,7 @@ export function exportRevenueToPDF(
 
     autoTable(doc, {
       startY: shiftStartY + 4,
-      head: [['Chỉ tiêu', '☀️ Ca Sáng (05:30 - 12:00)', '🌙 Ca Chiều (16:00 - 21:00)']],
+      head: [['Chỉ tiêu', '☀️ Ca Sáng (06:30 - 12:00)', '🌙 Ca Chiều (12:00 - 17:30)']],
       body: [
         ['Số lượng đơn hàng', `${data.shifts.morning.ordersCount} đơn`, `${data.shifts.afternoon.ordersCount} đơn`],
         ['Doanh thu thực thu', fmtVND(data.shifts.morning.actualRevenue), fmtVND(data.shifts.afternoon.actualRevenue)],

@@ -30,7 +30,7 @@ export default function TimeLogPage() {
   const activeLog = logs.find(log => log.id === selectedActiveLogId) || activeLogs[0] || null;
 
   // Trạng thái Form chấm công
-  const [shift, setShift] = useState('Ca sáng (05:30 - 12:00)');
+  const [shift, setShift] = useState('Ca sáng (06:30 - 12:00)');
   const [timeInput, setTimeInput] = useState('');
   const [noteInput, setNoteInput] = useState('');
   const [gettingLocation, setGettingLocation] = useState(false);
@@ -258,13 +258,15 @@ export default function TimeLogPage() {
 
     // 2. Kiểm tra giới hạn giờ khai báo theo ca
     if (currentShift.startsWith('Ca sáng')) {
-      if (totalMinutes < 330 || totalMinutes > 720) {
-        toast.error('Giờ khai báo Ca sáng chỉ được trong khoảng từ 05:30 đến 12:00!');
+      // Ca sáng: 06:30 - 12:00 (cho phép linh hoạt 06:00 - 13:30 để đến sớm hoặc ra trễ bàn giao)
+      if (totalMinutes < 6 * 60 || totalMinutes > 13 * 60 + 30) {
+        toast.error('Giờ khai báo Ca sáng chỉ được trong khoảng từ 06:00 đến 13:30!');
         return;
       }
     } else if (currentShift.startsWith('Ca chiều')) {
-      if (totalMinutes < 16 * 60 || totalMinutes > 21 * 60) {
-        toast.error('Giờ khai báo Ca chiều chỉ được trong khoảng từ 16:00 đến 21:00!');
+      // Ca chiều: 12:00 - 17:30 (cho phép linh hoạt 11:30 - 18:30 để đến sớm hoặc ra trễ)
+      if (totalMinutes < 11 * 60 + 30 || totalMinutes > 18 * 60 + 30) {
+        toast.error('Giờ khai báo Ca chiều chỉ được trong khoảng từ 11:30 đến 18:30!');
         return;
       }
     }
@@ -439,8 +441,8 @@ export default function TimeLogPage() {
                       onChange={(e) => setShift(e.target.value)}
                       className="w-full h-11 bg-[#FAF6F0] px-4 py-0 rounded-2xl text-xs border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark block"
                     >
-                      <option>Ca sáng (05:30 - 12:00)</option>
-                      <option>Ca chiều (16:00 - 21:00)</option>
+                      <option>Ca sáng (06:30 - 12:00)</option>
+                      <option>Ca chiều (12:00 - 17:30)</option>
                     </select>
                   </div>
                 ) : (
