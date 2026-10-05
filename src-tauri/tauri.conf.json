@@ -22,7 +22,6 @@
         "minWidth": 1024,
         "minHeight": 768,
         "zoomHotkeysEnabled": false,
-        "additionalBrowserArgs": "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding",
         "url": "pos.html"
       },
       {
@@ -32,7 +31,7 @@
         "resizable": true,
         "width": 1024,
         "height": 600,
-        "visible": true,
+        "visible": false,
         "url": "customer-display.html"
       }
     ],

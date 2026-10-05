@@ -1,5 +1,3 @@
-// Entry point của thư viện Tauri v2 cho AVA Coffee K300 Desktop POS
-
 mod printer;
 mod customer_screen;
 mod http_server;
@@ -21,7 +19,10 @@ fn kick_cash_drawer(printer_name: Option<String>) -> Result<(), String> {
 
 #[tauri::command]
 fn open_customer_display(app: tauri::AppHandle) -> Result<(), String> {
-    customer_screen::open_or_focus_customer_display(&app)
+    let app_clone = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = customer_screen::open_or_focus_customer_display(&app_clone);
+    }).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,13 +35,14 @@ pub fn run() {
                 http_server::start_http_print_server(3333);
             });
 
-            // 2. Tự động mở và định vị màn hình phụ (chờ 1.5s và retry 3.5s để webview ổn định)
+            // 2. Tự động mở và định vị màn hình phụ trên main UI thread
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(1500));
-                let _ = customer_screen::open_or_focus_customer_display(&app_handle);
-                std::thread::sleep(std::time::Duration::from_millis(2000));
-                let _ = customer_screen::open_or_focus_customer_display(&app_handle);
+                let h1 = app_handle.clone();
+                let _ = app_handle.run_on_main_thread(move || {
+                    let _ = customer_screen::open_or_focus_customer_display(&h1);
+                });
             });
             Ok(())
         })

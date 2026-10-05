@@ -23,7 +23,6 @@ pub fn open_or_focus_customer_display(app: &AppHandle) -> Result<(), String> {
     if let Ok(monitors) = app.available_monitors() {
         if monitors.len() > 1 {
             // Có từ 2 màn hình trở lên (Màn hình chính 15.6" + Màn hình phụ 11.6")
-            // Chọn màn hình có tọa độ khác với màn hình chính (main window)
             let target_monitor = if let Some(main_win) = app.get_webview_window("main") {
                 if let Ok(Some(main_mon)) = main_win.current_monitor() {
                     monitors.iter().find(|m| m.position() != main_mon.position()).unwrap_or(&monitors[1])
@@ -43,18 +42,25 @@ pub fn open_or_focus_customer_display(app: &AppHandle) -> Result<(), String> {
             );
 
             // Đặt tọa độ và kích thước của màn hình phụ rồi chuyển sang Toàn màn hình (Fullscreen)
+            let _ = window.set_always_on_top(false);
+            let _ = window.set_fullscreen(false);
             let _ = window.set_position(PhysicalPosition::new(pos.x, pos.y));
             let _ = window.set_size(PhysicalSize::new(size.width, size.height));
-            let _ = window.set_fullscreen(true);
             let _ = window.show();
             let _ = window.unminimize();
-            let _ = window.set_focus();
+            let _ = window.set_fullscreen(true);
+
+            // Trả lại tiêu điểm cho màn hình chính của thu ngân
+            if let Some(main_win) = app.get_webview_window("main") {
+                let _ = main_win.set_focus();
+            }
         } else {
-            // Chỉ có 1 màn hình (chế độ chạy thử nghiệm)
-            println!("[CustomerDisplay] Chỉ phát hiện 1 màn hình. Hiển thị cửa sổ phụ dạng nổi.");
+            // Chỉ có 1 màn hình (chế độ chạy thử nghiệm trên laptop / máy tính cá nhân)
+            println!("[CustomerDisplay] Chỉ phát hiện 1 màn hình. Hiển thị cửa sổ phụ dạng nổi (Always on Top).");
             let _ = window.set_fullscreen(false);
             let _ = window.set_size(PhysicalSize::new(1024, 600));
             let _ = window.center();
+            let _ = window.set_always_on_top(true);
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
