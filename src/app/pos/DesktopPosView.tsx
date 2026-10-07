@@ -6,7 +6,9 @@ import {
   db, 
   getCurrentUser, 
   isSupabaseConfigured,
-  onRealtimeEvent
+  onRealtimeEvent,
+  getDefaultCupId,
+  getCupLabel
 } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { printOrderDirect, tryAcquirePrintLock, markOrderAsPrinted } from '@/lib/printerService';
@@ -627,7 +629,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         quantity: qty,
         subtotal: sub,
         notes: i.ghi_chu || i.notes || '',
-        cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || null
+        cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes) || null
       };
     });
 
@@ -780,6 +782,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         localStorage.setItem('ava_pos_cache_tables', JSON.stringify(tablesData));
         localStorage.setItem('ava_pos_cache_unpaid', JSON.stringify(unpaidData));
         localStorage.setItem('ava_pos_cache_recent_orders', JSON.stringify(recentData));
+        if (recipesData) localStorage.setItem('ava_pos_cache_recipes', JSON.stringify(recipesData));
       } catch (_) {}
     } catch (e) {
       console.error('Lỗi làm mới dữ liệu POS:', e);
@@ -797,6 +800,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         const storedProducts = localStorage.getItem('ava_pos_cache_products');
         const storedUnpaid = localStorage.getItem('ava_pos_cache_unpaid');
         const storedRecent = localStorage.getItem('ava_pos_cache_recent_orders');
+        const storedRecipes = localStorage.getItem('ava_pos_cache_recipes');
         const storedYest = localStorage.getItem(`ava_pos_yest_sales_${todayDateKey}`);
 
         if (storedTables && storedCategories && storedProducts) {
@@ -806,6 +810,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
           setProducts(JSON.parse(storedProducts));
           if (storedUnpaid) setUnpaidOrders(JSON.parse(storedUnpaid));
           if (storedRecent) setRecentOrders(JSON.parse(storedRecent));
+          if (storedRecipes) setRecipes(JSON.parse(storedRecipes));
           if (storedYest) setYesterdaySales(JSON.parse(storedYest));
           setLoading(false);
         }
@@ -835,6 +840,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
           localStorage.setItem('ava_pos_cache_products', JSON.stringify(productsData));
           localStorage.setItem('ava_pos_cache_unpaid', JSON.stringify(unpaidData));
           localStorage.setItem('ava_pos_cache_recent_orders', JSON.stringify(recentData));
+          if (recipesData) localStorage.setItem('ava_pos_cache_recipes', JSON.stringify(recipesData));
         } catch (_) {}
 
         // Tải doanh số hôm qua
@@ -976,10 +982,9 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       ? (product.takeaway_price !== undefined && product.takeaway_price !== null ? Number(product.takeaway_price) : Number(product.price))
       : (product.dinein_price !== undefined && product.dinein_price !== null ? Number(product.dinein_price) : Number(product.price));
 
-    // Tự động gán ly mặc định từ công thức của món
-    const prodRecipes = recipes.filter(r => r.product_id === product.id);
-    const cupRecipe = prodRecipes.find(r => r.ingredient_id === 'ing_lyden' || r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lyhoavan');
-    const defaultCupId = cupRecipe?.ingredient_id || 'ing_lytrang';
+    // Tự động gán ly mặc định chuẩn xác của món (dựa trên công thức + bảng quy chuẩn 0ms)
+    const defaultCupId = getDefaultCupId(product.id, product.name, recipes);
+    const defaultNotes = defaultCupId ? `[Ly: ${defaultCupId}]` : '';
 
     setCart(prev => {
       const idx = prev.findIndex(item => item.product_id === product.id);
@@ -1003,7 +1008,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         quantity: 1,
         subtotal: effectivePrice,
         cup_id: defaultCupId,
-        notes: `[Ly: ${defaultCupId}]`
+        notes: defaultNotes
       };
       const updated = [...prev, newItem];
       setSelectedCartIndex(updated.length - 1);
@@ -1319,7 +1324,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
           quantity: Number(i.quantity || i.so_luong || 1),
           subtotal: Number(i.subtotal || i.thanh_tien || (Number(i.quantity || 1) * Number(i.unit_price || i.don_gia || i.price || 0))),
           notes: i.ghi_chu || i.notes || '',
-          cup_id: i.cup_id || null
+          cup_id: i.cup_id || (i.notes && i.notes.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes) || null
         }));
 
         await db.syncUnpaidOrder(orderIdToPay, {
@@ -1996,11 +2001,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                                   : '🥤 Ly Trắng'}
                               </span>
                             </button>
-                            {item.notes && (
-                              <p className="text-[10px] text-amber-700 italic truncate font-normal">
-                                📝 {item.notes}
-                              </p>
-                            )}
+                            {(() => {
+                              const cleanDisplayNote = (item.notes || '').replace(/\[Ly:\s*ing_ly[a-z]+\]/g, '').trim();
+                              return cleanDisplayNote ? (
+                                <p className="text-[10px] text-amber-700 italic truncate font-normal">
+                                  📝 {cleanDisplayNote}
+                                </p>
+                              ) : null;
+                            })()}
                           </div>
                         </div>
                       </div>

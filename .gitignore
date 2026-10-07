@@ -47,3 +47,4 @@ next-env.d.ts
 # tauri
 src-tauri/target/
 dist-pos/
+/scratch/

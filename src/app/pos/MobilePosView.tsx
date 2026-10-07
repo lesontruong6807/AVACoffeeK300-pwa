@@ -4,7 +4,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { 
   db, 
-  getCurrentUser 
+  getCurrentUser,
+  getDefaultCupId,
+  getCupLabel
 } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { printOrderDirect } from '@/lib/printerService';
@@ -105,6 +107,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
         const storedCategories = localStorage.getItem('ava_pos_cache_categories');
         const storedProducts = localStorage.getItem('ava_pos_cache_products');
         const storedUnpaid = localStorage.getItem('ava_pos_cache_unpaid');
+        const storedRecipes = localStorage.getItem('ava_pos_cache_recipes');
         const storedYest = localStorage.getItem(`ava_pos_yest_sales_${todayDateKey}`);
         
         if (storedTables && storedCategories && storedProducts) {
@@ -112,6 +115,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
           setCategories(JSON.parse(storedCategories));
           setProducts(JSON.parse(storedProducts));
           if (storedUnpaid) setUnpaidOrders(JSON.parse(storedUnpaid));
+          if (storedRecipes) setRecipes(JSON.parse(storedRecipes));
           if (storedYest) setYesterdaySales(JSON.parse(storedYest));
           setLoading(false);
         }
@@ -139,6 +143,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
           localStorage.setItem('ava_pos_cache_categories', JSON.stringify(categoriesData));
           localStorage.setItem('ava_pos_cache_products', JSON.stringify(productsData));
           localStorage.setItem('ava_pos_cache_unpaid', JSON.stringify(unpaidData));
+          if (recipesData) localStorage.setItem('ava_pos_cache_recipes', JSON.stringify(recipesData));
         } catch (_) {}
 
         const cachedYest = localStorage.getItem(`ava_pos_yest_sales_${todayDateKey}`);
@@ -209,10 +214,9 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
     }
     const unitPrice = getProductPrice(product);
 
-    // Tự động gán ly mặc định từ công thức của món
-    const prodRecipes = recipes.filter(r => r.product_id === product.id);
-    const cupRecipe = prodRecipes.find(r => r.ingredient_id === 'ing_lyden' || r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lyhoavan');
-    const defaultCupId = cupRecipe?.ingredient_id || 'ing_lytrang';
+    // Tự động gán ly mặc định chuẩn xác của món (dựa trên công thức + bảng quy chuẩn 0ms)
+    const defaultCupId = getDefaultCupId(product.id, product.name, recipes);
+    const defaultNotes = defaultCupId ? `[Ly: ${defaultCupId}]` : '';
 
     setCart((prev) => {
       const existing = prev.find(item => item.product_id === product.id);
@@ -230,7 +234,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
         quantity: 1,
         subtotal: unitPrice,
         cup_id: defaultCupId,
-        notes: `[Ly: ${defaultCupId}]`
+        notes: defaultNotes
       }];
     });
   };
@@ -334,12 +338,20 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
       try {
         if (cachedMatch?.id) {
           const items = await db.getOrderItems(cachedMatch.id);
-          setExistingOrderItems(items || []);
+          const mapped = (items || []).map((i: any) => ({
+            ...i,
+            cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes)
+          }));
+          setExistingOrderItems(mapped);
         } else {
           const res = await db.getUnpaidOrderByTableId(table.id);
           if (res) {
             setExistingOrder(res.order);
-            setExistingOrderItems(res.items || []);
+            const mapped = (res.items || []).map((i: any) => ({
+              ...i,
+              cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes)
+            }));
+            setExistingOrderItems(mapped);
           } else {
             setExistingOrder(null);
             setExistingOrderItems([]);
@@ -1229,15 +1241,31 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                 ) : existingOrderItems.length === 0 ? (
                   <p className="text-[11px] text-coffee-medium italic py-1">Không có món ăn trong đơn.</p>
                 ) : (
-                  existingOrderItems.map((item) => (
-                    <div key={item.id} className="flex justify-between items-center py-1.5 text-xs">
-                      <div>
-                        <p className="font-bold text-coffee-dark">{item.products?.name || item.ten_san_pham || 'Món'}</p>
-                        <p className="text-[10px] text-coffee-medium">{item.quantity} x {Number(item.unit_price || 0).toLocaleString('vi-VN')}đ</p>
+                  existingOrderItems.map((item) => {
+                    const cupId = item.cup_id || (item.ghi_chu && item.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id || item.idsp, item.products?.name || item.ten_san_pham, recipes);
+                    return (
+                      <div key={item.id} className="flex justify-between items-center py-1.5 text-xs">
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="font-bold text-coffee-dark">{item.products?.name || item.ten_san_pham || 'Món'}</p>
+                            {cupId && (
+                              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-extrabold border ${
+                                cupId === 'ing_lyden'
+                                  ? 'bg-amber-950 text-amber-200 border-amber-800'
+                                  : cupId === 'ing_lyhoavan'
+                                  ? 'bg-pink-100 text-pink-700 border-pink-300'
+                                  : 'bg-stone-100 text-stone-700 border-stone-300'
+                              }`}>
+                                {cupId === 'ing_lyden' ? '☕ Ly Đen' : cupId === 'ing_lyhoavan' ? '🌸 Hoa Văn' : '🥤 Ly Trắng'}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-coffee-medium">{item.quantity} x {Number(item.unit_price || 0).toLocaleString('vi-VN')}đ</p>
+                        </div>
+                        <span className="font-black text-coffee-dark">{Number(item.subtotal || 0).toLocaleString('vi-VN')}đ</span>
                       </div>
-                      <span className="font-black text-coffee-dark">{Number(item.subtotal || 0).toLocaleString('vi-VN')}đ</span>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 
@@ -1246,7 +1274,20 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                   <p className="text-[10px] font-bold text-emerald-800 uppercase">Món mới chọn thêm (+{cart.length})</p>
                   {cart.map((item) => (
                     <div key={item.product_id} className="flex justify-between items-center py-1 text-xs">
-                      <span>{item.name} x {item.quantity}</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span>{item.name} x {item.quantity}</span>
+                        {item.cup_id && (
+                          <span className={`inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-extrabold border ${
+                            item.cup_id === 'ing_lyden'
+                              ? 'bg-amber-950 text-amber-200 border-amber-800'
+                              : item.cup_id === 'ing_lyhoavan'
+                              ? 'bg-pink-100 text-pink-700 border-pink-300'
+                              : 'bg-stone-100 text-stone-700 border-stone-300'
+                          }`}>
+                            {item.cup_id === 'ing_lyden' ? '☕ Ly Đen' : item.cup_id === 'ing_lyhoavan' ? '🌸 Hoa Văn' : '🥤 Ly Trắng'}
+                          </span>
+                        )}
+                      </div>
                       <span className="font-bold text-emerald-950">{item.subtotal.toLocaleString('vi-VN')}đ</span>
                     </div>
                   ))}

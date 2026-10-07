@@ -1321,6 +1321,91 @@ const mapUserToClient = (u: any) => u ? {
   created_at: u.ngay_tao
 } : null;
 
+/**
+ * Trả về mã nguyên liệu ly mặc định cho một sản phẩm dựa trên:
+ * 1. Danh sách công thức (nếu đã tải)
+ * 2. Bảng ánh xạ mã món chuẩn (chuẩn hóa theo thực đơn K300, 0ms, không phụ thuộc mạng)
+ * 3. Quy tắc từ khóa tên món (nếu là món mới thêm)
+ */
+export function getDefaultCupId(productId: string, productName?: string, recipesList?: any[]): string | undefined {
+  if (
+    productId.startsWith('TP') ||
+    (productName && (productName.toLowerCase().includes('trân châu') || productName.toLowerCase().includes('hạt đác')))
+  ) {
+    return undefined;
+  }
+
+  // 1. Kiểm tra từ công thức (nếu danh sách recipes đã sẵn sàng)
+  if (recipesList && recipesList.length > 0) {
+    const cupRecipe = recipesList.find(
+      r => (r.product_id === productId || r.id_san_pham === productId) &&
+           ['ing_lyden', 'ing_lytrang', 'ing_lyhoavan', 'ing_lytratac'].includes(r.ingredient_id || r.id_nguyen_lieu)
+    );
+    if (cupRecipe) {
+      const ingId = cupRecipe.ingredient_id || cupRecipe.id_nguyen_lieu;
+      if (ingId === 'ing_lytratac') return 'ing_lyhoavan';
+      return ingId;
+    }
+  }
+
+  // 2. Tra cứu tức thì (0ms) theo mã món chuẩn thực đơn AVA Coffee K300
+  // Ly Đen AVA: CP001 (Cà phê đá), TUK006 (Chanh nóng), N002 (Bò Húc), N005 (Nước suối)
+  const LY_DEN_IDS = ['CP001', 'TUK006', 'N002', 'N005'];
+  if (LY_DEN_IDS.includes(productId)) return 'ing_lyden';
+
+  // Ly Hoa Văn AVA: Cà phê sữa tươi (CP003), Sữa đá lớn (CP009), Chanh đá (TUK005),
+  // toàn bộ trà trái cây (T001-T005, T007-T012), sodas (S001-S005), nước ép (NE001-NE006)
+  const LY_HOAVAN_IDS = [
+    'CP003', 'CP009', 'TUK005',
+    'T001', 'T002', 'T003', 'T007', 'T008', 'T009', 'T010', 'T011', 'T012',
+    'S001', 'S002', 'S003', 'S005',
+    'NE001', 'NE002', 'NE003', 'NE004', 'NE005', 'NE006'
+  ];
+  if (LY_HOAVAN_IDS.includes(productId)) return 'ing_lyhoavan';
+
+  // Ly Trắng AVA:
+  const LY_TRANG_IDS = [
+    'CP002', 'CP004', 'CP005', 'CP006', 'CP007', 'CP008',
+    'T006',
+    'TUK001', 'TUK002', 'TUK003', 'TUK004', 'TUK007', 'TUK008',
+    'Y001', 'Y002', 'Y003', 'Y004', 'Y005'
+  ];
+  if (LY_TRANG_IDS.includes(productId)) return 'ing_lytrang';
+
+  // 3. Quy tắc từ khóa tên món (phòng trường hợp admin tạo thêm món mới)
+  const lowerName = (productName || '').toLowerCase().trim();
+  if (
+    lowerName.includes('cà phê đá') ||
+    (lowerName.includes('đen') && !lowerName.includes('lớn')) ||
+    lowerName.includes('chanh nóng') ||
+    lowerName.includes('bò húc') ||
+    lowerName.includes('nước suối')
+  ) {
+    return 'ing_lyden';
+  }
+
+  if (
+    lowerName.includes('sữa tươi') ||
+    lowerName.includes('sữa đá lớn') ||
+    lowerName.includes('hoa văn') ||
+    lowerName.includes('nước ép') ||
+    lowerName.includes('soda') ||
+    (lowerName.includes('trà') && !lowerName.includes('lipton')) ||
+    lowerName.includes('chanh đá')
+  ) {
+    return 'ing_lyhoavan';
+  }
+
+  return 'ing_lytrang';
+}
+
+export function getCupLabel(cupId?: string): string {
+  if (cupId === 'ing_lyden') return '☕ Ly Đen';
+  if (cupId === 'ing_lyhoavan') return '🌸 Hoa Văn';
+  if (cupId === 'ing_lytrang') return '🥤 Ly Trắng';
+  return '';
+}
+
 const mapTableToClient = (t: any) => t ? {
   id: t.id,
   table_name: t.ten_ban,
@@ -1398,7 +1483,7 @@ const mapOrderToClient = (o: any) => {
         thanh_tien: sub,
         notes: d.ghi_chu || d.notes || '',
         ghi_chu: d.ghi_chu || d.notes || '',
-        cup_id: d.cup_id || (d.ghi_chu && d.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || null,
+        cup_id: d.cup_id || (d.ghi_chu && d.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(d.idsp || d.product_id, d.ten_san_pham || d.name || d.sanpham?.ten_san_pham),
         products: {
           name: d.ten_san_pham || d.name || d.sanpham?.ten_san_pham || 'Món',
           image_url: d.sanpham?.hinh_anh || ''
@@ -1418,6 +1503,8 @@ const mapOrderItemToClient = (oi: any) => oi ? {
   unit_price: Number(oi.don_gia),
   subtotal: Number(oi.thanh_tien),
   ghi_chu: oi.ghi_chu || '',
+  notes: oi.ghi_chu || '',
+  cup_id: oi.cup_id || (oi.ghi_chu && oi.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(oi.idsp, oi.ten_san_pham || oi.sanpham?.ten_san_pham),
   cost_price: Number(oi.gia_von || 0),
   products: {
     name: oi.ten_san_pham || oi.sanpham?.ten_san_pham || 'Món',
@@ -2255,6 +2342,11 @@ export const db = {
         const orderItemsToInsert = items.map((item, idx) => {
           const dbProd = dbProducts.find(p => p.id === item.product_id);
           const costPrice = dbProd ? Number(dbProd.gia_von || 0) : 0;
+          let itemNote = item.notes || item.ghi_chu || '';
+          const targetCupId = item.cup_id || (itemNote && itemNote.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id, item.name);
+          if (targetCupId && !itemNote.includes('[Ly:')) {
+            itemNote = itemNote ? `${itemNote} [Ly: ${targetCupId}]` : `[Ly: ${targetCupId}]`;
+          }
           return {
             id: generateShortId('item_'),
             idhoadon: orderId,
@@ -2264,7 +2356,7 @@ export const db = {
             don_gia: item.price || item.unit_price || 0,
             so_luong: item.quantity,
             thanh_tien: item.subtotal,
-            ghi_chu: item.notes || '',
+            ghi_chu: itemNote,
             gia_von: costPrice
           };
         });
@@ -2489,8 +2581,12 @@ export const db = {
       .filter(item => item.order_id === orderId)
       .map(item => {
         const product = products.find(p => p.id === item.product_id);
+        const cupId = item.cup_id || (item.notes && item.notes.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id, item.name || product?.name);
         return {
           ...item,
+          cup_id: cupId,
+          notes: item.notes || (cupId ? `[Ly: ${cupId}]` : ''),
+          ghi_chu: item.notes || (cupId ? `[Ly: ${cupId}]` : ''),
           products: product ? {
             name: product.name,
             image_url: product.image_url
@@ -2635,7 +2731,11 @@ export const db = {
           const dbProd = dbProducts.find(p => p.id === item.product_id);
           const costPrice = dbProd ? Number(dbProd.gia_von || 0) : 0;
 
-          let itemNote = item.notes || '';
+          let itemNote = item.notes || item.ghi_chu || '';
+          const targetCupId = item.cup_id || (itemNote && itemNote.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id, item.name);
+          if (targetCupId && !itemNote.includes('[Ly:')) {
+            itemNote = itemNote ? `${itemNote} [Ly: ${targetCupId}]` : `[Ly: ${targetCupId}]`;
+          }
           if (idx === 0 && notes && !itemNote.includes('[Ghi chú đơn: ')) {
             itemNote = itemNote ? `${itemNote} [Ghi chú đơn: ${notes}]` : `[Ghi chú đơn: ${notes}]`;
           }
@@ -2734,7 +2834,11 @@ export const db = {
       const orderItemsToInsert = items.map((item, idx) => {
         const dbProd = dbProducts.find(p => p.id === item.product_id);
         const costPrice = dbProd ? Number(dbProd.gia_von || 0) : 0;
-        let itemNote = item.notes || '';
+        let itemNote = item.notes || item.ghi_chu || '';
+        const targetCupId = item.cup_id || (itemNote && itemNote.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id, item.name);
+        if (targetCupId && !itemNote.includes('[Ly:')) {
+          itemNote = itemNote ? `${itemNote} [Ly: ${targetCupId}]` : `[Ly: ${targetCupId}]`;
+        }
         if (idx === 0 && notes && !itemNote.includes('[Ghi chú đơn: ')) {
           itemNote = itemNote ? `${itemNote} [Ghi chú đơn: ${notes}]` : `[Ghi chú đơn: ${notes}]`;
         }
@@ -5010,6 +5114,9 @@ export const db = {
           const m = notesStr.match(/\[Ly:\s*(ing_ly[a-z]+)\]/);
           if (m) customCupId = m[1];
         }
+        if (!customCupId) {
+          customCupId = getDefaultCupId(item.product_id, (item as any).name);
+        }
 
         const itemRecipes = recipes.filter(r => r.product_id === item.product_id);
         let cupReplaced = false;
@@ -5017,9 +5124,9 @@ export const db = {
         for (const rec of itemRecipes) {
           let targetIngId = rec.ingredient_id;
 
-          // Nếu công thức có ly trà tắc cũ -> đổi sang ly trắng vì K300 không dùng ly trà tắc
+          // Nếu công thức có ly trà tắc cũ -> đổi sang ly hoa văn vì K300 dùng ly hoa văn
           if (targetIngId === 'ing_lytratac') {
-            targetIngId = 'ing_lytrang';
+            targetIngId = 'ing_lyhoavan';
           }
 
           // Nếu là nguyên liệu ly và đơn hàng có chỉ định đổi ly riêng (ví dụ uống nóng -> đổi ly đen)
@@ -5615,7 +5722,10 @@ export const db = {
     return () => {
       realtimeListeners['inventory_update'].delete(callback);
     };
-  }
+  },
+
+  getDefaultCupId,
+  getCupLabel
 };
 
 
