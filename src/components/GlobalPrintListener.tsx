@@ -35,7 +35,7 @@ export default function GlobalPrintListener() {
 
       // NGUYÊN TẮC VÀNG: Mỗi bill in đúng 1 lần trừ khi thêm món mới hoặc tự chọn in lại
       if (orderId && !isManual) {
-        if (isOrderAlreadyPrinted(orderId, orderData.items?.length)) {
+        if (isOrderAlreadyPrinted(orderId, orderData.items?.length, orderData)) {
           console.log(`[GlobalPrintListener] Realtime: Bỏ qua vì đơn ${orderId} đã được in trước đó.`);
           return;
         }
@@ -43,7 +43,7 @@ export default function GlobalPrintListener() {
 
       console.log('[GlobalPrintListener] Nhận lệnh in từ Web app điện thoại:', orderData);
       try {
-        await printOrderDirect(orderData, undefined, undefined, { force: isManual });
+        await printOrderDirect(orderData, undefined, undefined, { isManualUserReprint: isManual });
         toast.success(`🖨️ Đã in hoá đơn (${orderData.tableName || 'Đơn hàng'}) từ điện thoại!`);
       } catch (err: any) {
         console.error('[GlobalPrintListener] Lỗi in tự động Realtime:', err);
@@ -70,14 +70,14 @@ export default function GlobalPrintListener() {
 
       // TRƯỜNG HỢP 1: TẠO ĐƠN MỚI TỪ ĐIỆN THOẠI (DỰ PHÒNG KHI BROADCAST BỊ LỠ)
       if (eventType === 'INSERT' && isRecent) {
-        // ĐÃ ĐƯỢC IN (tại POS máy bàn hoặc qua Realtime Broadcast) -> Bỏ qua ngay lập tức!
+        // ĐÃ ĐƯỢC IN (tại POS máy bàn, qua HTTP Bridge hoặc qua Realtime Broadcast) -> Bỏ qua ngay!
         if (orderId && isOrderAlreadyPrinted(orderId)) {
           console.log(`[GlobalPrintListener] Postgres INSERT: Đơn ${orderId} đã được in. Bỏ qua.`);
           return;
         }
 
-        // Chờ 600ms để hoadondetail hoàn tất chèn vào Supabase
-        await new Promise(r => setTimeout(r, 600));
+        // Chờ 3000ms để HTTP bridge / Realtime hoàn tất trước, tránh xung đột in đồng thời
+        await new Promise(r => setTimeout(r, 3000));
         if (orderId && isOrderAlreadyPrinted(orderId)) return;
 
         try {
@@ -138,7 +138,7 @@ export default function GlobalPrintListener() {
                   subtotal: Number(i.thanh_tien || i.subtotal || 0),
                   notes: i.ghi_chu || ''
                 }))
-              }, undefined, undefined, { force: true });
+              }, undefined, undefined, { isManualUserReprint: true });
 
               markOrderAsPrinted(orderId, {
                 itemCount: currentItems.length,
@@ -170,8 +170,9 @@ export default function GlobalPrintListener() {
         const now = Date.now();
         for (const order of unpaid) {
           const createdAt = order.created_at ? new Date(order.created_at).getTime() : 0;
-          // Nếu đơn tạo trong vòng 2 phút gần đây và chưa in
-          if (now - createdAt < 120000) {
+          // Nếu đơn tạo cách đây từ 8s đến 120s và chưa in
+          const age = now - createdAt;
+          if (age > 8000 && age < 120000) {
             if (!isOrderAlreadyPrinted(order.id)) {
               const items = await db.getOrderItems(order.id);
               if (items && items.length > 0) {
@@ -203,14 +204,11 @@ export default function GlobalPrintListener() {
       }
     };
 
-    const pollerInterval = setInterval(checkRecentUnprintedOrders, 4000);
-    window.addEventListener('focus', checkRecentUnprintedOrders);
-    window.addEventListener('visibilitychange', checkRecentUnprintedOrders);
+    // Bộ quét định kỳ 12s (BỎ lắng nghe window focus/visibilitychange để không kích hoạt in bất ngờ khi click cửa sổ)
+    const pollerInterval = setInterval(checkRecentUnprintedOrders, 12000);
 
     return () => {
       clearInterval(pollerInterval);
-      window.removeEventListener('focus', checkRecentUnprintedOrders);
-      window.removeEventListener('visibilitychange', checkRecentUnprintedOrders);
       unsubRealtime();
       unsubPostgres();
       isListeningRef.current = false;

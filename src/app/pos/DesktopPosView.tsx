@@ -720,7 +720,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         discount: discountAmount || targetOrder?.discount || 0,
         notes: '(HÓA ĐƠN TẠM TÍNH)',
         items: itemsToPrint
-      }, undefined, undefined, { force: true });
+      }, undefined, undefined, { isManualUserReprint: true });
       toast.success(`🖨️ Đã gửi lệnh in bill (${currentTable?.table_name || 'Bàn'})!`);
     } catch (e: any) {
       toast.error('Gặp lỗi khi gửi lệnh in!');
@@ -1228,7 +1228,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               totalAmount: finalTotalAmount,
               discount: discountAmount,
               notes: '(GỌI THÊM MÓN)'
-            }, undefined, undefined, { force: true });
+            }, undefined, undefined, { isManualUserReprint: true });
 
             markOrderAsPrinted(existingOrder.id, {
               itemCount: cart.length,
@@ -1279,7 +1279,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
-          }, undefined, undefined, { force: true });
+          });
         } catch (printErr) {
           console.warn('Lỗi in khi lưu đơn:', printErr);
         }
@@ -1383,7 +1383,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-          }, undefined, undefined, { force: true });
+          });
         } catch (printErr) {
           console.warn('In bill thanh toán ngay:', printErr);
         }
@@ -1405,7 +1405,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: '(GỌI THÊM MÓN)'
-          }, undefined, undefined, { force: true });
+          }, undefined, undefined, { isManualUserReprint: true });
           markOrderAsPrinted(orderIdToPay, {
             itemCount: cart.length,
             totalAmount: finalTotalAmount,

@@ -241,7 +241,7 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
 
 // =========================================================================
 // BỘ NHỚ ĐỆM CHỐNG IN TRÙNG LẶP TOÀN CỤC (GLOBAL PRINT LOCK ENGINE)
-// NGUYÊN TẮC: Mỗi bill in 1 lần trừ khi thêm món mới hoặc tự chọn in lại!
+// NGUYÊN TẮC VÀNG: Mỗi bill in ĐÚNG 1 LẦN. Chống in trùng lặp tuyệt đối!
 // =========================================================================
 export interface PrintedOrderRecord {
   printedAt: number;
@@ -252,6 +252,25 @@ export interface PrintedOrderRecord {
 }
 
 const printedOrderHistory = new Map<string, PrintedOrderRecord>();
+
+// Cooldown 15 giây chống mọi trường hợp in lặp (network duplicate, race condition, double click)
+const RECENT_PRINT_COOLDOWN_MS = 15000;
+const recentPrintTimestamps = new Map<string, number>();
+const inFlightPrintKeys = new Set<string>();
+
+/**
+ * Tạo dấu vân tay (Fingerprint) duy nhất đại diện cho nội dung bill
+ * Giúp phát hiện in trùng ngay cả khi mã đơn hàng tạm thời khác nhau
+ */
+export function getOrderFingerprint(orderData: Partial<OrderData>): string {
+  const tablePart = (orderData.tableName || '').trim().toLowerCase();
+  const totalPart = Math.round(orderData.totalAmount || 0);
+  const itemsPart = (orderData.items || [])
+    .map(i => `${removeDiacritics(i.name || '').trim().toLowerCase()}:${i.quantity}`)
+    .sort()
+    .join('|');
+  return `${tablePart}__${totalPart}__${itemsPart}`;
+}
 
 // Khôi phục từ sessionStorage nếu người dùng tải lại trang trong cùng phiên bán hàng
 if (typeof window !== 'undefined') {
@@ -284,21 +303,50 @@ function persistPrintedOrders() {
 }
 
 /**
- * Kiểm tra xem đơn hàng đã từng được in chưa.
+ * Kiểm tra xem đơn hàng đã từng được in chưa hoặc vừa in trong 15s gần đây
  * @param orderId Mã đơn hàng
- * @param currentItemCount Số lượng món hiện tại (nếu có thêm món mới, trả về false để in phiếu món mới)
+ * @param currentItemCount Số lượng món hiện tại
+ * @param orderData Dữ liệu đơn để kiểm tra vân tay nội dung bill
  */
-export function isOrderAlreadyPrinted(orderId: string, currentItemCount?: number): boolean {
-  if (!orderId) return false;
-  const record = printedOrderHistory.get(orderId);
-  if (!record) return false;
+export function isOrderAlreadyPrinted(
+  orderId?: string, 
+  currentItemCount?: number, 
+  orderData?: Partial<OrderData>
+): boolean {
+  const now = Date.now();
 
-  // NGUYÊN TẮC VÀNG: Nếu số lượng món hiện tại nhiều hơn số món đã in -> có món mới bổ sung
-  if (typeof currentItemCount === 'number' && currentItemCount > record.itemCount) {
-    return false;
+  // 1. Kiểm tra Cooldown 15 giây theo orderId
+  if (orderId && recentPrintTimestamps.has(`id:${orderId}`)) {
+    const lastTime = recentPrintTimestamps.get(`id:${orderId}`)!;
+    if (now - lastTime < RECENT_PRINT_COOLDOWN_MS) {
+      return true;
+    }
   }
 
-  return true;
+  // 2. Kiểm tra Cooldown 15 giây theo vân tay nội dung bill
+  if (orderData) {
+    const fp = getOrderFingerprint(orderData);
+    if (recentPrintTimestamps.has(`fp:${fp}`)) {
+      const lastTime = recentPrintTimestamps.get(`fp:${fp}`)!;
+      if (now - lastTime < RECENT_PRINT_COOLDOWN_MS) {
+        return true;
+      }
+    }
+  }
+
+  // 3. Kiểm tra theo sổ lưu vết printedOrderHistory
+  if (orderId) {
+    const record = printedOrderHistory.get(orderId);
+    if (record) {
+      // Nếu số lượng món hiện tại nhiều hơn số món đã in -> có món mới bổ sung
+      if (typeof currentItemCount === 'number' && currentItemCount > record.itemCount) {
+        return false;
+      }
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function getPrintedOrderInfo(orderId: string): PrintedOrderRecord | undefined {
@@ -319,6 +367,9 @@ export function markOrderAsPrinted(
   } | 'create' | 'pay'
 ) {
   if (!orderId) return;
+  const now = Date.now();
+  recentPrintTimestamps.set(`id:${orderId}`, now);
+
   const existing = printedOrderHistory.get(orderId);
 
   let details: Partial<PrintedOrderRecord> = {};
@@ -329,7 +380,7 @@ export function markOrderAsPrinted(
   }
 
   const updated: PrintedOrderRecord = {
-    printedAt: Date.now(),
+    printedAt: now,
     itemCount: details.itemCount ?? existing?.itemCount ?? 0,
     itemIds: details.itemIds ?? existing?.itemIds ?? [],
     totalAmount: details.totalAmount ?? existing?.totalAmount,
@@ -346,6 +397,7 @@ export function markOrderAsPrinted(
 export function clearPrintLock(orderId: string) {
   if (!orderId) return;
   printedOrderHistory.delete(orderId);
+  recentPrintTimestamps.delete(`id:${orderId}`);
   persistPrintedOrders();
 }
 
@@ -362,18 +414,55 @@ export async function printOrderDirect(
   orderData: OrderData,
   printerIP?: string,
   port?: number,
-  options?: { force?: boolean }
+  options?: { force?: boolean; isManualUserReprint?: boolean }
 ): Promise<void> {
   const orderId = orderData.orderId;
   const itemCount = orderData.items?.length || 0;
+  const fingerprint = getOrderFingerprint(orderData);
+  const now = Date.now();
+  const isExplicitManual = options?.isManualUserReprint === true;
 
-  // NGUYÊN TẮC: Mỗi bill in đúng một lần trừ khi thêm món mới, hoặc người dùng chủ động in lại (options.force)
-  if (!options?.force && orderId) {
-    if (isOrderAlreadyPrinted(orderId, itemCount)) {
+  const orderLockKey = orderId ? `id:${orderId}` : `fp:${fingerprint}`;
+  const fpLockKey = `fp:${fingerprint}`;
+
+  // NGUYÊN TẮC: Chống in trùng lặp tuyệt đối trừ khi người dùng chủ động bấm 'In lại hóa đơn' trong modal
+  if (!isExplicitManual) {
+    // 1. Kiểm tra In-Flight Mutex (Đang có lệnh in đang thực thi dở)
+    if (inFlightPrintKeys.has(orderLockKey) || inFlightPrintKeys.has(fpLockKey)) {
+      console.log(`[printOrderDirect] BỎ QUA: Đơn ${orderId || fingerprint} đang trong tiến trình in. Không in đè!`);
+      return;
+    }
+
+    // 2. Kiểm tra Cooldown 15 giây theo mã đơn
+    if (orderId && recentPrintTimestamps.has(orderLockKey)) {
+      const elapsed = now - recentPrintTimestamps.get(orderLockKey)!;
+      if (elapsed < RECENT_PRINT_COOLDOWN_MS) {
+        console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Đơn ${orderId} vừa được in cách đây ${elapsed}ms (< 15s).`);
+        return;
+      }
+    }
+
+    // 3. Kiểm tra Cooldown 15 giây theo nội dung vân tay bill
+    if (recentPrintTimestamps.has(fpLockKey)) {
+      const elapsed = now - recentPrintTimestamps.get(fpLockKey)!;
+      if (elapsed < RECENT_PRINT_COOLDOWN_MS) {
+        console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Nội dung bill (${orderData.tableName}) vừa được in cách đây ${elapsed}ms (< 15s).`);
+        return;
+      }
+    }
+
+    // 4. Kiểm tra lịch sử printedOrderHistory
+    if (orderId && isOrderAlreadyPrinted(orderId, itemCount, orderData)) {
       console.log(`[printOrderDirect] Bỏ qua vì đơn ${orderId} đã được in trước đó (${itemCount} món). Không in trùng.`);
       return;
     }
   }
+
+  // Khóa In-Flight và cập nhật Cooldown ngay tức thì
+  inFlightPrintKeys.add(orderLockKey);
+  inFlightPrintKeys.add(fpLockKey);
+  recentPrintTimestamps.set(orderLockKey, now);
+  recentPrintTimestamps.set(fpLockKey, now);
 
   // Đánh dấu ngay lập tức trước khi in để chặn đứng mọi race-condition từ Supabase Realtime / Postgres Changes
   if (orderId) {
@@ -385,120 +474,117 @@ export async function printOrderDirect(
     });
   }
 
-  const storeSettings = db.getStoreSettingsSync();
-  const targetIP = printerIP || storeSettings.printer_ip || '192.168.1.167';
-  const targetPort = port || storeSettings.printer_port || 9100;
-  const receiptBytes = buildReceiptBytes(orderData, storeSettings);
-
-  // 1. Kiểm tra môi trường Desktop Tauri (Windows POS cắm dây máy in USB / Spooler)
   try {
-    const { isTauriEnvironment, silentPrintEscPos } = await import('@/lib/tauriPOS');
-    if (isTauriEnvironment()) {
-      console.log('[Tauri Desktop Mode] Initiating Silent ESC/POS printing...');
-      const res = await silentPrintEscPos(receiptBytes, (storeSettings as any).printer_name);
-      if (!res.success) {
-        throw new Error(res.message || 'Lỗi in ngầm máy in Windows POS');
+    const storeSettings = db.getStoreSettingsSync();
+    const targetIP = printerIP || storeSettings.printer_ip || '192.168.1.167';
+    const targetPort = port || storeSettings.printer_port || 9100;
+    const receiptBytes = buildReceiptBytes(orderData, storeSettings);
+
+    // 1. Kiểm tra môi trường Desktop Tauri (Windows POS cắm dây máy in USB / Spooler)
+    try {
+      const { isTauriEnvironment, silentPrintEscPos } = await import('@/lib/tauriPOS');
+      if (isTauriEnvironment()) {
+        console.log('[Tauri Desktop Mode] Initiating Silent ESC/POS printing...');
+        const res = await silentPrintEscPos(receiptBytes, (storeSettings as any).printer_name);
+        if (!res.success) {
+          throw new Error(res.message || 'Lỗi in ngầm máy in Windows POS');
+        }
+        console.log('[Tauri Desktop Mode] Print sent successfully.');
+        return;
       }
-      console.log('[Tauri Desktop Mode] Print sent successfully.');
+    } catch (tauriErr) {
+      if ((tauriErr as any)?.message?.includes('Lỗi in ngầm')) {
+        throw tauriErr;
+      }
+    }
+
+    // 2. Môi trường Web App / Điện thoại nhân viên kết nối chung Wi-Fi với máy POS:
+    // GỬI LỆNH QUA HTTP BRIDGE TRƯỚC TIÊN (Nhanh nhất & Trực tiếp qua mạng nội bộ)
+    let isPrintedViaBridge = false;
+    if (typeof window !== 'undefined') {
+      const hostCandidates = [
+        (storeSettings as any).pos_bridge_ip,
+        typeof localStorage !== 'undefined' ? localStorage.getItem('pos_bridge_ip') : null,
+        '192.168.1.212',
+        window.location.hostname !== 'localhost' ? window.location.hostname : null,
+        '127.0.0.1'
+      ].filter(Boolean) as string[];
+
+      const uniqueHosts = Array.from(new Set(hostCandidates));
+      for (const host of uniqueHosts) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 1800);
+          const resp = await fetch(`http://${host}:3333/print`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              data: Array.from(receiptBytes),
+              printerName: (storeSettings as any).printer_name || null
+            }),
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          if (resp.ok) {
+            console.log(`[Web Wi-Fi Print] Đã in bill thành công qua máy POS ${host}:3333`);
+            isPrintedViaBridge = true;
+            return; // ĐÃ IN THÀNH CÔNG QUA MẠNG NỘI BỘ -> KẾT THÚC, TUYỆT ĐỐI KHÔNG BROADCAST TRÁNH IN LẶP!
+          }
+        } catch (_) {
+          // Tiếp tục thử host tiếp theo
+        }
+      }
+    }
+
+    // 3. NẾU VÀ CHỈ NẾU HTTP Bridge không thể kết nối (ví dụ dùng 4G ngoài vùng Wi-Fi quán):
+    // Fallback phát sóng lệnh in qua Supabase Realtime Broadcast để máy POS tại quầy nhận diện và in
+    if (!isPrintedViaBridge) {
+      try {
+        console.log('[Web Fallback] HTTP Wi-Fi không phản hồi, gửi lệnh in qua Supabase Cloud Realtime...');
+        const { broadcastRealtimeEvent } = await import('@/lib/database');
+        broadcastRealtimeEvent('order_update', {
+          action: 'PRINT_RECEIPT',
+          orderData,
+          timestamp: Date.now()
+        });
+      } catch (bcErr) {
+        console.warn('Lỗi broadcast lệnh in:', bcErr);
+      }
+    }
+
+    // 4. Nếu chạy trong ứng dụng di động Capacitor native kết nối máy in IP mạng
+    if (!Capacitor.isNativePlatform()) {
       return;
     }
-  } catch (tauriErr) {
-    if ((tauriErr as any)?.message?.includes('Lỗi in ngầm')) {
-      throw tauriErr;
-    }
-  }
 
-  // 2. Phát sóng lệnh in qua Supabase Realtime Broadcast:
-  // Giúp máy POS tại quầy nhận diện và tự động in ngay lập tức mà KHÔNG bị chặn Mixed Content trên trình duyệt điện thoại!
-  try {
-    const { broadcastRealtimeEvent } = await import('@/lib/database');
-    broadcastRealtimeEvent('order_update', {
-      action: 'PRINT_RECEIPT',
-      orderData,
-      timestamp: Date.now()
-    });
-  } catch (bcErr) {
-    console.warn('Lỗi broadcast lệnh in:', bcErr);
-  }
+    console.log(`[Native Mode] Initiating TCP printing to ${targetIP}:${targetPort}`);
+    
+    let connection: any = null;
+    try {
+      const { TCPClient } = await import('@devioarts/capacitor-tcpclient');
+      const connectionId = `printer-${Date.now()}`;
+      connection = TCPClient.createConnection({
+        connectionId,
+        host: targetIP,
+        port: targetPort
+      });
 
-  // 3. Môi trường Web App / Điện thoại nhân viên kết nối chung Wi-Fi với máy POS:
-  // Gửi lệnh in trực tiếp tới HTTP Print Bridge chạy ngầm trên máy POS (Port 3333)
-  if (typeof window !== 'undefined') {
-    const hostCandidates = [
-      (storeSettings as any).pos_bridge_ip,
-      typeof localStorage !== 'undefined' ? localStorage.getItem('pos_bridge_ip') : null,
-      '192.168.1.212',
-      window.location.hostname !== 'localhost' ? window.location.hostname : null,
-      '127.0.0.1'
-    ].filter(Boolean) as string[];
-
-    const uniqueHosts = Array.from(new Set(hostCandidates));
-    for (const host of uniqueHosts) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
-        const resp = await fetch(`http://${host}:3333/print`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            data: Array.from(receiptBytes),
-            printerName: (storeSettings as any).printer_name || null
-          }),
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        if (resp.ok) {
-          console.log(`[Web Wi-Fi Print] Đã in bill thành công qua máy POS ${host}:3333`);
-          return;
-        }
-      } catch (_) {
-        // Tiếp tục thử host tiếp theo
+      await connection.connect();
+      await connection.write({ data: receiptBytes });
+    } catch (error) {
+      console.error('[TCP Print Error] Failed to print order:', error);
+      throw error;
+    } finally {
+      if (connection) {
+        try {
+          await connection.destroy();
+        } catch (_) {}
       }
     }
-  }
-
-  // 3. Nếu chạy trong ứng dụng di động Capacitor native kết nối máy in IP mạng
-  if (!Capacitor.isNativePlatform()) {
-    console.log('[Web Mode] Không tìm thấy máy in POS Wi-Fi nội bộ. Dữ liệu đơn:', orderData);
-    return;
-  }
-
-  console.log(`[Native Mode] Initiating TCP printing to ${targetIP}:${targetPort}`);
-  
-  let connection: any = null;
-  try {
-    // Dynamic import of the plugin to ensure it's not resolved during web SSR builds
-    const { TCPClient } = await import('@devioarts/capacitor-tcpclient');
-
-    const receiptBytes = buildReceiptBytes(orderData, storeSettings);
-    
-    // Create socket connection
-    const connectionId = `printer-${Date.now()}`;
-    connection = TCPClient.createConnection({
-      connectionId,
-      host: targetIP,
-      port: targetPort
-    });
-
-    console.log('[TCP] Connecting to printer...');
-    await connection.connect();
-    
-    console.log('[TCP] Connected. Sending ESC/POS payload...');
-    await connection.write({ data: receiptBytes });
-    
-    console.log('[TCP] Print payload sent successfully.');
-  } catch (error) {
-    console.error('[TCP Print Error] Failed to print order:', error);
-    throw error;
   } finally {
-    if (connection) {
-      try {
-        console.log('[TCP] Closing connection...');
-        await connection.destroy();
-      } catch (err) {
-        console.error('[TCP Close Error] Failed to destroy connection:', err);
-      }
-    }
+    // Luôn giải phóng in-flight lock
+    inFlightPrintKeys.delete(orderLockKey);
+    inFlightPrintKeys.delete(fpLockKey);
   }
 }
 
