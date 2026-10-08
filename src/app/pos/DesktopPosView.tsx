@@ -502,11 +502,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         });
 
         if (newOrder?.id) {
-          markOrderAsPrinted(newOrder.id, {
-            itemCount: splitCart.length,
-            totalAmount: splitTotal,
-            isPaid: true
-          });
           await db.payOrder(newOrder.id, splitPaymentMethod);
           try {
             await printOrderDirect({
@@ -517,6 +512,11 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               totalAmount: splitTotal,
               discount: 0,
               notes: '(ĐÃ THANH TOÁN)'
+            }, undefined, undefined, { isManualUserReprint: true });
+            markOrderAsPrinted(newOrder.id, {
+              itemCount: splitCart.length,
+              totalAmount: splitTotal,
+              isPaid: true
             });
             await kickCashDrawer();
           } catch (_) {}
@@ -1257,17 +1257,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         // Optimistic update: Thêm ngay đơn mới vào danh sách Bếp làm
         if (savedOrder) {
           currentOrderId = savedOrder.id;
-          markOrderAsPrinted(currentOrderId, {
-            itemCount: cart.length,
-            totalAmount: finalTotalAmount,
-            isPaid: false
-          });
           setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
         }
 
         toast.success(`Đã lưu đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
 
-        // In hóa đơn / phiếu order ngay lập tức khi Lưu đơn mới (In đúng 1 lần)
+        // In hóa đơn / phiếu order ngay lập tức khi Lưu đơn mới (In đúng 1 lần, siêu tốc 50ms)
         try {
           const printOrderId = currentOrderId || `OD-${Date.now()}`;
           await printOrderDirect({
@@ -1284,6 +1279,13 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
+          }, undefined, undefined, { isManualUserReprint: true });
+
+          // ĐÁNH DẤU ĐÃ IN ĐỂ CHẶN ĐỨNG LISTENER POSTGRES / REALTIME IN LẶP LẦN 2
+          markOrderAsPrinted(printOrderId, {
+            itemCount: cart.length,
+            totalAmount: finalTotalAmount,
+            isPaid: false
           });
         } catch (printErr) {
           console.warn('Lỗi in khi lưu đơn:', printErr);
@@ -1344,13 +1346,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         });
         if (savedOrder?.id) {
           orderIdToPay = savedOrder.id;
-          // ĐÁNH DẤU ĐÃ IN NGAY LẬP TỨC: Tuyệt đối ngăn chặn GlobalPrintListener / Postgres Changes in lặp bill thứ 2!
-          markOrderAsPrinted(orderIdToPay, {
-            itemCount: cart.length,
-            itemIds: cart.map(i => i.product_id),
-            totalAmount: finalTotalAmount,
-            isPaid: true
-          });
           setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
         }
       }
@@ -1388,6 +1383,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
+          }, undefined, undefined, { isManualUserReprint: true });
+
+          // ĐÁNH DẤU ĐÃ IN ĐỂ CHẶN ĐỨNG LISTENER POSTGRES / REALTIME IN LẶP LẦN 2
+          markOrderAsPrinted(orderIdToPay, {
+            itemCount: printItems.length,
+            itemIds: printItems.map((i: any) => i.product_id),
+            totalAmount: finalTotalAmount,
+            isPaid: true
           });
         } catch (printErr) {
           console.warn('In bill thanh toán ngay:', printErr);

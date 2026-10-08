@@ -158,6 +158,16 @@ export default function TimeLogPage() {
     if (currentUser) {
       loadLogs(currentUser.id);
     }
+
+    const unsub = db.subscribeToAttendanceChanges(() => {
+      if (currentUser) {
+        loadLogs(currentUser.id);
+      }
+    });
+
+    return () => {
+      unsub();
+    };
   }, [currentUser]);
 
   // Đồng bộ lại khi thay đổi loại chấm công trên URL

@@ -53,6 +53,16 @@ export default function LeaveRequestPage() {
     if (currentUser) {
       loadRequests(currentUser.id);
     }
+
+    const unsub = db.subscribeToAttendanceChanges(() => {
+      if (currentUser) {
+        loadRequests(currentUser.id);
+      }
+    });
+
+    return () => {
+      unsub();
+    };
   }, [currentUser]);
 
   const handleSubmit = async (e: React.FormEvent) => {

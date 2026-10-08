@@ -160,6 +160,16 @@ function getSharedRealtimeChannel() {
           try { fn(payload); } catch (e) { console.error(e); }
         });
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chamcong' }, (payload: any) => {
+        realtimeListeners['attendance_update']?.forEach(fn => {
+          try { fn(payload); } catch (e) { console.error(e); }
+        });
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'nghiphep' }, (payload: any) => {
+        realtimeListeners['attendance_update']?.forEach(fn => {
+          try { fn(payload); } catch (e) { console.error(e); }
+        });
+      })
       .subscribe();
   }
   return sharedRealtimeChannel;
@@ -1327,18 +1337,21 @@ const mapUserToClient = (u: any) => u ? {
  * 2. Bảng ánh xạ mã món chuẩn (chuẩn hóa theo thực đơn K300, 0ms, không phụ thuộc mạng)
  * 3. Quy tắc từ khóa tên món (nếu là món mới thêm)
  */
-export function getDefaultCupId(productId: string, productName?: string, recipesList?: any[]): string | undefined {
+export function getDefaultCupId(productId?: string, productName?: string, recipesList?: any[]): string | undefined {
+  if (!productId && !productName) return undefined;
+  const pId = productId || '';
+
   if (
-    productId.startsWith('TP') ||
+    (pId && pId.startsWith('TP')) ||
     (productName && (productName.toLowerCase().includes('trân châu') || productName.toLowerCase().includes('hạt đác')))
   ) {
     return undefined;
   }
 
   // 1. Kiểm tra từ công thức (nếu danh sách recipes đã sẵn sàng)
-  if (recipesList && recipesList.length > 0) {
+  if (recipesList && recipesList.length > 0 && pId) {
     const cupRecipe = recipesList.find(
-      r => (r.product_id === productId || r.id_san_pham === productId) &&
+      r => (r.product_id === pId || r.id_san_pham === pId) &&
            ['ing_lyden', 'ing_lytrang', 'ing_lyhoavan', 'ing_lytratac'].includes(r.ingredient_id || r.id_nguyen_lieu)
     );
     if (cupRecipe) {
@@ -1351,7 +1364,7 @@ export function getDefaultCupId(productId: string, productName?: string, recipes
   // 2. Tra cứu tức thì (0ms) theo mã món chuẩn thực đơn AVA Coffee K300
   // Ly Đen AVA: CP001 (Cà phê đá), TUK006 (Chanh nóng), N002 (Bò Húc), N005 (Nước suối)
   const LY_DEN_IDS = ['CP001', 'TUK006', 'N002', 'N005'];
-  if (LY_DEN_IDS.includes(productId)) return 'ing_lyden';
+  if (pId && LY_DEN_IDS.includes(pId)) return 'ing_lyden';
 
   // Ly Hoa Văn AVA: Cà phê sữa tươi (CP003), Sữa đá lớn (CP009), Chanh đá (TUK005),
   // toàn bộ trà trái cây (T001-T005, T007-T012), sodas (S001-S005), nước ép (NE001-NE006)
@@ -1361,7 +1374,7 @@ export function getDefaultCupId(productId: string, productName?: string, recipes
     'S001', 'S002', 'S003', 'S005',
     'NE001', 'NE002', 'NE003', 'NE004', 'NE005', 'NE006'
   ];
-  if (LY_HOAVAN_IDS.includes(productId)) return 'ing_lyhoavan';
+  if (pId && LY_HOAVAN_IDS.includes(pId)) return 'ing_lyhoavan';
 
   // Ly Trắng AVA:
   const LY_TRANG_IDS = [
@@ -1370,7 +1383,7 @@ export function getDefaultCupId(productId: string, productName?: string, recipes
     'TUK001', 'TUK002', 'TUK003', 'TUK004', 'TUK007', 'TUK008',
     'Y001', 'Y002', 'Y003', 'Y004', 'Y005'
   ];
-  if (LY_TRANG_IDS.includes(productId)) return 'ing_lytrang';
+  if (pId && LY_TRANG_IDS.includes(pId)) return 'ing_lytrang';
 
   // 3. Quy tắc từ khóa tên món (phòng trường hợp admin tạo thêm món mới)
   const lowerName = (productName || '').toLowerCase().trim();
@@ -2542,7 +2555,7 @@ export const db = {
             *,
             danhsachban (ten_ban),
             nguoidung (ho_ten),
-            hoadondetail (id, ghi_chu)
+            hoadondetail (id, idsp, ten_san_pham, don_gia, so_luong, thanh_tien, ghi_chu)
           `)
           .order('ngay_tao', { ascending: false })
           .range(from, from + step - 1);
@@ -3221,13 +3234,12 @@ export const db = {
         mockDb.setOrders(orders);
       }
 
-      // Hoàn trả nguyên liệu kho ngay lập tức để nhân viên kiểm kho khớp 100%
-      // Đặt status: 'Đã duyệt' để không rơi vào tab "Duyệt Kho & Kiểm Kho" lẻ tẻ
+      // Ghi nhận hoàn trả nguyên liệu kho với trạng thái 'Chờ duyệt' cho Admin xác nhận
       if (items.length > 0) {
         await this.restoreStockFromOrder(items, {
           orderId,
           staffId,
-          status: 'Đã duyệt',
+          status: 'Chờ duyệt',
           reason: `[Hoàn kho đơn hủy #${orderId}] ${cleanReason}`
         });
       }
@@ -3879,12 +3891,14 @@ export const db = {
         ghi_chu_ra: null,
         trang_thai: 'Đang trong ca'
       }]).select();
+      broadcastRealtimeEvent('attendance_update');
       if (!error && data) return mapTimeLogToClient(data[0]);
     }
 
     const logs = mockDb.getTimeLogs();
     logs.push(newLog);
     mockDb.setTimeLogs(logs);
+    broadcastRealtimeEvent('attendance_update');
     return newLog;
   },
 
@@ -3911,6 +3925,7 @@ export const db = {
         })
         .eq('id', logId)
         .select();
+      broadcastRealtimeEvent('attendance_update');
       if (!error && data) return mapTimeLogToClient(data[0]);
     }
 
@@ -3925,6 +3940,7 @@ export const db = {
       logs[idx].ghi_chu_ra = checkOutData.ghi_chu_ra || '';
       logs[idx].status = 'Chờ duyệt';
       mockDb.setTimeLogs(logs);
+      broadcastRealtimeEvent('attendance_update');
       return logs[idx];
     }
     return null;
@@ -3933,6 +3949,7 @@ export const db = {
   async approveTimeLog(id: string, status: 'Đã duyệt' | 'Từ chối') {
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.from('chamcong').update({ trang_thai: status }).eq('id', id).select();
+      broadcastRealtimeEvent('attendance_update');
       if (!error && data) return mapTimeLogToClient(data[0]);
     }
     const logs = mockDb.getTimeLogs();
@@ -3940,6 +3957,7 @@ export const db = {
     if (idx !== -1) {
       logs[idx].status = status;
       mockDb.setTimeLogs(logs);
+      broadcastRealtimeEvent('attendance_update');
       return logs[idx];
     }
     return null;
@@ -3962,6 +3980,7 @@ export const db = {
         })
         .eq('id', logId)
         .select();
+      broadcastRealtimeEvent('attendance_update');
       if (!error && data) return mapTimeLogToClient(data[0]);
     }
 
@@ -4911,6 +4930,7 @@ export const db = {
       ids.forEach(id => { const l = logs.find(x => x.id === id); if (l) l.status = status; });
       mockDb.setTimeLogs(logs);
     }
+    broadcastRealtimeEvent('attendance_update');
   },
 
   async approveAllLeaveRequests(ids: string[], status: 'Đã duyệt' | 'Từ chối') {
@@ -4921,6 +4941,7 @@ export const db = {
       ids.forEach(id => { const r = requests.find(x => x.id === id); if (r) r.status = status; });
       mockDb.setLeaveRequests(requests);
     }
+    broadcastRealtimeEvent('attendance_update');
   },
 
   async approveAllInventoryLogs(ids: string[], status: 'Đã duyệt' | 'Từ chối') {
@@ -5016,7 +5037,7 @@ export const db = {
 
       const dbUpdates: any[] = [];
       const historyLogsToInsert: any[] = [];
-      const logStatus = options?.status || 'Đã duyệt';
+      const logStatus = options?.status || 'Chờ duyệt';
       const staffId = options?.staffId || 'system';
 
       for (const ingId in ingChanges) {
@@ -5721,6 +5742,15 @@ export const db = {
     realtimeListeners['inventory_update'].add(callback);
     return () => {
       realtimeListeners['inventory_update'].delete(callback);
+    };
+  },
+
+  subscribeToAttendanceChanges(callback: (payload: any) => void): () => void {
+    if (!isSupabaseConfigured || !supabase) return () => {};
+    getSharedRealtimeChannel();
+    realtimeListeners['attendance_update'].add(callback);
+    return () => {
+      realtimeListeners['attendance_update'].delete(callback);
     };
   },
 

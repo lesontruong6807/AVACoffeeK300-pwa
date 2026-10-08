@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { db, getCurrentUser, formatIngredientStock, formatIngredientRefill } from '@/lib/database';
+import { db, getCurrentUser, formatIngredientStock, formatIngredientRefill, getDefaultCupId } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { 
   ShieldCheck, 
@@ -260,7 +260,7 @@ export default function AdminPage() {
   const loadAllData = async () => {
     setLoading(true);
     try {
-      const [logs, leaves, ords, prods, cats, usrs, invLogs, ings, ordItems, exps, recs, tbls, settings] = await Promise.all([
+      const results = await Promise.allSettled([
         db.getTimeLogs(),
         db.getLeaveRequests(),
         db.getOrders(),
@@ -275,19 +275,25 @@ export default function AdminPage() {
         db.getTables(true),
         db.getStoreSettings()
       ]);
-      setTimeLogs(logs);
-      setLeaveRequests(leaves);
-      setOrders(ords);
-      setProducts(prods);
-      setCategories(cats);
-      setUsers(usrs);
-      setInventoryLogs(invLogs);
-      setIngredients(ings);
-      setAllOrderItems(ordItems);
-      setExpenses(exps);
-      setRecipes(recs);
-      setTables(tbls);
+
+      const val = (idx: number, fallback: any = []) => 
+        results[idx].status === 'fulfilled' ? (results[idx] as PromiseFulfilledResult<any>).value : fallback;
+
+      setTimeLogs(val(0));
+      setLeaveRequests(val(1));
+      setOrders(val(2));
+      setProducts(val(3));
+      setCategories(val(4));
+      setUsers(val(5));
+      setInventoryLogs(val(6));
+      setIngredients(val(7));
+      setAllOrderItems(val(8));
+      setExpenses(val(9));
+      setRecipes(val(10));
+      setTables(val(11));
+      const settings = val(12, null);
       setStoreSettings(settings);
+
       if (settings) {
         setCfgStoreName(settings.store_name || 'AVA COFFEE');
         setCfgStoreAddress(settings.store_address || 'K300, Tân Bình, TP. Hồ Chí Minh');
@@ -322,11 +328,19 @@ export default function AdminPage() {
     const unsubTables = db.subscribeToTableChanges(() => {
       loadAllData();
     });
+    const unsubAtt = db.subscribeToAttendanceChanges(() => {
+      loadAllData();
+    });
+    const unsubOrders = db.subscribeToOrderChanges(() => {
+      loadAllData();
+    });
 
     return () => {
       unsubInv();
       unsubReport();
       unsubTables();
+      unsubAtt();
+      unsubOrders();
     };
   }, []);
 
@@ -1288,8 +1302,9 @@ export default function AdminPage() {
   const ingredientUsage: { [id: string]: number } = {};
 
   paidOrders.forEach(order => {
-    const items = allOrderItems.filter(item => item.order_id === order.id);
-    items.forEach(item => {
+    const matchedItems = allOrderItems.filter(item => item.order_id === order.id);
+    const items = matchedItems.length > 0 ? matchedItems : (order.order_items || []);
+    items.forEach((item: any) => {
       const prodRecipes = recipes.filter(r => r.product_id === item.product_id);
       if (prodRecipes.length > 0) {
         prodRecipes.forEach(r => {
@@ -1445,7 +1460,10 @@ export default function AdminPage() {
   });
 
   // --- Tính toán thống kê bán hàng Admin (Phân tách Tại quán & Mang đi) ---
-  const rangeOrderItems = allOrderItems.filter(item => paidOrders.some(o => o.id === item.order_id));
+  const itemsFromOrders = paidOrders.flatMap(o => (o.order_items || []).map((it: any) => ({ ...it, order_id: o.id })));
+  const matchedFromAllItems = allOrderItems.filter(item => paidOrders.some(o => o.id === item.order_id));
+  const rangeOrderItems = itemsFromOrders.length > 0 ? itemsFromOrders : matchedFromAllItems;
+
   const salesMap: { 
     [key: string]: { 
       id: string;
@@ -1460,14 +1478,14 @@ export default function AdminPage() {
     } 
   } = {};
   
-  rangeOrderItems.forEach(item => {
+  rangeOrderItems.forEach((item: any) => {
     const prodId = item.product_id;
     const qty = Number(item.quantity || 0);
-    const price = Number(item.unit_price || item.products?.price || 0);
+    const price = Number(item.unit_price || item.products?.price || item.price || 0);
     const parentOrder = paidOrders.find(o => o.id === item.order_id);
     const isTakeaway = parentOrder?.table_id === 'tb_mangve' || parentOrder?.tables?.table_name === 'Khách mang về';
     const key = `${prodId}_${isTakeaway ? 'takeaway' : 'dinein'}`;
-    const rawName = item.products?.name || item.ten_san_pham || 'Sản phẩm';
+    const rawName = item.products?.name || item.ten_san_pham || item.name || 'Sản phẩm';
 
     if (!salesMap[key]) {
       salesMap[key] = {
@@ -1483,7 +1501,7 @@ export default function AdminPage() {
       };
     }
     salesMap[key].quantity += qty;
-    salesMap[key].subtotal += (Number(item.subtotal) || (qty * price));
+    salesMap[key].subtotal += (Number(item.subtotal || item.thanh_tien) || (qty * price));
     if (!salesMap[key].price && price) {
       salesMap[key].price = price;
     }
@@ -1495,7 +1513,7 @@ export default function AdminPage() {
   let lyTrang = 0;
   let lyHoaVan = 0;
 
-  rangeOrderItems.forEach(item => {
+  rangeOrderItems.forEach((item: any) => {
     const prodId = item.product_id;
     const qty = Number(item.quantity || 0);
 
@@ -1512,15 +1530,26 @@ export default function AdminPage() {
       else lyTrang += qty;
     } else {
       const prodRecipes = recipes.filter(r => r.product_id === prodId);
+      let foundCupInRecipe = false;
       prodRecipes.forEach(r => {
         if (r.ingredient_id === 'ing_lyden') {
           lyDen += Number(r.quantity_needed || 0) * qty;
+          foundCupInRecipe = true;
         } else if (r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lytratac') {
           lyTrang += Number(r.quantity_needed || 0) * qty;
+          foundCupInRecipe = true;
         } else if (r.ingredient_id === 'ing_lyhoavan') {
           lyHoaVan += Number(r.quantity_needed || 0) * qty;
+          foundCupInRecipe = true;
         }
       });
+
+      if (!foundCupInRecipe) {
+        const fallbackCup = getDefaultCupId(prodId, item.name || item.ten_san_pham, recipes);
+        if (fallbackCup === 'ing_lyden') lyDen += qty;
+        else if (fallbackCup === 'ing_lyhoavan') lyHoaVan += qty;
+        else if (fallbackCup === 'ing_lytrang') lyTrang += qty;
+      }
     }
   });
 

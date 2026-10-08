@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { db, getCurrentUser } from '@/lib/database';
+import { db, getCurrentUser, getDefaultCupId } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { BarChart3, Clock, DollarSign, ShoppingBag, TrendingUp, ShieldCheck, Calendar, ArrowRightLeft, ArrowLeft, X } from 'lucide-react';
 
@@ -26,16 +26,20 @@ export default function DailyReportPage() {
   const loadData = async (isBackground = false) => {
     if (!isBackground) setLoading(true);
     try {
-      const [allOrders, allLogs, allItems, allRecipes] = await Promise.all([
+      const results = await Promise.allSettled([
         db.getOrders(),
         db.getInventoryLogs(),
         db.getAllOrderItems(),
         db.getRecipes()
       ]);
-      setOrders(allOrders);
-      setInventoryLogs(allLogs);
-      setOrderItems(allItems);
-      setRecipes(allRecipes);
+
+      const val = (idx: number, fallback: any = []) => 
+        results[idx].status === 'fulfilled' ? (results[idx] as PromiseFulfilledResult<any>).value : fallback;
+
+      setOrders(val(0));
+      setInventoryLogs(val(1));
+      setOrderItems(val(2));
+      setRecipes(val(3));
     } catch (e) {
       console.error('Lỗi khi tải hóa đơn báo cáo:', e);
     } finally {
@@ -48,7 +52,10 @@ export default function DailyReportPage() {
     loadData();
 
     // 1. Realtime listener cho báo cáo ca trực (Đơn hàng, Chi phí, Nhập kho)
-    const unsubscribe = db.subscribeToReportChanges(() => {
+    const unsubReport = db.subscribeToReportChanges(() => {
+      loadData(true);
+    });
+    const unsubOrders = db.subscribeToOrderChanges(() => {
       loadData(true);
     });
 
@@ -66,7 +73,8 @@ export default function DailyReportPage() {
     }
 
     return () => {
-      unsubscribe();
+      unsubReport();
+      unsubOrders();
       if (typeof window !== 'undefined') {
         window.removeEventListener('visibilitychange', handleWakeup);
         window.removeEventListener('focus', handleWakeup);
@@ -146,7 +154,10 @@ export default function DailyReportPage() {
     const currentCash = Math.max(0, totalCash - restockCosts);
 
     // --- Tính toán thống kê bán hàng (Phân loại rõ ràng Tại quán & Mang đi) ---
-    const shiftItems = orderItems.filter(item => shiftOrders.some(o => o.id === item.order_id));
+    const itemsFromOrders = shiftOrders.flatMap(o => (o.order_items || []).map((it: any) => ({ ...it, order_id: o.id })));
+    const matchedFromOrderItems = orderItems.filter(item => shiftOrders.some(o => o.id === item.order_id));
+    const shiftItems = itemsFromOrders.length > 0 ? itemsFromOrders : matchedFromOrderItems;
+
     const salesMap: { 
       [key: string]: { 
         id: string;
@@ -164,11 +175,11 @@ export default function DailyReportPage() {
     shiftItems.forEach(item => {
       const prodId = item.product_id;
       const qty = Number(item.quantity || 0);
-      const price = Number(item.unit_price || item.products?.price || 0);
+      const price = Number(item.unit_price || item.products?.price || item.price || 0);
       const parentOrder = shiftOrders.find(o => o.id === item.order_id);
       const isTakeaway = parentOrder?.table_id === 'tb_mangve' || parentOrder?.tables?.table_name === 'Khách mang về';
       const key = `${prodId}_${isTakeaway ? 'takeaway' : 'dinein'}`;
-      const rawName = item.products?.name || item.ten_san_pham || 'Sản phẩm';
+      const rawName = item.products?.name || item.ten_san_pham || item.name || 'Sản phẩm';
 
       if (!salesMap[key]) {
         salesMap[key] = {
@@ -184,7 +195,7 @@ export default function DailyReportPage() {
         };
       }
       salesMap[key].quantity += qty;
-      salesMap[key].subtotal += (Number(item.subtotal) || (qty * price));
+      salesMap[key].subtotal += (Number(item.subtotal || item.thanh_tien) || (qty * price));
       if (!salesMap[key].price && price) {
         salesMap[key].price = price;
       }
@@ -213,15 +224,26 @@ export default function DailyReportPage() {
         else lyTrang += qty;
       } else {
         const prodRecipes = recipes.filter(r => r.product_id === prodId);
+        let foundCupInRecipe = false;
         prodRecipes.forEach(r => {
           if (r.ingredient_id === 'ing_lyden') {
             lyDen += Number(r.quantity_needed || 0) * qty;
+            foundCupInRecipe = true;
           } else if (r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lytratac') {
             lyTrang += Number(r.quantity_needed || 0) * qty;
+            foundCupInRecipe = true;
           } else if (r.ingredient_id === 'ing_lyhoavan') {
             lyHoaVan += Number(r.quantity_needed || 0) * qty;
+            foundCupInRecipe = true;
           }
         });
+
+        if (!foundCupInRecipe) {
+          const fallbackCup = getDefaultCupId(prodId, item.name || item.ten_san_pham, recipes);
+          if (fallbackCup === 'ing_lyden') lyDen += qty;
+          else if (fallbackCup === 'ing_lyhoavan') lyHoaVan += qty;
+          else if (fallbackCup === 'ing_lytrang') lyTrang += qty;
+        }
       }
     });
 
