@@ -466,16 +466,16 @@ export default function AdminPage() {
 
   // --- LÓGIC PHÊ DUYỆT ---
   const handleApproveTime = async (id: string, status: 'Đã duyệt' | 'Từ chối') => {
-    const isConfirmed = window.confirm(`Bạn có chắc chắn muốn ${status === 'Đã duyệt' ? 'CHẤP NHẬN' : 'TỪ CHỐI'} lượt chấm công này không?`);
+    const isConfirmed = window.confirm(`Bạn có chắc chắn muốn ${status === 'Đã duyệt' ? 'CHẤP NHẬN' : 'HỦY / TỪ CHỐI'} lượt chấm công này không?`);
     if (!isConfirmed) return;
     
     try {
       await db.approveTimeLog(id, status);
       confetti({ particleCount: 50, spread: 40 });
       loadAllData();
-      toast.success(`Đã cập nhật trạng thái chấm công thành: ${status}`);
+      toast.success(status === 'Đã duyệt' ? 'Đã phê duyệt chấm công thành công.' : 'Đã hủy / từ chối lượt chấm công.');
     } catch (e) {
-      toast.error('Không thể phê duyệt chấm công.');
+      toast.error('Không thể cập nhật chấm công.');
     }
   };
 
@@ -2048,8 +2048,17 @@ export default function AdminPage() {
 
                     <div className="pt-2">
                       {isWorking ? (
-                        <div className="p-2.5 bg-blue-55 bg-blue-50 border border-blue-200 text-blue-800 rounded-xl text-center font-bold text-[10px] animate-pulse">
-                          ⚠️ Nhân viên đang trong ca làm. Chỉ phê duyệt sau khi chấm công ra ca.
+                        <div className="space-y-2">
+                          <div className="p-2.5 bg-blue-50 border border-blue-200 text-blue-800 rounded-xl text-center font-bold text-[10px]">
+                            ⚠️ Nhân viên đang trong ca làm. Chỉ được phép <strong>HỦY</strong>, không thể Phê duyệt khi chưa chấm ra.
+                          </div>
+                          <button
+                            onClick={() => handleApproveTime(log.id, 'Từ chối')}
+                            className="w-full py-2.5 bg-red-50 hover:bg-red-100 text-red-700 font-bold text-xs rounded-xl transition border border-red-200 flex items-center justify-center space-x-1.5 shadow-xs"
+                          >
+                            <X className="w-4 h-4" />
+                            <span>Hủy lượt chấm công này (Ca dở dang)</span>
+                          </button>
                         </div>
                       ) : (
                         <div className="grid grid-cols-2 gap-3">
