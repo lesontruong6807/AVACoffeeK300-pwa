@@ -1213,17 +1213,19 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         });
         toast.success(`Đã cập nhật đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
 
-        // NGUYÊN TẮC VÀNG: Nếu bàn này có gọi thêm món mới -> In phiếu các món gọi thêm!
+        // NGUYÊN TẮC: Nếu bàn này có gọi thêm món mới -> In bill bao gồm ĐẦY ĐỦ các món có trong bàn!
         // Nếu không có món mới -> Tuyệt đối không in trùng!
-        const oldItemCount = existingOrderItems.length;
-        if (cart.length > oldItemCount) {
-          const newItems = cart.slice(oldItemCount);
+        const oldTotalQty = existingOrderItems.reduce((sum: number, i: any) => sum + Number(i.quantity || i.so_luong || 1), 0);
+        const newTotalQty = cart.reduce((sum: number, i: any) => sum + Number(i.quantity || 1), 0);
+        const hasNewItems = newTotalQty > oldTotalQty || cart.length > existingOrderItems.length;
+
+        if (hasNewItems) {
           try {
             await printOrderDirect({
               tableName: selectedTable?.table_name || 'Khách mang về',
               staffName: currentUser?.full_name || 'Admin',
               orderId: existingOrder.id,
-              items: newItems.map(i => ({
+              items: cart.map(i => ({
                 name: i.name,
                 quantity: i.quantity,
                 price: i.price,
@@ -1232,7 +1234,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               })),
               totalAmount: finalTotalAmount,
               discount: discountAmount,
-              notes: '(GỌI THÊM MÓN)'
+              notes: orderNotes.trim() ? `${orderNotes.trim()} (GỌI THÊM MÓN)` : '(GỌI THÊM MÓN)'
             }, undefined, undefined, { isManualUserReprint: true });
 
             markOrderAsPrinted(existingOrder.id, {
@@ -1395,32 +1397,37 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         } catch (printErr) {
           console.warn('In bill thanh toán ngay:', printErr);
         }
-      } else if (cart.length > existingOrderItems.length) {
-        // Nếu là bàn đã lưu trước đó nhưng có gọi thêm món mới cùng lúc thanh toán:
-        const newItems = cart.slice(existingOrderItems.length);
-        try {
-          await printOrderDirect({
-            tableName: selectedTable?.table_name || 'Khách mang về',
-            staffName: currentUser?.full_name || 'Admin',
-            orderId: orderIdToPay,
-            items: newItems.map(i => ({
-              name: i.name,
-              quantity: i.quantity,
-              price: i.price,
-              subtotal: i.subtotal,
-              notes: i.notes
-            })),
-            totalAmount: finalTotalAmount,
-            discount: discountAmount,
-            notes: '(GỌI THÊM MÓN)'
-          }, undefined, undefined, { isManualUserReprint: true });
-          markOrderAsPrinted(orderIdToPay, {
-            itemCount: cart.length,
-            totalAmount: finalTotalAmount,
-            isPaid: true
-          });
-        } catch (printErr) {
-          console.warn('Lỗi in món gọi thêm khi thanh toán:', printErr);
+      } else {
+        const oldTotalQty = existingOrderItems.reduce((sum: number, i: any) => sum + Number(i.quantity || i.so_luong || 1), 0);
+        const newTotalQty = cart.reduce((sum: number, i: any) => sum + Number(i.quantity || 1), 0);
+        const hasNewItems = newTotalQty > oldTotalQty || cart.length > existingOrderItems.length;
+
+        if (hasNewItems) {
+          // Nếu là bàn đã lưu trước đó nhưng có gọi thêm món mới cùng lúc thanh toán:
+          try {
+            await printOrderDirect({
+              tableName: selectedTable?.table_name || 'Khách mang về',
+              staffName: currentUser?.full_name || 'Admin',
+              orderId: orderIdToPay,
+              items: cart.map(i => ({
+                name: i.name,
+                quantity: i.quantity,
+                price: i.price,
+                subtotal: i.subtotal,
+                notes: i.notes
+              })),
+              totalAmount: finalTotalAmount,
+              discount: discountAmount,
+              notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
+            }, undefined, undefined, { isManualUserReprint: true });
+            markOrderAsPrinted(orderIdToPay, {
+              itemCount: cart.length,
+              totalAmount: finalTotalAmount,
+              isPaid: true
+            });
+          } catch (printErr) {
+            console.warn('Lỗi in món gọi thêm khi thanh toán:', printErr);
+          }
         }
       }
 

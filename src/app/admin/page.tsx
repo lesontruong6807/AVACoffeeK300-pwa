@@ -27,6 +27,7 @@ import {
   Coffee,
   CheckCircle2,
   Map,
+  Tag,
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
@@ -1376,17 +1377,20 @@ export default function AdminPage() {
     morningTransfer: number;
     morningRestock: number;
     morningActual: number;
+    morningDiscount: number;
     morningNetCash: number;
     afternoonCount: number;
     afternoonCash: number;
     afternoonTransfer: number;
     afternoonRestock: number;
     afternoonActual: number;
+    afternoonDiscount: number;
     afternoonNetCash: number;
     totalRevenue: number;
     totalCash: number;
     totalTransfer: number;
     totalRestock: number;
+    totalDiscount: number;
     totalNetCash: number;
   }
 
@@ -1398,28 +1402,32 @@ export default function AdminPage() {
     if (!dailyReportDict[dStr]) {
       dailyReportDict[dStr] = {
         date: dStr,
-        morningCount: 0, morningCash: 0, morningTransfer: 0, morningRestock: 0, morningActual: 0, morningNetCash: 0,
-        afternoonCount: 0, afternoonCash: 0, afternoonTransfer: 0, afternoonRestock: 0, afternoonActual: 0, afternoonNetCash: 0,
-        totalRevenue: 0, totalCash: 0, totalTransfer: 0, totalRestock: 0, totalNetCash: 0
+        morningCount: 0, morningCash: 0, morningTransfer: 0, morningRestock: 0, morningActual: 0, morningDiscount: 0, morningNetCash: 0,
+        afternoonCount: 0, afternoonCash: 0, afternoonTransfer: 0, afternoonRestock: 0, afternoonActual: 0, afternoonDiscount: 0, afternoonNetCash: 0,
+        totalRevenue: 0, totalCash: 0, totalTransfer: 0, totalRestock: 0, totalDiscount: 0, totalNetCash: 0
       };
     }
     const day = dailyReportDict[dStr];
     const amt = Number(o.total_amount || 0);
+    const disc = Number(o.discount || 0);
     const isMorn = isMorningOrder(orderTime);
     const isCash = o.payment_method === 'Tiền mặt';
 
     if (isMorn) {
       day.morningCount += 1;
       day.morningActual += amt;
+      day.morningDiscount += disc;
       if (isCash) day.morningCash += amt;
       else day.morningTransfer += amt;
     } else {
       day.afternoonCount += 1;
       day.afternoonActual += amt;
+      day.afternoonDiscount += disc;
       if (isCash) day.afternoonCash += amt;
       else day.afternoonTransfer += amt;
     }
     day.totalRevenue += amt;
+    day.totalDiscount += disc;
     if (isCash) day.totalCash += amt;
     else day.totalTransfer += amt;
   });
@@ -1429,9 +1437,9 @@ export default function AdminPage() {
     if (!dailyReportDict[dStr]) {
       dailyReportDict[dStr] = {
         date: dStr,
-        morningCount: 0, morningCash: 0, morningTransfer: 0, morningRestock: 0, morningActual: 0, morningNetCash: 0,
-        afternoonCount: 0, afternoonCash: 0, afternoonTransfer: 0, afternoonRestock: 0, afternoonActual: 0, afternoonNetCash: 0,
-        totalRevenue: 0, totalCash: 0, totalTransfer: 0, totalRestock: 0, totalNetCash: 0
+        morningCount: 0, morningCash: 0, morningTransfer: 0, morningRestock: 0, morningActual: 0, morningDiscount: 0, morningNetCash: 0,
+        afternoonCount: 0, afternoonCash: 0, afternoonTransfer: 0, afternoonRestock: 0, afternoonActual: 0, afternoonDiscount: 0, afternoonNetCash: 0,
+        totalRevenue: 0, totalCash: 0, totalTransfer: 0, totalRestock: 0, totalDiscount: 0, totalNetCash: 0
       };
     }
     const day = dailyReportDict[dStr];
@@ -1507,7 +1515,11 @@ export default function AdminPage() {
     }
   });
 
-  const sortedSales = Object.values(salesMap).sort((a, b) => b.quantity - a.quantity);
+  const sortedSales = Object.values(salesMap).sort((a, b) => {
+    const nameCompare = a.baseName.localeCompare(b.baseName, 'vi', { sensitivity: 'base' });
+    if (nameCompare !== 0) return nameCompare;
+    return (a.isTakeaway ? 1 : 0) - (b.isTakeaway ? 1 : 0);
+  });
 
   let lyDen = 0;
   let lyTrang = 0;
@@ -2405,7 +2417,8 @@ export default function AdminPage() {
                       cash: morningCash,
                       transfer: morningTransfer,
                       restockCost: morningRestockCost,
-                      netCash: morningNetCash
+                      netCash: morningNetCash,
+                      discount: morningDiscount
                     },
                     afternoon: {
                       ordersCount: afternoonPaidOrders.length,
@@ -2413,7 +2426,8 @@ export default function AdminPage() {
                       cash: afternoonCash,
                       transfer: afternoonTransfer,
                       restockCost: afternoonRestockCost,
-                      netCash: afternoonNetCash
+                      netCash: afternoonNetCash,
+                      discount: afternoonDiscount
                     }
                   }
                 }, repStartDate, repEndDate)}
@@ -2433,7 +2447,8 @@ export default function AdminPage() {
                       cash: morningCash,
                       transfer: morningTransfer,
                       restockCost: morningRestockCost,
-                      netCash: morningNetCash
+                      netCash: morningNetCash,
+                      discount: morningDiscount
                     },
                     afternoon: {
                       ordersCount: afternoonPaidOrders.length,
@@ -2441,7 +2456,8 @@ export default function AdminPage() {
                       cash: afternoonCash,
                       transfer: afternoonTransfer,
                       restockCost: afternoonRestockCost,
-                      netCash: afternoonNetCash
+                      netCash: afternoonNetCash,
+                      discount: afternoonDiscount
                     }
                   }
                 }, repStartDate, repEndDate)}
@@ -2453,11 +2469,12 @@ export default function AdminPage() {
           </div>
 
           {/* Dashboard Metrics (Tài chính tổng quan) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
             <div className="bg-white p-5 rounded-3xl border border-coffee-light flex items-center justify-between shadow-sm">
               <div className="space-y-1.5">
                 <span className="text-[10px] font-bold text-coffee-medium uppercase tracking-wider">DOANH THU THUẦN</span>
                 <h4 className="font-black text-xl text-coffee-primary">{actualRevenue.toLocaleString('vi-VN')}đ</h4>
+                <p className="text-[10px] text-coffee-medium">Doanh thu gốc: <strong>{grossRevenue.toLocaleString('vi-VN')}đ</strong></p>
               </div>
               <div className="p-3 bg-green-50 rounded-2xl text-green-700">
                 <DollarSign className="w-6 h-6" />
@@ -2466,8 +2483,24 @@ export default function AdminPage() {
 
             <div className="bg-white p-5 rounded-3xl border border-coffee-light flex items-center justify-between shadow-sm">
               <div className="space-y-1.5">
+                <span className="text-[10px] font-bold text-red-600 uppercase tracking-wider">TỔNG GIẢM GIÁ</span>
+                <h4 className="font-black text-xl text-red-600">
+                  {totalDiscount > 0 ? `-${totalDiscount.toLocaleString('vi-VN')}đ` : '0đ'}
+                </h4>
+                <p className="text-[10px] text-coffee-medium">
+                  {grossRevenue > 0 && totalDiscount > 0 ? `Chiếm ${((totalDiscount / grossRevenue) * 100).toFixed(1)}% doanh thu gốc` : 'Không có chiết khấu'}
+                </p>
+              </div>
+              <div className="p-3 bg-red-50 rounded-2xl text-red-700">
+                <Tag className="w-6 h-6" />
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-3xl border border-coffee-light flex items-center justify-between shadow-sm">
+              <div className="space-y-1.5">
                 <span className="text-[10px] font-bold text-coffee-medium uppercase tracking-wider">TỔNG GIÁ VỐN (COGS)</span>
                 <h4 className="font-black text-xl text-amber-700">{totalCOGS.toLocaleString('vi-VN')}đ</h4>
+                <p className="text-[10px] text-coffee-medium">Định lượng nguyên liệu</p>
               </div>
               <div className="p-3 bg-amber-50 rounded-2xl text-amber-700">
                 <TrendingUp className="w-6 h-6 rotate-180" />
@@ -2478,6 +2511,7 @@ export default function AdminPage() {
               <div className="space-y-1.5">
                 <span className="text-[10px] font-bold text-coffee-medium uppercase tracking-wider">LỢI NHUẬN GỘP</span>
                 <h4 className="font-black text-xl text-emerald-700">{(actualRevenue - totalCOGS).toLocaleString('vi-VN')}đ</h4>
+                <p className="text-[10px] text-coffee-medium">Doanh thu thuần - COGS</p>
               </div>
               <div className="p-3 bg-emerald-50 rounded-2xl text-emerald-700">
                 <ShieldCheck className="w-6 h-6" />
@@ -2488,6 +2522,7 @@ export default function AdminPage() {
               <div className="space-y-1.5">
                 <span className="text-[10px] font-bold text-coffee-medium uppercase tracking-wider">CHI PHÍ VẬN HÀNH</span>
                 <h4 className="font-black text-xl text-red-600">-{totalExpenses.toLocaleString('vi-VN')}đ</h4>
+                <p className="text-[10px] text-coffee-medium">{rangeExpenses.length} khoản chi ngoài</p>
               </div>
               <div className="p-3 bg-red-50 rounded-2xl text-red-700">
                 <TrendingUp className="w-6 h-6 rotate-180" />
@@ -2500,6 +2535,7 @@ export default function AdminPage() {
                 <h4 className={`font-black text-xl ${netProfit >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
                   {netProfit.toLocaleString('vi-VN')}đ
                 </h4>
+                <p className="text-[10px] text-coffee-medium">Lãi thực tế sau chi phí</p>
               </div>
               <div className={`p-3 rounded-2xl ${netProfit >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
                 <ShieldCheck className="w-6 h-6" />
@@ -2567,6 +2603,16 @@ export default function AdminPage() {
                     </span>
                     <span className="font-extrabold text-blue-900">
                       {morningTransfer.toLocaleString('vi-VN')}đ ({morningActual > 0 ? Math.round((morningTransfer / morningActual) * 100) : 0}%)
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-coffee-dark flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span>
+                      🏷️ Tổng giảm giá:
+                    </span>
+                    <span className="font-extrabold text-red-600">
+                      {morningDiscount > 0 ? `-${morningDiscount.toLocaleString('vi-VN')}đ` : '0đ'}
                     </span>
                   </div>
 
@@ -2660,6 +2706,16 @@ export default function AdminPage() {
                     </span>
                   </div>
 
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-coffee-dark flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span>
+                      🏷️ Tổng giảm giá:
+                    </span>
+                    <span className="font-extrabold text-red-600">
+                      {afternoonDiscount > 0 ? `-${afternoonDiscount.toLocaleString('vi-VN')}đ` : '0đ'}
+                    </span>
+                  </div>
+
                   {/* Progress Bar Phân Bổ */}
                   <div className="w-full bg-indigo-100/60 h-2.5 rounded-full overflow-hidden flex">
                     <div 
@@ -2733,7 +2789,7 @@ export default function AdminPage() {
                       <th className="py-2.5 px-3 text-center bg-indigo-50/70 text-indigo-900 border-l border-indigo-200/50" colSpan={3}>
                         🌙 CA CHIỀU (12:00-17:30)
                       </th>
-                      <th className="py-2.5 px-3 text-right border-l border-coffee-light rounded-r-xl bg-green-50/50 text-green-900" colSpan={2}>
+                      <th className="py-2.5 px-3 text-right border-l border-coffee-light rounded-r-xl bg-green-50/50 text-green-900" colSpan={3}>
                         TỔNG NGÀY
                       </th>
                     </tr>
@@ -2748,6 +2804,7 @@ export default function AdminPage() {
                       <th className="py-2 px-2 text-right bg-indigo-50/30 text-indigo-800">Tiền mặt</th>
                       <th className="py-2 px-2 text-right bg-indigo-50/30 text-blue-700">Chuyển khoản</th>
                       {/* Tổng ngày */}
+                      <th className="py-2 px-2 text-right bg-green-50/20 text-red-600 font-extrabold">Giảm giá</th>
                       <th className="py-2 px-2 text-right bg-green-50/20 text-coffee-dark font-extrabold">Tổng DT</th>
                       <th className="py-2 px-3 text-right bg-green-50/20 text-emerald-800 font-extrabold">TM Két Ngày</th>
                     </tr>
@@ -2781,6 +2838,9 @@ export default function AdminPage() {
                           {row.afternoonTransfer > 0 ? `${row.afternoonTransfer.toLocaleString('vi-VN')}đ` : '-'}
                         </td>
                         {/* Tổng ngày */}
+                        <td className="py-2.5 px-2 text-right font-semibold text-red-600 font-mono bg-green-50/10">
+                          {row.totalDiscount > 0 ? `-${row.totalDiscount.toLocaleString('vi-VN')}đ` : '-'}
+                        </td>
                         <td className="py-2.5 px-2 text-right font-black text-coffee-primary font-mono bg-green-50/20">
                           {row.totalRevenue.toLocaleString('vi-VN')}đ
                         </td>
@@ -2792,7 +2852,7 @@ export default function AdminPage() {
 
                     {dailyReportRows.length === 0 && (
                       <tr>
-                        <td colSpan={9} className="py-6 text-center text-coffee-medium/60 italic">
+                        <td colSpan={10} className="py-6 text-center text-coffee-medium/60 italic">
                           Không có dữ liệu giao dịch trong khoảng thời gian này.
                         </td>
                       </tr>
@@ -2811,6 +2871,9 @@ export default function AdminPage() {
                         <td className="py-3 px-2 text-right text-indigo-800 font-mono">{afternoonCash.toLocaleString('vi-VN')}đ</td>
                         <td className="py-3 px-2 text-right text-blue-700 font-mono">{afternoonTransfer.toLocaleString('vi-VN')}đ</td>
                         {/* Tổng Ngày */}
+                        <td className="py-3 px-2 text-right text-red-600 font-mono">
+                          {totalDiscount > 0 ? `-${totalDiscount.toLocaleString('vi-VN')}đ` : '0đ'}
+                        </td>
                         <td className="py-3 px-2 text-right text-coffee-primary font-mono">{actualRevenue.toLocaleString('vi-VN')}đ</td>
                         <td className="py-3 px-3 text-right text-emerald-800 font-mono">
                           {Math.max(0, totalCash - totalRestockCosts).toLocaleString('vi-VN')}đ
@@ -2949,6 +3012,7 @@ export default function AdminPage() {
                           <th className="py-2">Thời gian & Ca</th>
                           <th className="py-2">Bàn</th>
                           <th className="py-2">Thanh toán</th>
+                          <th className="py-2 text-right">Giảm giá</th>
                           <th className="py-2 text-right">Tổng tiền</th>
                         </tr>
                       </thead>
@@ -2991,13 +3055,16 @@ export default function AdminPage() {
                                     {order.payment_method}
                                   </span>
                                 </td>
+                                <td className="py-2.5 text-right font-medium text-red-600 font-mono">
+                                  {Number(order.discount || 0) > 0 ? `-${Number(order.discount).toLocaleString('vi-VN')}đ` : '-'}
+                                </td>
                                 <td className="py-2.5 text-right font-extrabold text-coffee-primary font-mono">{Number(order.total_amount || 0).toLocaleString('vi-VN')}đ</td>
                               </tr>
 
                               {/* Hàng mở rộng chi tiết món ăn */}
                               {isExpanded && (
                                 <tr>
-                                  <td colSpan={5} className="p-0 border-b border-coffee-light bg-[#FAF6F0]/30">
+                                  <td colSpan={6} className="p-0 border-b border-coffee-light bg-[#FAF6F0]/30">
                                     <div className="p-4 m-2 rounded-2xl bg-white border border-coffee-light/60 space-y-3 shadow-xs">
                                       <div className="flex justify-between items-center text-xs border-b border-coffee-light/40 pb-2">
                                         <span className="font-bold text-coffee-dark uppercase tracking-wider text-[10px]">
@@ -3056,7 +3123,7 @@ export default function AdminPage() {
 
                         {filteredPaidOrders.length === 0 && (
                           <tr>
-                            <td colSpan={5} className="py-6 text-center text-coffee-medium/60 italic">
+                            <td colSpan={6} className="py-6 text-center text-coffee-medium/60 italic">
                               Không tìm thấy đơn hàng nào phù hợp với bộ lọc hiện tại.
                             </td>
                           </tr>

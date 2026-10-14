@@ -131,7 +131,7 @@ export default function GlobalPrintListener() {
                 totalAmount: Number(newOrder.tong_tien || 0),
                 discount: 0,
                 notes: '(GỌI THÊM MÓN)',
-                items: newItems.map((i: any) => ({
+                items: currentItems.map((i: any) => ({
                   name: i.products?.name || i.name || i.ten_san_pham || 'Món',
                   quantity: Number(i.so_luong || i.quantity || 1),
                   price: Number(i.unit_price || i.don_gia || i.price || 0),

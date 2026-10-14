@@ -201,7 +201,11 @@ export default function DailyReportPage() {
       }
     });
 
-    const sortedSales = Object.values(salesMap).sort((a, b) => b.quantity - a.quantity);
+    const sortedSales = Object.values(salesMap).sort((a, b) => {
+      const nameCompare = a.baseName.localeCompare(b.baseName, 'vi', { sensitivity: 'base' });
+      if (nameCompare !== 0) return nameCompare;
+      return (a.isTakeaway ? 1 : 0) - (b.isTakeaway ? 1 : 0);
+    });
 
     let lyDen = 0;
     let lyTrang = 0;
