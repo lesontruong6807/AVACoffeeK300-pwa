@@ -520,7 +520,9 @@ export async function printOrderDirect(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               data: Array.from(receiptBytes),
-              printerName: (storeSettings as any).printer_name || null
+              printerName: (storeSettings as any).printer_name || null,
+              orderId: orderData.orderId,
+              fingerprint: fingerprint
             }),
             signal: controller.signal
           });
@@ -528,7 +530,19 @@ export async function printOrderDirect(
           if (resp.ok) {
             console.log(`[Web Wi-Fi Print] Đã in bill thành công qua máy POS ${host}:3333`);
             isPrintedViaBridge = true;
-            return; // ĐÃ IN THÀNH CÔNG QUA MẠNG NỘI BỘ -> KẾT THÚC, TUYỆT ĐỐI KHÔNG BROADCAST TRÁNH IN LẶP!
+            // Phát sóng cho tất cả thiết bị khác biết đơn này đã được in xong (chặn mọi listener in lặp)
+            try {
+              const { broadcastRealtimeEvent } = await import('@/lib/database');
+              broadcastRealtimeEvent('order_update', {
+                action: 'PRINT_COMPLETED',
+                orderId: orderData.orderId,
+                details: {
+                  itemCount: orderData.items?.length || 0,
+                  totalAmount: orderData.totalAmount
+                }
+              });
+            } catch (_) {}
+            return; // ĐÃ IN THÀNH CÔNG QUA MẠNG NỘI BỘ -> KẾT THÚC
           }
         } catch (_) {
           // Tiếp tục thử host tiếp theo

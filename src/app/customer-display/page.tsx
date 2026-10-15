@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Coffee, QrCode, Sparkles, CheckCircle2, DollarSign } from 'lucide-react';
+import { Coffee, QrCode, Sparkles, CheckCircle2, DollarSign, ShieldCheck } from 'lucide-react';
+import { TECHCOMBANK_INFO, getVietQrUrl } from '@/lib/vietqr';
 
 interface DisplayItem {
   name: string;
@@ -130,21 +131,59 @@ export default function CustomerDisplayPage() {
 
       {/* BODY CONTENT */}
       {!hasItems ? (
-        // IDLE SCREENSAVER - TONE TRẮNG KEM LATTE ẤM ÁP
-        <main className="flex-1 flex flex-col items-center justify-center p-8 text-center relative overflow-hidden bg-[#FAF6F0]">
-          <div className="w-full max-w-lg bg-white rounded-3xl p-8 border border-amber-200/80 shadow-xl flex flex-col items-center">
-            <div className="w-24 h-24 rounded-3xl bg-amber-50 border-2 border-amber-200 flex items-center justify-center mb-5 shadow-sm">
-              <Coffee className="w-12 h-12 text-[#4A3525] animate-pulse" />
+        // IDLE SCREENSAVER - TONE TRẮNG KEM LATTE ẤM ÁP + THẺ TECHCOMBANK VIETQR
+        <main className="flex-1 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden bg-[#FAF6F0]">
+          <div className="w-full max-w-3xl grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+            {/* LỜI CHÀO */}
+            <div className="bg-white rounded-3xl p-6 sm:p-8 border border-amber-200/80 shadow-xl flex flex-col items-center text-center">
+              <div className="w-20 h-20 rounded-3xl bg-amber-50 border-2 border-amber-200 flex items-center justify-center mb-4 shadow-sm">
+                <Coffee className="w-10 h-10 text-[#4A3525] animate-pulse" />
+              </div>
+              <h2 className="text-2xl font-black text-[#4A3525] tracking-tight mb-2">
+                AVA COFFEE XIN CHÀO!
+              </h2>
+              <p className="text-xs sm:text-sm text-gray-600 font-medium leading-relaxed mb-4">
+                Chúc quý khách một ngày tràn đầy năng lượng và có trải nghiệm tuyệt vời cùng tách cà phê thơm ngon tại quán.
+              </p>
+              <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#4A3525] text-amber-200 text-[11px] font-bold uppercase tracking-wider shadow-xs">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                Chi nhánh K300 • Tân Bình
+              </div>
             </div>
-            <h2 className="text-2xl sm:text-3xl font-black text-[#4A3525] tracking-tight mb-2">
-              AVA COFFEE XIN CHÀO QUÝ KHÁCH !
-            </h2>
-            <p className="text-sm sm:text-base text-gray-600 max-w-md font-medium leading-relaxed">
-              Chúc quý khách một ngày tràn đầy năng lượng và có trải nghiệm tuyệt vời cùng tách cà phê thơm ngon tại quán.
-            </p>
-            <div className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-[#4A3525] text-amber-200 text-xs font-bold uppercase tracking-wider shadow-sm">
-              <Sparkles className="w-4 h-4 text-amber-400" />
-              Chi nhánh K300 • Tân Bình • TP. Hồ Chí Minh
+
+            {/* MÃ QR TECHCOMBANK TĨNH (KHI MÀN HÌNH CHỜ) */}
+            <div className="bg-white rounded-3xl p-5 border-2 border-red-200 shadow-xl flex flex-col items-center text-center">
+              <div className="w-full flex items-center justify-between border-b border-red-100 pb-2 mb-2">
+                <span className="text-xs font-black text-red-600 tracking-wider">TECHCOMBANK</span>
+                <span className="text-[10px] font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+                  VIETQR • NAPAS 247
+                </span>
+              </div>
+              <div className="p-2 bg-white rounded-2xl border border-gray-200 shadow-xs flex items-center justify-center">
+                <img
+                  src={getVietQrUrl(undefined, 'AVA K300', 'qr_only')}
+                  alt="Mã QR Techcombank AVA Coffee K300"
+                  className="w-44 h-44 sm:w-48 sm:h-48 object-contain"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).src = '/techcombank-qr.png';
+                  }}
+                />
+              </div>
+              <div className="mt-2 space-y-1">
+                <p className="text-[10px] text-gray-500 font-bold uppercase">Chủ tài khoản</p>
+                <h3 className="text-base sm:text-lg font-black text-gray-900 uppercase tracking-wide">
+                  {TECHCOMBANK_INFO.accountName}
+                </h3>
+                <div className="inline-flex items-center gap-1.5 bg-red-50 px-3 py-0.5 rounded-lg border border-red-200">
+                  <span className="text-xs text-gray-600 font-semibold">STK:</span>
+                  <span className="text-sm font-black text-red-600 font-mono tracking-wider">
+                    {TECHCOMBANK_INFO.accountNumberFormatted}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-500 italic pt-1">
+                  Quét bằng App Ngân hàng hoặc MoMo (tự nhập số tiền)
+                </p>
+              </div>
             </div>
           </div>
         </main>
@@ -199,7 +238,7 @@ export default function CustomerDisplayPage() {
             )}
           </div>
 
-          {/* CỘT PHẢI: TỔNG TIỀN & MÃ QR */}
+          {/* CỘT PHẢI: TỔNG TIỀN & MÃ TECHCOMBANK VIETQR ĐỘNG */}
           <div className="col-span-5 flex flex-col gap-4">
             {/* TỔNG TIỀN THANH TOÁN */}
             <div className="bg-gradient-to-br from-[#4A3525] to-[#2C1D11] text-white rounded-2xl border border-[#382513] p-5 shadow-xl">
@@ -218,36 +257,66 @@ export default function CustomerDisplayPage() {
                 ) : null}
               </div>
 
-              <div className="pt-4">
-                <p className="text-xs uppercase font-extrabold text-amber-200/90 tracking-wider">
-                  Cần thanh toán
-                </p>
-                <p className="text-3xl sm:text-4xl font-black text-amber-300 tracking-tight mt-1">
-                  {order.totalAmount.toLocaleString('vi-VN')} <span className="text-lg">đ</span>
-                </p>
+              <div className="pt-4 flex items-baseline justify-between">
+                <div>
+                  <p className="text-xs uppercase font-extrabold text-amber-200/90 tracking-wider">
+                    Cần thanh toán
+                  </p>
+                  <p className="text-3xl sm:text-4xl font-black text-amber-300 tracking-tight mt-1 font-mono">
+                    {order.totalAmount.toLocaleString('vi-VN')} <span className="text-lg">đ</span>
+                  </p>
+                </div>
+                {order.tableName && (
+                  <span className="text-xs font-bold px-3 py-1 bg-amber-400/20 text-amber-200 rounded-lg border border-amber-300/30">
+                    {order.tableName}
+                  </span>
+                )}
               </div>
             </div>
 
-            {/* MÃ QR QUÉT NHANH MOMO LOA TĨNH */}
-            <div className="flex-1 bg-white rounded-2xl border-2 border-amber-200 p-5 flex flex-col items-center justify-center shadow-md relative">
-              <div className="flex flex-col items-center text-center">
-                <p className="text-xs font-black text-[#4A3525] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <QrCode className="w-4 h-4 text-amber-600" />
-                  Quét mã thanh toán (MoMo)
-                </p>
-                <div className="p-2 bg-white rounded-2xl border border-gray-200 shadow-sm">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src="/momo-qr.png"
-                    alt="Mã QR Loa MoMo AVA Coffee K300"
-                    className="w-48 h-48 sm:w-56 sm:h-56 object-contain rounded-xl"
-                  />
+            {/* MÃ QR TECHCOMBANK VIETQR ĐỘNG ĐÚNG SỐ TIỀN */}
+            <div className="flex-1 bg-white rounded-2xl border-2 border-red-200 p-4 sm:p-5 flex flex-col items-center justify-between shadow-md relative overflow-hidden">
+              <div className="w-full flex items-center justify-between border-b border-red-100 pb-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-pulse"></span>
+                  <span className="text-xs font-black text-red-700 tracking-wider">TECHCOMBANK</span>
                 </div>
-                <p className="text-xs text-gray-700 font-bold mt-2.5">
-                  Quét bằng MoMo hoặc bất kỳ Ngân hàng nào
-                </p>
-                <p className="text-[11px] text-gray-500 font-medium">
-                  Loa MoMo sẽ tự động đọc thông báo khi nhận tiền
+                <span className="text-[10px] font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+                  VIETQR • NAPAS 247
+                </span>
+              </div>
+
+              {/* KHUNG QR TO RÕ RÀNG VỚI ĐÚNG SỐ TIỀN */}
+              <div className="my-1.5 p-2 bg-white rounded-2xl border-2 border-red-200 shadow-sm relative flex items-center justify-center">
+                <img
+                  src={getVietQrUrl(
+                    order.totalAmount, 
+                    (order.tableName || 'AVA K300').replace(/[^a-zA-Z0-9 ]/g, ''),
+                    'qr_only'
+                  )}
+                  alt="Mã QR VietQR Techcombank AVA Coffee K300"
+                  className="w-52 h-52 sm:w-56 sm:h-56 object-contain"
+                  onError={(e) => {
+                    // Fallback sang hình QR tĩnh offline
+                    (e.target as HTMLImageElement).src = '/techcombank-qr.png';
+                  }}
+                />
+              </div>
+
+              {/* TÊN CHỦ TÀI KHOẢN TO TO RÕ RÀNG */}
+              <div className="w-full text-center space-y-1">
+                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Chủ tài khoản</p>
+                <h3 className="text-lg sm:text-xl font-black text-gray-900 uppercase tracking-wide">
+                  {TECHCOMBANK_INFO.accountName}
+                </h3>
+                <div className="inline-flex items-center gap-2 bg-red-50 px-3.5 py-1 rounded-xl border border-red-200">
+                  <span className="text-xs text-gray-600 font-semibold">STK:</span>
+                  <span className="text-base font-black text-red-600 font-mono tracking-wider">
+                    {TECHCOMBANK_INFO.accountNumberFormatted}
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-600 font-medium pt-1">
+                  Quét bằng App Ngân hàng hoặc MoMo — Số tiền: <strong className="text-red-600 font-mono font-bold text-sm">{order.totalAmount.toLocaleString('vi-VN')} đ</strong>
                 </p>
               </div>
             </div>

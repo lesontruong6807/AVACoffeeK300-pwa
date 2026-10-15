@@ -22,12 +22,39 @@ export default function GlobalPrintListener() {
     const isDesktop = typeof window !== 'undefined' && (!!(window as any).__TAURI__ || !!(window as any).__TAURI_INTERNALS__);
     console.log(`[GlobalPrintListener] Khởi động bộ lắng nghe in toàn cục (Môi trường Desktop: ${isDesktop})`);
 
+    // 0. LẮNG NGHE SỰ KIỆN IN TỪ TAURI NATIVE HTTP BRIDGE (Nội bộ máy POS)
+    let unlistenTauriPrint: (() => void) | null = null;
+    if (isDesktop) {
+      import('@tauri-apps/api/event').then(({ listen }) => {
+        listen('print-completed', (event: any) => {
+          if (event.payload?.orderId) {
+            console.log(`[GlobalPrintListener] Tauri Native Bridge đã in đơn ${event.payload.orderId}. Đánh dấu hoàn tất.`);
+            markOrderAsPrinted(event.payload.orderId);
+          }
+        }).then(unlisten => {
+          unlistenTauriPrint = unlisten;
+        }).catch(() => {});
+      }).catch(() => {});
+    }
+
     // ─────────────────────────────────────────────────────────────
     // 1. LẮNG NGHE LỆNH IN SIÊU TỐC QUA SUPABASE REALTIME BROADCAST (~20ms)
     // ─────────────────────────────────────────────────────────────
     const unsubRealtime = onRealtimeEvent('order_update', async (rawPayload: any) => {
       const payload = rawPayload?.payload || rawPayload;
-      if (!payload || payload.action !== 'PRINT_RECEIPT' || !payload.orderData) return;
+      if (!payload) return;
+
+      // Nếu là thông báo đã in xong từ thiết bị khác (qua Wi-Fi bridge) -> Cập nhật sổ lưu vết ngay
+      if (payload.action === 'PRINT_COMPLETED' && payload.orderId) {
+        console.log(`[GlobalPrintListener] Nhận thông báo đơn ${payload.orderId} đã được in xong.`);
+        markOrderAsPrinted(payload.orderId, payload.details || {
+          itemCount: payload.itemCount,
+          totalAmount: payload.totalAmount
+        });
+        return;
+      }
+
+      if (payload.action !== 'PRINT_RECEIPT' || !payload.orderData) return;
 
       const orderData = payload.orderData;
       const orderId = orderData.orderId;
@@ -43,6 +70,13 @@ export default function GlobalPrintListener() {
 
       console.log('[GlobalPrintListener] Nhận lệnh in từ Web app điện thoại:', orderData);
       try {
+        if (orderId) {
+          markOrderAsPrinted(orderId, {
+            itemCount: orderData.items?.length,
+            totalAmount: orderData.totalAmount,
+            isPaid: orderData.notes?.includes('ĐÃ THANH TOÁN')
+          });
+        }
         await printOrderDirect(orderData, undefined, undefined, { isManualUserReprint: isManual });
         toast.success(`🖨️ Đã in hoá đơn (${orderData.tableName || 'Đơn hàng'}) từ điện thoại!`);
       } catch (err: any) {
@@ -72,18 +106,23 @@ export default function GlobalPrintListener() {
       if (eventType === 'INSERT' && isRecent) {
         // ĐÃ ĐƯỢC IN (tại POS máy bàn, qua HTTP Bridge hoặc qua Realtime Broadcast) -> Bỏ qua ngay!
         if (orderId && isOrderAlreadyPrinted(orderId)) {
-          console.log(`[GlobalPrintListener] Postgres INSERT: Đơn ${orderId} đã được in. Bỏ qua.`);
           return;
         }
 
-        // Chờ 3000ms để HTTP bridge / Realtime hoàn tất trước, tránh xung đột in đồng thời
-        await new Promise(r => setTimeout(r, 3000));
+        // Chờ ngắn 300ms để đảm bảo lệnh in trực tiếp hoặc bridge ghi nhận xong
+        await new Promise(r => setTimeout(r, 300));
         if (orderId && isOrderAlreadyPrinted(orderId)) return;
 
         try {
           const items = await db.getOrderItems(orderId);
           if (items && items.length > 0) {
             if (orderId && isOrderAlreadyPrinted(orderId, items.length)) return;
+
+            markOrderAsPrinted(orderId, {
+              itemCount: items.length,
+              totalAmount: Number(newOrder.tong_tien || 0),
+              isPaid: newOrder.trang_thai_thanh_toan === 'Đã thanh toán'
+            });
 
             const currentTables = await db.getTables();
             const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
@@ -119,10 +158,17 @@ export default function GlobalPrintListener() {
           try {
             const currentItems = await db.getOrderItems(orderId);
             if (currentItems && currentItems.length > tracked.itemCount) {
-              // Bàn này có thêm món mới!
-              const newItems = currentItems.slice(tracked.itemCount);
+              if (isOrderAlreadyPrinted(orderId, currentItems.length)) return;
+
               const currentTables = await db.getTables();
               const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
+
+              markOrderAsPrinted(orderId, {
+                itemCount: currentItems.length,
+                itemIds: currentItems.map((i: any) => i.id || i.product_id),
+                totalAmount: Number(newOrder.tong_tien || 0),
+                isPaid: false
+              });
 
               await printOrderDirect({
                 orderId: newOrder.id,
@@ -138,13 +184,6 @@ export default function GlobalPrintListener() {
                   subtotal: Number(i.thanh_tien || i.subtotal || 0),
                   notes: i.ghi_chu || ''
                 }))
-              }, undefined, undefined, { isManualUserReprint: true });
-
-              markOrderAsPrinted(orderId, {
-                itemCount: currentItems.length,
-                itemIds: currentItems.map((i: any) => i.id || i.product_id),
-                totalAmount: Number(newOrder.tong_tien || 0),
-                isPaid: false
               });
 
               toast.success(`🖨️ Đã in món gọi thêm (${matchedTable?.table_name || 'Bàn'})!`);
@@ -177,6 +216,11 @@ export default function GlobalPrintListener() {
               const items = await db.getOrderItems(order.id);
               if (items && items.length > 0) {
                 if (isOrderAlreadyPrinted(order.id, items.length)) continue;
+                markOrderAsPrinted(order.id, {
+                  itemCount: items.length,
+                  totalAmount: Number(order.total_amount || 0),
+                  isPaid: false
+                });
                 const currentTables = await db.getTables();
                 const matchedTable = currentTables.find((t: any) => t.id === order.table_id);
                 await printOrderDirect({
@@ -204,13 +248,14 @@ export default function GlobalPrintListener() {
       }
     };
 
-    // Bộ quét định kỳ 12s (BỎ lắng nghe window focus/visibilitychange để không kích hoạt in bất ngờ khi click cửa sổ)
+    // Bộ quét định kỳ 12s
     const pollerInterval = setInterval(checkRecentUnprintedOrders, 12000);
 
     return () => {
       clearInterval(pollerInterval);
       unsubRealtime();
       unsubPostgres();
+      if (unlistenTauriPrint) unlistenTauriPrint();
       isListeningRef.current = false;
     };
   }, []);

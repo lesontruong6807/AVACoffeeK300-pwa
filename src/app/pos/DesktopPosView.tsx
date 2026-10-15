@@ -12,6 +12,7 @@ import {
 } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { printOrderDirect, tryAcquirePrintLock, markOrderAsPrinted } from '@/lib/printerService';
+import { getVietQrUrl, TECHCOMBANK_INFO } from '@/lib/vietqr';
 import { 
   syncCustomerDisplay, 
   openCustomerDisplayWindow, 
@@ -504,6 +505,11 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         if (newOrder?.id) {
           await db.payOrder(newOrder.id, splitPaymentMethod);
           try {
+            markOrderAsPrinted(newOrder.id, {
+              itemCount: splitCart.length,
+              totalAmount: splitTotal,
+              isPaid: true
+            });
             await printOrderDirect({
               tableName: `${selectedTable?.table_name || 'Khách'} (Tách bill)`,
               staffName: currentUser?.full_name || 'Admin',
@@ -512,11 +518,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               totalAmount: splitTotal,
               discount: 0,
               notes: '(ĐÃ THANH TOÁN)'
-            }, undefined, undefined, { isManualUserReprint: true });
-            markOrderAsPrinted(newOrder.id, {
-              itemCount: splitCart.length,
-              totalAmount: splitTotal,
-              isPaid: true
             });
             await kickCashDrawer();
           } catch (_) {}
@@ -919,14 +920,13 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     return Math.max(0, totalCartAmount - discountAmount);
   }, [totalCartAmount, discountAmount]);
 
-  // Mã QR tĩnh Loa MoMo chuẩn của quán
-  const momoQrUrl = '/momo-qr.png';
+  // Mã QR tĩnh Techcombank dự phòng của quán
+  const defaultBankQrUrl = '/techcombank-qr-card.png';
 
   // Đồng bộ giỏ hàng sang Màn hình phụ 11.6 inch cho khách
   useEffect(() => {
     const syncToSecondaryDisplay = async () => {
       try {
-        const activeQr = '/momo-qr.png';
         const hasCart = cart.length > 0;
         const hasExisting = !hasCart && existingOrderItems.length > 0;
 
@@ -946,6 +946,11 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               }));
 
           const totalToDisplay = hasCart ? finalTotalAmount : (existingOrder?.total_amount || 0);
+          const activeQr = getVietQrUrl(
+            totalToDisplay,
+            (selectedTable?.table_name || 'AVA K300').replace(/[^a-zA-Z0-9 ]/g, ''),
+            'compact2'
+          );
 
           await syncCustomerDisplay({
             tableName: selectedTable?.table_name || 'Bàn chưa chọn',
@@ -1221,6 +1226,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
         if (hasNewItems) {
           try {
+            markOrderAsPrinted(existingOrder.id, {
+              itemCount: cart.length,
+              totalAmount: finalTotalAmount,
+              isPaid: false
+            });
+
             await printOrderDirect({
               tableName: selectedTable?.table_name || 'Khách mang về',
               staffName: currentUser?.full_name || 'Admin',
@@ -1235,12 +1246,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               totalAmount: finalTotalAmount,
               discount: discountAmount,
               notes: orderNotes.trim() ? `${orderNotes.trim()} (GỌI THÊM MÓN)` : '(GỌI THÊM MÓN)'
-            }, undefined, undefined, { isManualUserReprint: true });
-
-            markOrderAsPrinted(existingOrder.id, {
-              itemCount: cart.length,
-              totalAmount: finalTotalAmount,
-              isPaid: false
             });
           } catch (printErr) {
             console.warn('Lỗi in khi gọi thêm món:', printErr);
@@ -1267,6 +1272,13 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         // In hóa đơn / phiếu order ngay lập tức khi Lưu đơn mới (In đúng 1 lần, siêu tốc 50ms)
         try {
           const printOrderId = currentOrderId || `OD-${Date.now()}`;
+          // ĐÁNH DẤU ĐÃ IN TRƯỚC TIÊN ĐỂ CHẶN ĐỨNG LISTENER POSTGRES / REALTIME IN LẶP LẦN 2
+          markOrderAsPrinted(printOrderId, {
+            itemCount: cart.length,
+            totalAmount: finalTotalAmount,
+            isPaid: false
+          });
+
           await printOrderDirect({
             tableName: selectedTable?.table_name || 'Khách mang về',
             staffName: currentUser?.full_name || 'Admin',
@@ -1281,13 +1293,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
-          }, undefined, undefined, { isManualUserReprint: true });
-
-          // ĐÁNH DẤU ĐÃ IN ĐỂ CHẶN ĐỨNG LISTENER POSTGRES / REALTIME IN LẶP LẦN 2
-          markOrderAsPrinted(printOrderId, {
-            itemCount: cart.length,
-            totalAmount: finalTotalAmount,
-            isPaid: false
           });
         } catch (printErr) {
           console.warn('Lỗi in khi lưu đơn:', printErr);
@@ -1377,6 +1382,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             notes: i.notes
           }));
 
+          // ĐÁNH DẤU ĐÃ IN TRƯỚC TIÊN ĐỂ CHẶN ĐỨNG LISTENER POSTGRES / REALTIME IN LẶP LẦN 2
+          markOrderAsPrinted(orderIdToPay, {
+            itemCount: printItems.length,
+            itemIds: printItems.map((i: any) => i.product_id),
+            totalAmount: finalTotalAmount,
+            isPaid: true
+          });
+
           await printOrderDirect({
             tableName: selectedTable?.table_name || 'Khách mang về',
             staffName: currentUser?.full_name || 'Admin',
@@ -1385,14 +1398,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-          }, undefined, undefined, { isManualUserReprint: true });
-
-          // ĐÁNH DẤU ĐÃ IN ĐỂ CHẶN ĐỨNG LISTENER POSTGRES / REALTIME IN LẶP LẦN 2
-          markOrderAsPrinted(orderIdToPay, {
-            itemCount: printItems.length,
-            itemIds: printItems.map((i: any) => i.product_id),
-            totalAmount: finalTotalAmount,
-            isPaid: true
           });
         } catch (printErr) {
           console.warn('In bill thanh toán ngay:', printErr);
@@ -1405,6 +1410,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         if (hasNewItems) {
           // Nếu là bàn đã lưu trước đó nhưng có gọi thêm món mới cùng lúc thanh toán:
           try {
+            markOrderAsPrinted(orderIdToPay, {
+              itemCount: cart.length,
+              totalAmount: finalTotalAmount,
+              isPaid: true
+            });
+
             await printOrderDirect({
               tableName: selectedTable?.table_name || 'Khách mang về',
               staffName: currentUser?.full_name || 'Admin',
@@ -1419,11 +1430,6 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               totalAmount: finalTotalAmount,
               discount: discountAmount,
               notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-            }, undefined, undefined, { isManualUserReprint: true });
-            markOrderAsPrinted(orderIdToPay, {
-              itemCount: cart.length,
-              totalAmount: finalTotalAmount,
-              isPaid: true
             });
           } catch (printErr) {
             console.warn('Lỗi in món gọi thêm khi thanh toán:', printErr);
@@ -2727,7 +2733,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                     }`}
                   >
                     <QrCode className="w-3.5 h-3.5" />
-                    <span>MoMo</span>
+                    <span>VietQR</span>
                   </button>
                 </div>
               </div>
@@ -2840,33 +2846,53 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                   }`}
                 >
                   <QrCode className="w-5 h-5" />
-                  <span>Chuyển khoản (Loa MoMo)</span>
+                  <span>Chuyển khoản VietQR</span>
                 </button>
               </div>
 
-              {/* NẾU LÀ CHUYỂN KHOẢN -> DÙNG MÃ QR LOA MOMO CỦA QUÁN */}
+              {/* NẾU LÀ CHUYỂN KHOẢN -> DÙNG MÃ TECHCOMBANK VIETQR CỦA QUÁN */}
               {paymentMethod === 'Chuyển khoản' && (
-                <div className="p-4 bg-pink-50/60 border border-pink-200 rounded-2xl space-y-3">
-                  <div className="flex items-center space-x-1.5">
-                    <Volume2 className="w-4 h-4 text-pink-700" />
-                    <span className="text-xs font-black text-pink-950 uppercase">
-                      Quét mã Loa MoMo (Mọi Ngân Hàng & MoMo)
+                <div className="p-4 bg-red-50/70 border-2 border-red-200 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between border-b border-red-200/80 pb-2">
+                    <div className="flex items-center space-x-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-pulse"></span>
+                      <span className="text-xs font-black text-red-700 tracking-wider">
+                        TECHCOMBANK • VIETQR
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-extrabold text-blue-700 bg-white px-2 py-0.5 rounded-md border border-blue-200">
+                      NAPAS 247
                     </span>
                   </div>
 
-                  {/* Hiển thị mã QR Loa MoMo thực tế */}
-                  <div className="flex flex-col items-center justify-center p-2.5 bg-white rounded-xl border border-pink-100 shadow-2xs">
+                  {/* Hiển thị mã QR Techcombank VietQR tự sinh theo số tiền */}
+                  <div className="flex flex-col items-center justify-center p-3 bg-white rounded-xl border border-red-100 shadow-2xs space-y-2">
                     <img
-                      src="/momo-qr.png"
-                      alt="Mã QR Loa MoMo AVA Coffee K300"
-                      className="w-40 h-40 object-contain rounded-lg"
+                      src={getVietQrUrl(
+                        finalTotalAmount,
+                        (selectedTable?.table_name || 'AVA K300').replace(/[^a-zA-Z0-9 ]/g, ''),
+                        'compact2'
+                      )}
+                      alt="Mã QR VietQR Techcombank AVA Coffee K300"
+                      className="w-44 h-44 object-contain rounded-lg"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = '/techcombank-qr-card.png';
+                      }}
                     />
-                    <p className="text-[11px] text-pink-900 font-extrabold mt-1">
-                      Mã AIO-MOMO: 3763661
-                    </p>
-                    <p className="text-[10px] text-gray-600 font-medium">
-                      Khách chuyển từ MoMo hoặc bất kỳ Ngân hàng nào, Loa sẽ đọc thông báo
-                    </p>
+                    <div className="text-center space-y-0.5">
+                      <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Chủ tài khoản</p>
+                      <h4 className="text-sm font-black text-[#4A3525] uppercase tracking-wide">
+                        {TECHCOMBANK_INFO.accountName}
+                      </h4>
+                      <p className="text-xs font-black text-red-600 font-mono tracking-wider">
+                        STK: {TECHCOMBANK_INFO.accountNumberFormatted}
+                      </p>
+                    </div>
+                    <div className="w-full bg-red-50 p-2 rounded-lg text-center border border-red-100">
+                      <p className="text-[11px] text-gray-600 font-medium">
+                        Số tiền cần chuyển: <strong className="text-sm font-black text-red-600 font-mono">{finalTotalAmount.toLocaleString('vi-VN')} đ</strong>
+                      </p>
+                    </div>
                   </div>
                   <p className="text-[10px] text-gray-500 text-center italic">
                     Mã QR đã tự động đồng bộ sang màn hình phụ 11.6 inch cho khách quét

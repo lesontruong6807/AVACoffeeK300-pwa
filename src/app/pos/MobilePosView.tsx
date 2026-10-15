@@ -10,6 +10,7 @@ import {
 } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { printOrderDirect } from '@/lib/printerService';
+import { getVietQrUrl, TECHCOMBANK_INFO } from '@/lib/vietqr';
 import { 
   Coffee, 
   Users, 
@@ -1385,28 +1386,51 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                     <button
                       onClick={() => setShowTransferQr(true)}
                       disabled={submittingPayment}
-                      className="p-4 bg-pink-50 border border-pink-300 hover:bg-pink-100 rounded-xl flex flex-col items-center justify-center space-y-1.5 transition font-bold text-pink-900 text-xs disabled:opacity-50 cursor-pointer active:scale-95"
+                      className="p-4 bg-red-50 border border-red-300 hover:bg-red-100 rounded-xl flex flex-col items-center justify-center space-y-1.5 transition font-bold text-red-900 text-xs disabled:opacity-50 cursor-pointer active:scale-95"
                     >
-                      <ArrowRightLeft className="w-6 h-6 text-pink-600" />
-                      <span>Chuyển khoản (MoMo)</span>
+                      <ArrowRightLeft className="w-6 h-6 text-red-600" />
+                      <span>Chuyển khoản (Techcombank)</span>
                     </button>
                   </div>
                 </>
               ) : (
-                <div className="space-y-3 flex flex-col items-center">
-                  <div className="p-2 bg-white rounded-2xl border border-pink-200 shadow-xs flex flex-col items-center text-center">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                <div className="space-y-3 flex flex-col items-center w-full">
+                  <div className="w-full p-4 bg-white rounded-2xl border-2 border-red-200 shadow-md flex flex-col items-center text-center space-y-2">
+                    <div className="w-full flex items-center justify-between border-b border-red-100 pb-2">
+                      <span className="text-xs font-black text-red-700 tracking-wider">TECHCOMBANK</span>
+                      <span className="text-[10px] font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+                        VIETQR • NAPAS 247
+                      </span>
+                    </div>
+
                     <img
-                      src="/momo-qr.png"
-                      alt="QR Loa MoMo"
+                      src={getVietQrUrl(
+                        displayTotalAmount,
+                        (selectedTable?.table_name || 'AVA K300').replace(/[^a-zA-Z0-9 ]/g, ''),
+                        'compact2'
+                      )}
+                      alt="QR Techcombank VietQR"
                       className="w-48 h-48 object-contain rounded-xl"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = '/techcombank-qr-card.png';
+                      }}
                     />
-                    <p className="text-[11px] font-extrabold text-pink-900 mt-1">
-                      Mã Loa: AIO-MOMO: 3763661
-                    </p>
-                    <p className="text-[9px] text-gray-500">
-                      Khách quét từ MoMo hoặc mọi Ngân hàng, Loa sẽ báo
-                    </p>
+
+                    <div className="text-center space-y-0.5">
+                      <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Chủ tài khoản</p>
+                      <h4 className="text-sm font-black text-[#4A3525] uppercase tracking-wide">
+                        {TECHCOMBANK_INFO.accountName}
+                      </h4>
+                      <p className="text-xs font-black text-red-600 font-mono tracking-wider">
+                        STK: {TECHCOMBANK_INFO.accountNumberFormatted}
+                      </p>
+                    </div>
+
+                    <div className="w-full bg-red-50 p-2 rounded-xl text-center border border-red-100">
+                      <p className="text-xs text-gray-600 font-medium">
+                        Số tiền: <strong className="text-sm font-black text-red-600 font-mono">{displayTotalAmount.toLocaleString('vi-VN')} đ</strong>
+                      </p>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2 w-full">

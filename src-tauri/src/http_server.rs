@@ -3,10 +3,20 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
+static LAST_HTTP_HASH: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
 
-pub fn start_http_print_server(port: u16) {
+fn simple_hash(bytes: &[u8]) -> u64 {
+    let mut h = 14695981039346656037u64;
+    for &b in bytes {
+        h = (h ^ (b as u64)).wrapping_mul(1099511628211u64);
+    }
+    h
+}
+
+pub fn start_http_print_server(port: u16, app: Option<tauri::AppHandle>) {
     let addr = format!("0.0.0.0:{}", port);
     let listener = match TcpListener::bind(&addr) {
         Ok(l) => {
@@ -22,8 +32,9 @@ pub fn start_http_print_server(port: u16) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
+                let app_clone = app.clone();
                 std::thread::spawn(move || {
-                    handle_connection(stream);
+                    handle_connection(stream, app_clone.as_ref());
                 });
             }
             Err(e) => {
@@ -33,7 +44,7 @@ pub fn start_http_print_server(port: u16) {
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
+fn handle_connection(mut stream: TcpStream, app: Option<&tauri::AppHandle>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
@@ -128,7 +139,7 @@ fn handle_connection(mut stream: TcpStream) {
             &[]
         };
 
-        match handle_print_payload(body_bytes) {
+        match handle_print_payload(body_bytes, app) {
             Ok(msg) => {
                 let body = serde_json::json!({
                     "success": true,
@@ -172,7 +183,7 @@ fn handle_connection(mut stream: TcpStream) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn handle_print_payload(body: &[u8]) -> Result<String, String> {
+fn handle_print_payload(body: &[u8], app: Option<&tauri::AppHandle>) -> Result<String, String> {
     if body.is_empty() {
         return Err("Payload rỗng".to_string());
     }
@@ -184,6 +195,10 @@ fn handle_print_payload(body: &[u8]) -> Result<String, String> {
         .and_then(|p| p.as_str())
         .map(|s| s.to_string());
 
+    let order_id = val.get("orderId")
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string());
+
     // Trường hợp 1: Dữ liệu là mảng byte ESC/POS trực tiếp ("data": [27, 64, ...])
     if let Some(arr) = val.get("data").and_then(|d| d.as_array()) {
         let raw_bytes: Vec<u8> = arr.iter().filter_map(|x| x.as_u64().map(|n| n as u8)).collect();
@@ -191,8 +206,30 @@ fn handle_print_payload(body: &[u8]) -> Result<String, String> {
             return Err("Dữ liệu mã in rỗng".to_string());
         }
 
+        // Chống in lặp tuyệt đối ở tầng Native Rust (cửa sổ 4 giây cho cùng nội dung byte)
+        if raw_bytes.len() > 30 {
+            let hash = simple_hash(&raw_bytes);
+            let now = Instant::now();
+            {
+                let mut last_lock = LAST_HTTP_HASH.lock().unwrap();
+                if let Some((prev_hash, prev_time)) = *last_lock {
+                    if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(4) {
+                        println!("[HTTP Print Bridge] Bỏ qua lệnh in trùng lặp tuyệt đối (< 4s)");
+                        return Ok("Đã in hóa đơn thành công (bỏ qua in lặp)".to_string());
+                    }
+                }
+                *last_lock = Some((hash, now));
+            }
+        }
 
         crate::printer::print_escpos_raw(&raw_bytes, printer_name)?;
+
+        // Thông báo cho Webview Tauri biết lệnh in này đã hoàn tất
+        if let (Some(app_handle), Some(oid)) = (app, order_id) {
+            use tauri::Emitter;
+            let _ = app_handle.emit("print-completed", serde_json::json!({ "orderId": oid }));
+        }
+
         return Ok("Đã in hóa đơn thành công".to_string());
     }
 

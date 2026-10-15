@@ -3240,7 +3240,7 @@ export const db = {
           orderId,
           staffId,
           status: 'Chờ duyệt',
-          reason: `[Hoàn kho đơn hủy #${orderId}] ${cleanReason}`
+          reason: `[Hoàn kho do hủy đơn #${orderId}] ${cleanReason}`
         });
       }
 
@@ -3285,7 +3285,7 @@ export const db = {
           await supabase
             .from('lichsukho')
             .update({ trang_thai: 'Đã duyệt' })
-            .ilike('ghi_chu', `%hủy đơn #${orderId}%`)
+            .ilike('ghi_chu', `%${orderId}%`)
             .eq('trang_thai', 'Chờ duyệt');
 
         } else {
@@ -3299,6 +3299,13 @@ export const db = {
               ghi_chu: updatedNote
             })
             .eq('id', orderId);
+
+          // Cập nhật các log hoàn kho chờ duyệt sang 'Từ chối'
+          await supabase
+            .from('lichsukho')
+            .update({ trang_thai: 'Từ chối' })
+            .ilike('ghi_chu', `%${orderId}%`)
+            .eq('trang_thai', 'Chờ duyệt');
 
           // 2. Thu hồi kho: Trừ ngược lại số lượng nguyên liệu đã hoàn
           const { data: dbItems } = await supabase
@@ -3361,7 +3368,7 @@ export const db = {
 
           const logs = mockDb.getInventoryLogs();
           logs.forEach(l => {
-            if (l.note?.includes(`hủy đơn #${orderId}`) && l.status === 'Chờ duyệt') {
+            if (l.note?.includes(orderId) && l.status === 'Chờ duyệt') {
               l.status = 'Đã duyệt';
             }
           });
@@ -3371,10 +3378,16 @@ export const db = {
           targetOrder.payment_status = 'Đã thanh toán';
           targetOrder.notes = [targetOrder.notes, `[Admin từ chối hủy - Khôi phục đơn]`].filter(Boolean).join(' | ');
 
+          const logs = mockDb.getInventoryLogs();
+          logs.forEach(l => {
+            if (l.note?.includes(orderId) && l.status === 'Chờ duyệt') {
+              l.status = 'Từ chối';
+            }
+          });
+
           const mockItems = mockDb.getOrderItems().filter(item => item.order_id === orderId);
           const recipes = mockDb.getRecipes();
           const ingredients = mockDb.getIngredients();
-          const logs = mockDb.getInventoryLogs();
 
           mockItems.forEach(item => {
             const itemRecipes = recipes.filter(r => r.product_id === item.product_id);

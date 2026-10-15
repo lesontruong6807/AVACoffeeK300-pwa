@@ -31,8 +31,9 @@ pub fn run() {
         .setup(|app| {
             // 1. Tự động khởi chạy HTTP Print Bridge Server trên cổng 3333
             // Cho phép các thiết bị di động của nhân viên cùng Wi-Fi in trực tiếp tới máy POS
-            std::thread::spawn(|| {
-                http_server::start_http_print_server(3333);
+            let app_handle_http = app.handle().clone();
+            std::thread::spawn(move || {
+                http_server::start_http_print_server(3333, Some(app_handle_http));
             });
 
             // 2. Tự động mở và định vị màn hình phụ trên main UI thread

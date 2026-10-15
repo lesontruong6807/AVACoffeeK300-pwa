@@ -541,7 +541,11 @@ export default function AdminPage() {
         if (pendingIds.length === 0) { toast.info('Không có đơn nghỉ phép nào chờ duyệt.'); return; }
         await db.approveAllLeaveRequests(pendingIds, 'Đã duyệt');
       } else if (approvalSubTab === 'inventory') {
-        const pendingIds = inventoryLogs.filter(l => l.status === 'Chờ duyệt' && !l.note?.includes('hủy đơn')).map(l => l.id);
+        const isOrderCancelInventoryLog = (l: any) => {
+          const note = (l.note || l.ghi_chu || '').toLowerCase();
+          return note.includes('hủy đơn') || note.includes('đơn hủy') || note.includes('hoàn kho đơn');
+        };
+        const pendingIds = inventoryLogs.filter(l => l.status === 'Chờ duyệt' && !isOrderCancelInventoryLog(l)).map(l => l.id);
         if (pendingIds.length === 0) { toast.info('Không có đơn kho nào chờ duyệt.'); return; }
         await db.approveAllInventoryLogs(pendingIds, 'Đã duyệt');
       } else if (approvalSubTab === 'order_cancel') {
@@ -1713,9 +1717,14 @@ export default function AdminPage() {
     return notes.includes('[Chờ duyệt hủy]') && !notes.includes('[Admin đã duyệt hủy]') && !notes.includes('[Admin từ chối hủy]');
   };
 
+  const isOrderCancelInventoryLog = (l: any) => {
+    const note = (l.note || l.ghi_chu || '').toLowerCase();
+    return note.includes('hủy đơn') || note.includes('đơn hủy') || note.includes('hoàn kho đơn');
+  };
+
   const pendingTimeLogs = timeLogs.filter(l => l.status === 'Chờ duyệt');
   const pendingLeaveRequests = leaveRequests.filter(r => r.status === 'Chờ duyệt');
-  const pendingInventoryLogs = inventoryLogs.filter(l => l.status === 'Chờ duyệt' && !l.note?.includes('hủy đơn'));
+  const pendingInventoryLogs = inventoryLogs.filter(l => l.status === 'Chờ duyệt' && !isOrderCancelInventoryLog(l));
   const pendingCancelOrders = orders.filter(isOrderPendingCancel);
   const totalPendingCount = pendingTimeLogs.length + pendingLeaveRequests.length + pendingInventoryLogs.length + pendingCancelOrders.length;
 
@@ -2153,7 +2162,7 @@ export default function AdminPage() {
           {/* DUYỆT NHẬP & KIỂM KHO (Loại trừ các dòng hoàn kho của đơn hủy) */}
           {approvalSubTab === 'inventory' && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {inventoryLogs.filter(l => l.status === 'Chờ duyệt' && !l.note?.includes('hủy đơn')).map((log) => (
+              {inventoryLogs.filter(l => l.status === 'Chờ duyệt' && !isOrderCancelInventoryLog(l)).map((log) => (
                 <div key={log.id} className="bg-white rounded-3xl p-6 border border-coffee-light shadow-sm flex flex-col justify-between space-y-4">
                   <div className="flex items-center justify-between border-b border-coffee-light pb-3">
                     <div className="flex items-center space-x-2">
@@ -2212,7 +2221,7 @@ export default function AdminPage() {
                 </div>
               ))}
 
-              {inventoryLogs.filter(l => l.status === 'Chờ duyệt' && !l.note?.includes('hủy đơn')).length === 0 && (
+              {inventoryLogs.filter(l => l.status === 'Chờ duyệt' && !isOrderCancelInventoryLog(l)).length === 0 && (
                 <div className="col-span-full bg-white rounded-3xl p-12 text-center border border-coffee-light text-coffee-medium text-xs space-y-2">
                   <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto" />
                   <p className="font-bold">Tuyệt vời! Không còn đơn kho hoặc kiểm kho nào chờ duyệt</p>
