@@ -92,7 +92,7 @@ export default function GlobalPrintListener() {
             isPaid: orderData.notes?.includes('ĐÃ THANH TOÁN')
           });
         }
-        await printOrderDirect(orderData, undefined, undefined, { isManualUserReprint: isManual });
+        await printOrderDirect(orderData, undefined, undefined, { isManualUserReprint: true });
         toast.success(`🖨️ Đã in hoá đơn (${orderData.tableName || 'Đơn hàng'}) từ điện thoại!`);
       } catch (err: any) {
         console.error('[GlobalPrintListener] Lỗi in tự động Realtime:', err);
@@ -158,7 +158,7 @@ export default function GlobalPrintListener() {
                 subtotal: Number(i.thanh_tien || i.subtotal || 0),
                 notes: i.ghi_chu || ''
               }))
-            });
+            }, undefined, undefined, { isManualUserReprint: true });
 
             toast.success(`🖨️ Đã in phiếu order (${matchedTable?.table_name || 'Khách mang về'}) từ điện thoại!`);
           }
@@ -200,7 +200,7 @@ export default function GlobalPrintListener() {
                   subtotal: Number(i.thanh_tien || i.subtotal || 0),
                   notes: i.ghi_chu || ''
                 }))
-              });
+              }, undefined, undefined, { isManualUserReprint: true });
 
               toast.success(`🖨️ Đã in món gọi thêm (${matchedTable?.table_name || 'Bàn'})!`);
             }

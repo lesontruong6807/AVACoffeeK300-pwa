@@ -1242,7 +1242,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               totalAmount: finalTotalAmount,
               discount: discountAmount,
               notes: orderNotes.trim() ? `${orderNotes.trim()} (GỌI THÊM MÓN)` : '(GỌI THÊM MÓN)'
-            });
+            }, undefined, undefined, { isManualUserReprint: true });
 
             markOrderAsPrinted(existingOrder.id, {
               itemCount: cart.length,
@@ -1282,7 +1282,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
-          });
+          }, undefined, undefined, { isManualUserReprint: true });
         } catch (printErr) {
           console.warn('Lỗi in khi lưu đơn:', printErr);
         }
@@ -1380,7 +1380,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             totalAmount: finalTotalAmount,
             discount: discountAmount,
             notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-          });
+          }, undefined, undefined, { isManualUserReprint: true });
         } catch (printErr) {
           console.warn('In bill thanh toán ngay:', printErr);
         }
