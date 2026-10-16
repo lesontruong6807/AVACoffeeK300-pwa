@@ -249,8 +249,8 @@ fn handle_http_client(mut stream: TcpStream, cfg: Arc<BridgeConfig>) {
                         {
                             let mut last_lock = LAST_BRIDGE_HASH.lock().unwrap();
                             if let Some((prev_hash, prev_time)) = *last_lock {
-                                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(4) {
-                                    println!("[IN BỎ QUA] Lệnh in trùng lặp tuyệt đối (vừa in cách đây < 4s)");
+                                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(10) {
+                                    println!("[IN BỎ QUA] Lệnh in trùng lặp tuyệt đối (vừa in cách đây < 10s)");
                                     let body = serde_json::json!({ "success": true, "message": "Đã in hóa đơn thành công (bỏ qua in lặp)" }).to_string();
                                     let response = format!(
                                         "HTTP/1.1 200 OK\r\n{}Content-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

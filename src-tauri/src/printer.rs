@@ -259,7 +259,7 @@ fn simple_hash(bytes: &[u8]) -> u64 {
 
 /// In ngầm trực tiếp hóa đơn nhị phân ESC/POS (Hỗ trợ cả Wi-Fi LAN TCP 9100 và USB Win32 Spooler)
 pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(), String> {
-    // 0. Chống in trùng lặp tuyệt đối ở tầng nhị phân ESC/POS (< 2 giây)
+    // 0. Chống in trùng lặp tuyệt đối ở tầng nhị phân ESC/POS (< 10 giây)
     // Chỉ áp dụng cho hóa đơn có dữ liệu dài (> 30 bytes), không chặn lệnh kick két tiền
     if data.len() > 30 {
         let hash = simple_hash(data);
@@ -267,8 +267,8 @@ pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(
         {
             let mut last_hash_lock = LAST_PRINT_RAW_HASH.lock().unwrap();
             if let Some((prev_hash, prev_time)) = *last_hash_lock {
-                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_millis(2000) {
-                    println!("[Print Raw] Bỏ qua lệnh in trùng lặp tuyệt đối (vừa in cách đây < 2s)");
+                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(10) {
+                    println!("[Print Raw] Bỏ qua lệnh in trùng lặp tuyệt đối (vừa in cách đây < 10s)");
                     return Ok(());
                 }
             }

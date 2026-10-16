@@ -272,10 +272,10 @@ export function getOrderFingerprint(orderData: Partial<OrderData>): string {
   return `${tablePart}__${totalPart}__${itemsPart}`;
 }
 
-// Khôi phục từ sessionStorage nếu người dùng tải lại trang trong cùng phiên bán hàng
+// Khôi phục từ localStorage (đồng bộ xuyên suốt mọi cửa sổ và tab trong máy POS)
 if (typeof window !== 'undefined') {
   try {
-    const raw = sessionStorage.getItem('ava_printed_orders_cache');
+    const raw = localStorage.getItem('ava_printed_orders_cache');
     if (raw) {
       const parsed = JSON.parse(raw);
       for (const [k, v] of Object.entries(parsed)) {
@@ -297,13 +297,13 @@ function persistPrintedOrders() {
           count++;
         }
       }
-      sessionStorage.setItem('ava_printed_orders_cache', JSON.stringify(obj));
+      localStorage.setItem('ava_printed_orders_cache', JSON.stringify(obj));
     } catch (_) {}
   }
 }
 
 /**
- * Kiểm tra xem đơn hàng đã từng được in chưa hoặc vừa in trong 15s gần đây
+ * Kiểm tra xem đơn hàng đã từng được in chưa hoặc vừa in trong 20s gần đây
  * @param orderId Mã đơn hàng
  * @param currentItemCount Số lượng món hiện tại
  * @param orderData Dữ liệu đơn để kiểm tra vân tay nội dung bill
@@ -315,10 +315,14 @@ export function isOrderAlreadyPrinted(
 ): boolean {
   const now = Date.now();
 
-  // 1. Kiểm tra Cooldown 15 giây theo orderId
-  if (orderId && recentPrintTimestamps.has(`id:${orderId}`)) {
-    const lastTime = recentPrintTimestamps.get(`id:${orderId}`)!;
-    if (now - lastTime < RECENT_PRINT_COOLDOWN_MS) {
+  // 1. Kiểm tra Cooldown 20 giây theo orderId (trong RAM và localStorage)
+  if (orderId) {
+    let lastTime = recentPrintTimestamps.get(`id:${orderId}`);
+    if (!lastTime && typeof localStorage !== 'undefined') {
+      const lsTime = localStorage.getItem(`ava_last_print_id_${orderId}`);
+      if (lsTime) lastTime = Number(lsTime);
+    }
+    if (lastTime && (now - lastTime < RECENT_PRINT_COOLDOWN_MS)) {
       if (typeof currentItemCount === 'number') {
         const record = printedOrderHistory.get(orderId);
         if (record && currentItemCount > record.itemCount) {
@@ -329,20 +333,31 @@ export function isOrderAlreadyPrinted(
     }
   }
 
-  // 2. Kiểm tra Cooldown 15 giây theo vân tay nội dung bill
+  // 2. Kiểm tra Cooldown 20 giây theo vân tay nội dung bill
   if (orderData) {
     const fp = getOrderFingerprint(orderData);
-    if (recentPrintTimestamps.has(`fp:${fp}`)) {
-      const lastTime = recentPrintTimestamps.get(`fp:${fp}`)!;
-      if (now - lastTime < RECENT_PRINT_COOLDOWN_MS) {
-        return true;
-      }
+    let lastFpTime = recentPrintTimestamps.get(`fp:${fp}`);
+    if (!lastFpTime && typeof localStorage !== 'undefined') {
+      const lsFp = localStorage.getItem(`ava_last_print_fp_${fp}`);
+      if (lsFp) lastFpTime = Number(lsFp);
+    }
+    if (lastFpTime && (now - lastFpTime < RECENT_PRINT_COOLDOWN_MS)) {
+      return true;
     }
   }
 
-  // 3. Kiểm tra theo sổ lưu vết printedOrderHistory
+  // 3. Kiểm tra theo sổ lưu vết printedOrderHistory (RAM và localStorage)
   if (orderId) {
-    const record = printedOrderHistory.get(orderId);
+    let record = printedOrderHistory.get(orderId);
+    if (!record && typeof localStorage !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('ava_printed_orders_cache');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed[orderId]) record = parsed[orderId];
+        }
+      } catch (_) {}
+    }
     if (record) {
       // Nếu số lượng món hiện tại nhiều hơn số món đã in -> có món mới bổ sung
       if (typeof currentItemCount === 'number' && currentItemCount > record.itemCount) {
@@ -376,6 +391,13 @@ export function markOrderAsPrinted(
   const now = Date.now();
   recentPrintTimestamps.set(`id:${orderId}`, now);
 
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(`ava_last_print_id_${orderId}`, String(now));
+      localStorage.setItem(`ava_global_last_print_time`, String(now));
+    } catch (_) {}
+  }
+
   const existing = printedOrderHistory.get(orderId);
 
   let details: Partial<PrintedOrderRecord> = {};
@@ -404,6 +426,11 @@ export function clearPrintLock(orderId: string) {
   if (!orderId) return;
   printedOrderHistory.delete(orderId);
   recentPrintTimestamps.delete(`id:${orderId}`);
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.removeItem(`ava_last_print_id_${orderId}`);
+    } catch (_) {}
+  }
   persistPrintedOrders();
 }
 
@@ -431,7 +458,7 @@ export async function printOrderDirect(
   const orderLockKey = orderId ? `id:${orderId}` : `fp:${fingerprint}`;
   const fpLockKey = `fp:${fingerprint}`;
 
-  // NGUYÊN TẮC: Chống in trùng lặp tuyệt đối trừ khi người dùng chủ động bấm hoặc là hành động trực tiếp tại quầy
+  // NGUYÊN TẮC: Chống in trùng lặp tuyệt đối trừ khi người dùng chủ động bấm 'In lại hóa đơn' thủ công
   if (!isExplicitManual) {
     // 1. Kiểm tra In-Flight Mutex (Đang có lệnh in đang thực thi dở)
     if (inFlightPrintKeys.has(orderLockKey) || inFlightPrintKeys.has(fpLockKey)) {
@@ -439,33 +466,19 @@ export async function printOrderDirect(
       return;
     }
 
-    // 2. Kiểm tra Cooldown 15 giây theo mã đơn
-    if (orderId && recentPrintTimestamps.has(orderLockKey)) {
-      const elapsed = now - recentPrintTimestamps.get(orderLockKey)!;
-      if (elapsed < RECENT_PRINT_COOLDOWN_MS) {
-        const record = printedOrderHistory.get(orderId);
-        if (record && itemCount > record.itemCount) {
-          // Có món mới bổ sung -> cho phép in tiếp!
-        } else {
-          console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Đơn ${orderId} vừa được in cách đây ${elapsed}ms (< 15s).`);
-          return;
-        }
-      }
+    // 2. Kiểm tra Cooldown 20 giây theo mã đơn
+    if (orderId && isOrderAlreadyPrinted(orderId, itemCount, orderData)) {
+      console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Đơn ${orderId} vừa được in cách đây không lâu.`);
+      return;
     }
 
-    // 3. Kiểm tra Cooldown 15 giây theo nội dung vân tay bill
+    // 3. Kiểm tra Cooldown 20 giây theo nội dung vân tay bill
     if (recentPrintTimestamps.has(fpLockKey)) {
       const elapsed = now - recentPrintTimestamps.get(fpLockKey)!;
       if (elapsed < RECENT_PRINT_COOLDOWN_MS) {
-        console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Nội dung bill (${orderData.tableName}) vừa được in cách đây ${elapsed}ms (< 15s).`);
+        console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Nội dung bill (${orderData.tableName}) vừa được in cách đây ${elapsed}ms (< 20s).`);
         return;
       }
-    }
-
-    // 4. Kiểm tra lịch sử printedOrderHistory
-    if (orderId && isOrderAlreadyPrinted(orderId, itemCount, orderData)) {
-      console.log(`[printOrderDirect] Bỏ qua vì đơn ${orderId} đã được in trước đó (${itemCount} món). Không in trùng.`);
-      return;
     }
   }
 
@@ -474,6 +487,14 @@ export async function printOrderDirect(
   inFlightPrintKeys.add(fpLockKey);
   recentPrintTimestamps.set(orderLockKey, now);
   recentPrintTimestamps.set(fpLockKey, now);
+
+  if (typeof localStorage !== 'undefined') {
+    try {
+      if (orderId) localStorage.setItem(`ava_last_print_id_${orderId}`, String(now));
+      localStorage.setItem(`ava_last_print_fp_${fingerprint}`, String(now));
+      localStorage.setItem(`ava_global_last_print_time`, String(now));
+    } catch (_) {}
+  }
 
   // Đánh dấu ngay lập tức trước khi in để chặn đứng mọi race-condition từ Supabase Realtime / Postgres Changes
   if (orderId) {
