@@ -751,7 +751,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       const success = await db.cancelOrder(orderId);
       if (success) {
         toast.success(`Đã hủy và xóa hóa đơn ${tableName || ''} thành công!`);
+        setUnpaidOrders(prev => prev.filter(o => o.id !== orderId));
         if (existingOrder?.id === orderId) {
+          const tableId = existingOrder.table_id;
+          if (tableId) {
+            setTables(prev => prev.map(t => t.id === tableId ? { ...t, status: 'Trống' } : t));
+          }
           setExistingOrder(null);
           setExistingOrderItems([]);
           setCart([]);
@@ -772,7 +777,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   const refreshData = async () => {
     try {
       const [tablesData, unpaidData, recentData, recipesData] = await Promise.all([
-        db.getTables(),
+        db.getTables(true),
         db.getUnpaidOrders(),
         db.getRecentOrders(40),
         db.getRecipes()
@@ -1148,16 +1153,27 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     setViewMode('menu'); // Chuyển thẳng sang giao diện chọn món
     setSelectedCartIndex(-1);
 
-    const isOccupied = table.status === 'Đang phục vụ' && table.table_name !== 'Khách mang về';
-    if (isOccupied) {
-      let orderObj: any = unpaidOrders.find(o => o.table_id === table.id);
-      let itemsList: any[] = [];
+    const isTakeaway = table.table_name === 'Khách mang về' || table.id === 'tb_mangve';
+    let orderObj: any = unpaidOrders.find(o => o.table_id === table.id);
+    let itemsList: any[] = [];
+
+    if (!isTakeaway) {
+      // 1. Nếu trong memory đã có sẵn order_items -> Đổ ngay 0ms
+      if (orderObj?.order_items && Array.isArray(orderObj.order_items) && orderObj.order_items.length > 0) {
+        itemsList = orderObj.order_items;
+      }
+
+      // 2. Tải thêm/kiểm tra chính xác từ DB để đảm bảo không sót món
       try {
         if (orderObj?.id) {
-          itemsList = await db.getOrderItems(orderObj.id) || [];
+          const freshItems = await db.getOrderItems(orderObj.id);
+          if (freshItems && freshItems.length > 0) {
+            itemsList = freshItems;
+          }
         } else {
+          // Dự phòng an toàn tuyệt đối: nếu unpaidOrders trong state chưa có, kiểm tra trực tiếp từ DB
           const res = await db.getUnpaidOrderByTableId(table.id);
-          if (res) {
+          if (res?.order) {
             orderObj = res.order;
             itemsList = res.items || [];
           }
@@ -1165,8 +1181,10 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       } catch (e) {
         console.error('Lỗi tải đơn cũ của bàn:', e);
       }
+    }
 
-      setExistingOrder(orderObj || null);
+    if (orderObj && !isTakeaway) {
+      setExistingOrder(orderObj);
       setExistingOrderItems(itemsList);
 
       // ĐỔ TOÀN BỘ MÓN CŨ VÀO GIỎ HÀNG ĐỂ THU NGÂN CÓ THỂ ORDER THÊM / XÓA BỚT / THANH TOÁN
@@ -1218,6 +1236,33 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
           notes: orderNotes.trim(),
           items: cart
         });
+
+        // Cập nhật ngay lập tức bộ nhớ để phản hồi 0ms
+        const updatedItems = cart.map(item => ({
+          id: generateShortId('item_'),
+          order_id: existingOrder.id,
+          product_id: item.product_id,
+          name: item.name,
+          ten_san_pham: item.name,
+          quantity: item.quantity,
+          so_luong: item.quantity,
+          price: item.price,
+          unit_price: item.price,
+          don_gia: item.price,
+          subtotal: item.subtotal,
+          thanh_tien: item.subtotal,
+          notes: item.notes,
+          ghi_chu: item.notes
+        }));
+
+        setUnpaidOrders(prev => prev.map(o => o.id === existingOrder.id ? {
+          ...o,
+          total_amount: finalTotalAmount,
+          discount: discountAmount,
+          notes: orderNotes.trim(),
+          order_items: updatedItems
+        } : o));
+
         toast.success(`Đã cập nhật đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
 
         // NGUYÊN TẮC: Nếu bàn này có gọi thêm món mới -> In bill bao gồm ĐẦY ĐỦ các món có trong bàn!
@@ -1298,8 +1343,40 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
           items: cart
         });
 
-        if (savedOrder) {
-          setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
+        const activeOrderData = savedOrder || {
+          id: newOrderId,
+          table_id: selectedTable.id || 'tb_mangve',
+          staff_id: currentUser?.id || 'admin',
+          total_amount: finalTotalAmount,
+          discount: discountAmount,
+          payment_status: 'Chưa thanh toán',
+          notes: orderNotes.trim(),
+          tables: { table_name: selectedTable.table_name },
+          users: { full_name: currentUser?.full_name || 'Admin' },
+          created_at: new Date().toISOString(),
+          order_items: cart.map(item => ({
+            id: generateShortId('item_'),
+            order_id: newOrderId,
+            product_id: item.product_id,
+            name: item.name,
+            ten_san_pham: item.name,
+            quantity: item.quantity,
+            so_luong: item.quantity,
+            price: item.price,
+            unit_price: item.price,
+            don_gia: item.price,
+            subtotal: item.subtotal,
+            thanh_tien: item.subtotal,
+            notes: item.notes,
+            ghi_chu: item.notes
+          }))
+        };
+
+        setRecentOrders(prev => [activeOrderData, ...prev.filter(o => o.id !== activeOrderData.id)]);
+
+        if (selectedTable.table_name !== 'Khách mang về') {
+          setUnpaidOrders(prev => [activeOrderData, ...prev.filter(o => o.id !== activeOrderData.id)]);
+          setTables(prev => prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Đang phục vụ' } : t));
         }
 
         toast.success(`Đã lưu đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
@@ -1493,6 +1570,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
       toast.success(`Thanh toán thành công ${selectedTable?.table_name || 'đơn hàng'}! Đã gửi bếp pha chế.`);
       setIsPayModalOpen(false);
+
+      if (selectedTable?.id && selectedTable?.table_name !== 'Khách mang về') {
+        setTables(prev => prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Trống' } : t));
+        setUnpaidOrders(prev => prev.filter(o => o.table_id !== selectedTable.id && o.id !== orderIdToPay));
+      } else {
+        setUnpaidOrders(prev => prev.filter(o => o.id !== orderIdToPay));
+      }
+
       handleClearCart();
       setExistingOrder(null);
       setExistingOrderItems([]);
@@ -1850,9 +1935,10 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                   return a.table_name.localeCompare(b.table_name, 'vi', { numeric: true });
                 })
                 .map(table => {
-                  const isOccupied = table.status === 'Đang phục vụ';
-                  const isTakeaway = table.table_name === 'Khách mang về';
+                  const isTakeaway = table.table_name === 'Khách mang về' || table.id === 'tb_mangve';
                   const unpaidMatch = unpaidOrders.find(o => o.table_id === table.id);
+                  const isOccupied = !isTakeaway && (table.status === 'Đang phục vụ' || !!unpaidMatch);
+                  const displayStatus = isTakeaway ? 'Mang về' : isOccupied ? 'Đang phục vụ' : 'Trống';
 
                   return (
                     <button
@@ -1868,11 +1954,13 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                     >
                       <div className="flex items-center justify-between w-full">
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                          isOccupied 
+                          isTakeaway
+                            ? 'bg-[#8C6A5C]/15 text-[#8C6A5C]'
+                            : isOccupied 
                             ? 'bg-amber-100 text-amber-800' 
                             : 'bg-emerald-100 text-emerald-800'
                         }`}>
-                          {table.status}
+                          {displayStatus}
                         </span>
                         <span className="text-[10px] text-gray-400 flex items-center space-x-1">
                           <Users className="w-3 h-3" />

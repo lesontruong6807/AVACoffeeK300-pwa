@@ -66,6 +66,7 @@ export const supabase = isSupabaseConfigured
 
 // Cache variables for performance optimization
 let cachedTables: any[] | null = null;
+let lastTablesFetchTime = 0;
 let cachedCategories: any[] | null = null;
 let cachedProducts: any[] | null = null;
 let cachedRecipes: any[] | null = null;
@@ -1690,11 +1691,13 @@ export const db = {
 
   // --- TABLES (danhsachban) ---
   async getTables(forceFresh = false) {
-    if (cachedTables && !forceFresh) return cachedTables;
+    const now = Date.now();
+    if (cachedTables && !forceFresh && (now - lastTablesFetchTime < 3000)) return cachedTables;
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.from('danhsachban').select('*');
       if (!error && data) {
         cachedTables = data.map(mapTableToClient).filter(Boolean).sort((a: any, b: any) => a.table_name.localeCompare(b.table_name)) as any[];
+        lastTablesFetchTime = Date.now();
         mockDb.setTables(cachedTables);
         return cachedTables;
       }
@@ -2302,6 +2305,8 @@ export const db = {
         await supabase.from('danhsachban').update({ trang_thai: 'Đang phục vụ' }).eq('id', toTableId);
       }
 
+      cachedTables = null;
+      lastTablesFetchTime = 0;
       broadcastRealtimeEvent('order_update');
       broadcastRealtimeEvent('table_update');
       return true;
@@ -2377,6 +2382,8 @@ export const db = {
         await supabase.from('hoadondetail').insert(orderItemsToInsert);
       }
 
+      cachedTables = null;
+      lastTablesFetchTime = 0;
       broadcastRealtimeEvent('order_update');
       broadcastRealtimeEvent('table_update');
       return true;
@@ -2490,6 +2497,8 @@ export const db = {
         items: targetItems
       });
 
+      cachedTables = null;
+      lastTablesFetchTime = 0;
       broadcastRealtimeEvent('order_update');
       broadcastRealtimeEvent('table_update');
       return { totalAmount, items: targetItems };
@@ -2786,9 +2795,20 @@ export const db = {
         if (dbInserts.length > 0) {
           promises.push(supabase.from('hoadondetail').insert(dbInserts));
         }
+        if (!isTakeaway) {
+          promises.push(
+            supabase.from('danhsachban').update({ trang_thai: 'Đang phục vụ' }).eq('id', table_id)
+          );
+        }
         if (promises.length > 0) {
           await Promise.all(promises);
         }
+
+        cachedTables = null;
+        lastTablesFetchTime = 0;
+        broadcastRealtimeEvent('order_update');
+        broadcastRealtimeEvent('table_update');
+        broadcastRealtimeEvent('report_update');
 
         return mapOrderToClient(updatedOrder);
       }
@@ -2880,10 +2900,32 @@ export const db = {
       }
 
       await Promise.all(detailPromises);
+      cachedTables = null;
+      lastTablesFetchTime = 0;
       broadcastRealtimeEvent('order_update');
       broadcastRealtimeEvent('table_update');
       broadcastRealtimeEvent('report_update');
-      return mapOrderToClient(order);
+
+      const mappedOrder = mapOrderToClient(order);
+      if (mappedOrder) {
+        mappedOrder.order_items = orderItemsToInsert.map(oi => ({
+          id: oi.id,
+          order_id: oi.idhoadon,
+          product_id: oi.idsp,
+          name: oi.ten_san_pham,
+          ten_san_pham: oi.ten_san_pham,
+          quantity: oi.so_luong,
+          so_luong: oi.so_luong,
+          unit_price: oi.don_gia,
+          price: oi.don_gia,
+          don_gia: oi.don_gia,
+          subtotal: oi.thanh_tien,
+          thanh_tien: oi.thanh_tien,
+          notes: oi.ghi_chu,
+          ghi_chu: oi.ghi_chu
+        }));
+      }
+      return mappedOrder;
     }
 
     // Mock DB Fallback
@@ -3092,6 +3134,8 @@ export const db = {
       if (!error && order?.id_ban) {
         // 3. Reset table status
         await supabase.from('danhsachban').update({ trang_thai: 'Trống' }).eq('id', order.id_ban);
+        cachedTables = null;
+        lastTablesFetchTime = 0;
         broadcastRealtimeEvent('order_update');
         broadcastRealtimeEvent('table_update');
         broadcastRealtimeEvent('report_update');

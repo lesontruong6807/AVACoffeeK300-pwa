@@ -83,7 +83,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
   const refreshTables = async () => {
     try {
       const [tablesData, unpaidData, recipesData] = await Promise.all([
-        db.getTables(),
+        db.getTables(true),
         db.getUnpaidOrders(),
         db.getRecipes()
       ]);
@@ -328,11 +328,20 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
     setIsQuickPayOpen(false);
     setIsPayModalOpen(false);
 
-    const isOccupied = table.status === 'Đang phục vụ' && table.table_name !== 'Khách mang về';
+    const isTakeaway = table.table_name === 'Khách mang về' || table.id === 'tb_mangve';
+    let cachedMatch = unpaidOrders.find(o => o.table_id === table.id);
+    const isOccupied = !isTakeaway && (table.status === 'Đang phục vụ' || !!cachedMatch);
+
     if (isOccupied) {
-      const cachedMatch = unpaidOrders.find(o => o.table_id === table.id);
       if (cachedMatch) {
         setExistingOrder(cachedMatch);
+        if (cachedMatch.order_items && Array.isArray(cachedMatch.order_items) && cachedMatch.order_items.length > 0) {
+          const mapped = cachedMatch.order_items.map((i: any) => ({
+            ...i,
+            cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes)
+          }));
+          setExistingOrderItems(mapped);
+        }
       }
 
       setLoadingExistingOrder(true);
@@ -346,7 +355,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
           setExistingOrderItems(mapped);
         } else {
           const res = await db.getUnpaidOrderByTableId(table.id);
-          if (res) {
+          if (res?.order) {
             setExistingOrder(res.order);
             const mapped = (res.items || []).map((i: any) => ({
               ...i,
@@ -515,16 +524,37 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
         console.warn('Lỗi in phiếu order:', printErr);
       }
 
+      if (selectedTable?.table_name !== 'Khách mang về') {
+        const activeOrderData = savedOrder || {
+          id: savedOrder?.id || `OD-${Date.now()}`,
+          table_id: selectedTable?.id,
+          total_amount: finalTotalAmount,
+          discount: discountAmount,
+          payment_status: 'Chưa thanh toán',
+          notes: orderNotes.trim(),
+          tables: { table_name: selectedTable?.table_name },
+          users: { full_name: currentUser?.full_name || 'Nhân viên' },
+          created_at: new Date().toISOString(),
+          order_items: cart.map(i => ({
+            product_id: i.product_id,
+            name: i.name,
+            quantity: i.quantity,
+            price: i.price,
+            subtotal: i.subtotal,
+            notes: i.notes
+          }))
+        };
+        setUnpaidOrders(prev => [activeOrderData, ...prev.filter(o => o.id !== activeOrderData.id)]);
+        setTables(prev => prev.map(tb => tb.id === selectedTable?.id ? { ...tb, status: 'Đang phục vụ' } : tb));
+      }
+
       toast.success(`Đã lưu đơn & gửi bếp cho ${selectedTable?.table_name || 'bàn'}!`);
       clearCart();
       setExistingOrder(null);
       setExistingOrderItems([]);
-      
-      const updatedTables = await db.getTables();
-      setTables(updatedTables);
-
       setSelectedTable(null);
       setPosStep('table');
+      await refreshTables();
     } catch (e) {
       console.error('Lỗi lưu đơn hàng:', e);
       setTables(oldTables);
@@ -730,9 +760,10 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                   return a.table_name.localeCompare(b.table_name, 'vi', { numeric: true });
               })
               .map((table) => {
-                const isOccupied = table.status === 'Đang phục vụ';
-                const isTbTakeaway = table.table_name === 'Khách mang về';
+                const isTbTakeaway = table.table_name === 'Khách mang về' || table.id === 'tb_mangve';
                 const unpaidMatch = unpaidOrders.find(o => o.table_id === table.id);
+                const isOccupied = !isTbTakeaway && (table.status === 'Đang phục vụ' || !!unpaidMatch);
+                const displayStatus = isTbTakeaway ? 'Mang về' : isOccupied ? 'Đang phục vụ' : 'Trống';
 
                 return (
                   <button
@@ -754,7 +785,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                           ? 'bg-amber-100 text-amber-800' 
                           : 'bg-green-100 text-green-800'
                       }`}>
-                        {isTbTakeaway ? 'Mang về' : table.status}
+                        {displayStatus}
                       </span>
                       {!isTbTakeaway && (
                         <span className="text-[10px] text-coffee-medium flex items-center space-x-1 font-semibold">
