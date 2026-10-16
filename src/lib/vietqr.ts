@@ -1,36 +1,36 @@
-// Cấu hình thanh toán chuyển khoản Techcombank VietQR cho AVA Coffee K300
+// Cấu hình thanh toán Techcombank VietQR & Loa báo thanh toán Soundbox cho AVA Coffee K300
 
 export const TECHCOMBANK_INFO = {
   bankId: '970407', // Mã BIN chuẩn Napas của Techcombank
   bankName: 'Techcombank',
   bankFullName: 'Ngân hàng TMCP Kỹ thương Việt Nam',
+  merchantId: 'MS00T04320808126774', // Mã điểm bán kết nối Loa Soundbox thông báo âm thanh
   accountNumber: '2308795888',
   accountNumberFormatted: '2308 7958 88',
   accountName: 'LÊ THỊ QUỲNH CHÂU',
   accountNameRaw: 'LE THI QUYNH CHAU',
-  storeName: 'AVA COFFEE K300'
+  storeName: 'AVA COFFEE K300',
+  qrCardUrl: '/techcombank-qr-card.png',   // Ảnh thẻ QR cứng chính thức có logo, mã điểm bán và Napas 247
+  qrMatrixUrl: '/techcombank-qr.png'      // Ảnh mã QR vuông cắt trực tiếp từ standee điểm bán
 };
 
+export const OFFICIAL_MERCHANT_QR = '/techcombank-qr-card.png';
+export const OFFICIAL_MERCHANT_QR_MATRIX = '/techcombank-qr.png';
+
 /**
- * Tạo URL mã QR động từ dịch vụ chuẩn VietQR (Napas 247)
- * Tự động gắn số tiền chính xác và nội dung chuyển khoản
- * @param amount Số tiền cần chuyển (VNĐ)
- * @param memo Nội dung chuyển khoản (tối đa 25 ký tự)
- * @param template Mẫu giao diện VietQR: 'compact2' | 'compact' | 'qr_only'
+ * Lấy đường dẫn mã QR Techcombank của quán:
+ * Sử dụng trực tiếp ảnh QR cứng từ Standee kết nối Loa thông báo âm thanh Soundbox (MS00T04320808126774)
+ * để đảm bảo 100% các giao dịch đều kích hoạt loa thông báo tức thì cho nhân viên nghe thấy.
  */
 export function getVietQrUrl(
-  amount?: number, 
-  memo?: string, 
+  _amount?: number, 
+  _memo?: string, 
   template: 'compact2' | 'compact' | 'qr_only' = 'compact2'
 ): string {
-  const { bankId, accountNumber, accountNameRaw } = TECHCOMBANK_INFO;
-  const accParam = encodeURIComponent(accountNameRaw);
-  const infoParam = encodeURIComponent((memo || 'AVA COFFEE K300').slice(0, 25));
-
-  if (amount && amount > 0) {
-    const safeAmount = Math.round(amount);
-    return `https://img.vietqr.io/image/${bankId}-${accountNumber}-${template}.png?amount=${safeAmount}&addInfo=${infoParam}&accountName=${accParam}`;
+  // Trả về QR cứng kết nối Loa Soundbox
+  if (template === 'qr_only') {
+    return OFFICIAL_MERCHANT_QR_MATRIX;
   }
-
-  return `https://img.vietqr.io/image/${bankId}-${accountNumber}-${template}.png?addInfo=${infoParam}&accountName=${accParam}`;
+  return OFFICIAL_MERCHANT_QR;
 }
+

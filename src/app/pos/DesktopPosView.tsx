@@ -784,7 +784,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       ]);
       setTables(tablesData);
       setUnpaidOrders(unpaidData);
-      setRecentOrders(recentData);
+      setRecentOrders(prev => {
+        // Hợp nhất: nếu có đơn vừa thanh toán / vừa lưu trong prev mà server chưa kịp trả về (do độ trễ mạng), giữ lại trong danh sách
+        const serverIds = new Set(recentData.map(o => o.id));
+        const pendingLocals = prev.filter(p => !serverIds.has(p.id) && !completedKitchenOrderIds.includes(p.id) && !p.kitchen_done);
+        return [...pendingLocals, ...recentData];
+      });
       if (recipesData) setRecipes(recipesData);
       try {
         localStorage.setItem('ava_pos_cache_tables', JSON.stringify(tablesData));
@@ -1463,7 +1468,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         }
 
         // 3. Lưu vào Database
-        const savedOrder = await db.createOrder({
+        await db.createOrder({
           id: newOrderId,
           table_id: selectedTable?.id || 'tb_mangve',
           staff_id: currentUser?.id || 'admin',
@@ -1472,9 +1477,41 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
           notes: orderNotes.trim(),
           items: cart
         });
-        if (savedOrder?.id) {
-          setRecentOrders(prev => [savedOrder, ...prev.filter(o => o.id !== savedOrder.id)]);
-        }
+
+        // TẠO NGAY ĐỐI TƯỢNG HÓA ĐƠN CHO BẾP / BARISTA VỚI ĐỦ MÓN ĂN & THÔNG TIN BÀN
+        const paidOrderForKitchen = {
+          id: newOrderId,
+          table_id: selectedTable?.id || 'tb_mangve',
+          staff_id: currentUser?.id || 'admin',
+          total_amount: finalTotalAmount,
+          discount: discountAmount,
+          payment_status: 'Đã thanh toán',
+          payment_method: paymentMethod,
+          notes: orderNotes.trim(),
+          tables: { table_name: selectedTable?.table_name || 'Khách mang về' },
+          users: { full_name: currentUser?.full_name || 'Admin' },
+          created_at: new Date().toISOString(),
+          paid_at: new Date().toISOString(),
+          kitchen_done: false,
+          order_items: cart.map(item => ({
+            id: generateShortId('item_'),
+            order_id: newOrderId,
+            product_id: item.product_id,
+            name: item.name,
+            ten_san_pham: item.name,
+            quantity: item.quantity,
+            so_luong: item.quantity,
+            price: item.price,
+            unit_price: item.price,
+            don_gia: item.price,
+            subtotal: item.subtotal,
+            thanh_tien: item.subtotal,
+            notes: item.notes,
+            ghi_chu: item.notes
+          }))
+        };
+
+        setRecentOrders(prev => [paidOrderForKitchen, ...prev.filter(o => o.id !== newOrderId)]);
       }
 
       if (!orderIdToPay) {
@@ -1487,7 +1524,37 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       await db.payOrder(orderIdToPay, paymentMethod);
 
       // Cập nhật trạng thái đơn trong danh sách gần đây
-      setRecentOrders(prev => prev.map(o => o.id === orderIdToPay ? { ...o, payment_status: 'Đã thanh toán' } : o));
+      setRecentOrders(prev => prev.map(o => {
+        if (o.id === orderIdToPay) {
+          const updatedItems = (o.order_items && o.order_items.length > 0)
+            ? o.order_items
+            : (cart.length > 0 ? cart : existingOrderItems).map((i: any) => ({
+                id: i.id || generateShortId('item_'),
+                order_id: orderIdToPay,
+                product_id: i.product_id || i.idsp,
+                name: i.name || i.ten_san_pham || i.products?.name || 'Món',
+                ten_san_pham: i.name || i.ten_san_pham || i.products?.name || 'Món',
+                quantity: Number(i.quantity || i.so_luong || 1),
+                so_luong: Number(i.quantity || i.so_luong || 1),
+                price: Number(i.price || i.unit_price || i.don_gia || 0),
+                unit_price: Number(i.price || i.unit_price || i.don_gia || 0),
+                don_gia: Number(i.price || i.unit_price || i.don_gia || 0),
+                subtotal: Number(i.subtotal || i.thanh_tien || 0),
+                thanh_tien: Number(i.subtotal || i.thanh_tien || 0),
+                notes: i.notes || i.ghi_chu || '',
+                ghi_chu: i.notes || i.ghi_chu || ''
+              }));
+          return {
+            ...o,
+            payment_status: 'Đã thanh toán',
+            payment_method: paymentMethod,
+            paid_at: new Date().toISOString(),
+            tables: o.tables || { table_name: selectedTable?.table_name || 'Khách mang về' },
+            order_items: updatedItems
+          };
+        }
+        return o;
+      }));
 
       // 3. Nếu là đơn đã lưu trước đó: ĐÃ ĐƯỢC IN LÚC LƯU ĐƠN, TUYỆT ĐỐI KHÔNG IN LẠI KHI THANH TOÁN!
       // Khách đã cầm bill từ trước lúc lưu đơn. Khi khách thanh toán, chỉ cần thu tiền & mở két tiền.
@@ -1637,14 +1704,20 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       // 2. Đơn đã hủy hoặc chờ duyệt hủy
       if (order.payment_status === 'Đã hủy' || order.payment_status === 'Chờ duyệt hủy' || (order as any).status === 'cancelled') return false;
 
-      // 3. Với các đơn ĐÃ THANH TOÁN: Chỉ hiện nếu được tạo trong ngày hôm nay VÀ trong vòng 90 phút
-      // (Tránh trường hợp cài lại app exe bị hiện lại hàng loạt đơn đã thanh toán từ ca cũ/ngày trước)
+      // 3. Với các đơn ĐÃ THANH TOÁN:
+      // Luôn hiển thị cho quầy pha chế thấy cho đến khi nhân viên bấm "Đã làm xong".
+      // Chỉ ẩn nếu là đơn từ ngày trước VÀ đã tạo cách đây hơn 180 phút (3 tiếng)
       if (order.payment_status === 'Đã thanh toán') {
-        const orderDate = new Date(order.created_at);
-        const orderDateVN = orderDate.toLocaleDateString('en-CA');
-        const minutesAgo = Math.floor((now - orderDate.getTime()) / 60000);
-        if (orderDateVN !== todayVN || minutesAgo > 90) {
-          return false;
+        const rawDate = order.created_at || (order as any).ngay_tao || order.paid_at || (order as any).ngay_thanh_toan;
+        if (rawDate) {
+          const orderDate = new Date(rawDate);
+          if (!isNaN(orderDate.getTime())) {
+            const orderDateVN = orderDate.toLocaleDateString('en-CA');
+            const minutesAgo = Math.floor((now - orderDate.getTime()) / 60000);
+            if (orderDateVN !== todayVN && minutesAgo > 180) {
+              return false;
+            }
+          }
         }
       }
 
@@ -1819,8 +1892,9 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                 </div>
               ) : (
                 pendingKitchenOrders.map((order) => {
-                  const orderTime = new Date(order.created_at);
-                  const minutesAgo = Math.floor((Date.now() - orderTime.getTime()) / 60000);
+                  const rawTime = order.created_at || (order as any).ngay_tao || order.paid_at || (order as any).ngay_thanh_toan;
+                  const orderTime = new Date(rawTime || Date.now());
+                  const minutesAgo = Math.max(0, Math.floor((Date.now() - (isNaN(orderTime.getTime()) ? Date.now() : orderTime.getTime())) / 60000));
                   const isUrgent = minutesAgo >= 10;
                   const tableName = order.tables?.table_name || 'Khách mang về';
                   const isPaid = order.payment_status === 'Đã thanh toán';
@@ -1859,21 +1933,26 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                       {/* Danh sách món ăn ĐẦY ĐỦ, KHÔNG BỊ CẮT, KHÔNG CẦN SCROLL NỘI BỘ */}
                       <div className="py-2.5 space-y-1.5 text-xs sm:text-[13px]">
                         {order.order_items && order.order_items.length > 0 ? (
-                          order.order_items.map((item: any, i: number) => (
-                            <div key={i} className="flex justify-between items-start leading-snug">
-                              <span className="font-extrabold text-gray-900 flex-1 pr-2">
-                                {item.name}
-                                {item.notes && (
-                                  <span className="block text-[11px] text-amber-800 italic font-medium">
-                                    📝 {item.notes}
-                                  </span>
-                                )}
-                              </span>
-                              <span className="font-black text-[#4A3525] bg-[#FAF6F0] border border-[#8C6A5C]/30 px-2 py-0.5 rounded-lg text-xs ml-1 shrink-0">
-                                x{item.quantity}
-                              </span>
-                            </div>
-                          ))
+                          order.order_items.map((item: any, i: number) => {
+                            const itemName = item.name || item.ten_san_pham || item.products?.name || 'Món';
+                            const itemQty = item.quantity || item.so_luong || 1;
+                            const itemNote = item.notes || item.ghi_chu || '';
+                            return (
+                              <div key={i} className="flex justify-between items-start leading-snug">
+                                <span className="font-extrabold text-gray-900 flex-1 pr-2">
+                                  {itemName}
+                                  {itemNote && (
+                                    <span className="block text-[11px] text-amber-800 italic font-medium">
+                                      📝 {itemNote}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="font-black text-[#4A3525] bg-[#FAF6F0] border border-[#8C6A5C]/30 px-2 py-0.5 rounded-lg text-xs ml-1 shrink-0">
+                                  x{itemQty}
+                                </span>
+                              </div>
+                            );
+                          })
                         ) : (
                           <p className="text-xs text-gray-400 italic">Đơn #{order.id.slice(0, 6)}</p>
                         )}
@@ -2970,19 +3049,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                     </span>
                   </div>
 
-                  {/* Hiển thị mã QR Techcombank VietQR tự sinh theo số tiền */}
-                  <div className="flex flex-col items-center justify-center p-3 bg-white rounded-xl border border-red-100 shadow-2xs space-y-2">
+                  {/* Hiển thị mã QR Techcombank Điểm bán chính thức kết nối Loa Soundbox */}
+                  <div className="flex flex-col items-center justify-center p-2 bg-white rounded-xl border border-red-100 shadow-2xs space-y-2">
                     <img
-                      src={getVietQrUrl(
-                        finalTotalAmount,
-                        (selectedTable?.table_name || 'AVA K300').replace(/[^a-zA-Z0-9 ]/g, ''),
-                        'compact2'
-                      )}
-                      alt="Mã QR VietQR Techcombank AVA Coffee K300"
-                      className="w-44 h-44 object-contain rounded-lg"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = '/techcombank-qr-card.png';
-                      }}
+                      src="/techcombank-qr-card.png"
+                      alt="Mã QR Techcombank Điểm bán AVA Coffee K300"
+                      className="max-h-60 w-auto object-contain rounded-lg shadow-xs"
                     />
                     <div className="text-center space-y-0.5">
                       <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Chủ tài khoản</p>

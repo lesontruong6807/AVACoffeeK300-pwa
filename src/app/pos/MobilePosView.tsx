@@ -1435,16 +1435,9 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                     </div>
 
                     <img
-                      src={getVietQrUrl(
-                        displayTotalAmount,
-                        (selectedTable?.table_name || 'AVA K300').replace(/[^a-zA-Z0-9 ]/g, ''),
-                        'compact2'
-                      )}
-                      alt="QR Techcombank VietQR"
-                      className="w-48 h-48 object-contain rounded-xl"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = '/techcombank-qr-card.png';
-                      }}
+                      src="/techcombank-qr-card.png"
+                      alt="Mã QR Techcombank Điểm bán AVA Coffee K300"
+                      className="max-h-56 w-auto object-contain rounded-xl shadow-xs"
                     />
 
                     <div className="text-center space-y-0.5">
