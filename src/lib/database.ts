@@ -2679,8 +2679,8 @@ export const db = {
     return mockDb.getOrderItems();
   },
 
-  async createOrder(orderData: { table_id: string; staff_id: string; total_amount: number; discount?: number; notes?: string; items: any[] }) {
-    const { table_id, staff_id, total_amount, discount = 0, notes = '', items } = orderData;
+  async createOrder(orderData: { id?: string; table_id: string; staff_id: string; total_amount: number; discount?: number; notes?: string; items: any[] }) {
+    const { id: customId, table_id, staff_id, total_amount, discount = 0, notes = '', items } = orderData;
     const createdAt = new Date().toISOString();
 
     if (isSupabaseConfigured && supabase) {
@@ -2793,7 +2793,7 @@ export const db = {
         return mapOrderToClient(updatedOrder);
       }
 
-      const orderId = generateShortId('ord_');
+      const orderId = customId || generateShortId('ord_');
       const validStaffId = (staff_id && staff_id !== 'u1') ? staff_id : 'admin';
 
       const insertPayload: any = {
@@ -2944,7 +2944,7 @@ export const db = {
       }
     }
 
-    const orderId = generateShortId('ord_');
+    const orderId = customId || generateShortId('ord_');
     const newOrder = {
       id: orderId,
       table_id,

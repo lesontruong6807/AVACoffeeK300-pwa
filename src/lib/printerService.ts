@@ -319,6 +319,12 @@ export function isOrderAlreadyPrinted(
   if (orderId && recentPrintTimestamps.has(`id:${orderId}`)) {
     const lastTime = recentPrintTimestamps.get(`id:${orderId}`)!;
     if (now - lastTime < RECENT_PRINT_COOLDOWN_MS) {
+      if (typeof currentItemCount === 'number') {
+        const record = printedOrderHistory.get(orderId);
+        if (record && currentItemCount > record.itemCount) {
+          return false; // Có món mới gọi thêm -> cho phép in
+        }
+      }
       return true;
     }
   }
@@ -425,7 +431,7 @@ export async function printOrderDirect(
   const orderLockKey = orderId ? `id:${orderId}` : `fp:${fingerprint}`;
   const fpLockKey = `fp:${fingerprint}`;
 
-  // NGUYÊN TẮC: Chống in trùng lặp tuyệt đối trừ khi người dùng chủ động bấm 'In lại hóa đơn' trong modal
+  // NGUYÊN TẮC: Chống in trùng lặp tuyệt đối trừ khi người dùng chủ động bấm hoặc là hành động trực tiếp tại quầy
   if (!isExplicitManual) {
     // 1. Kiểm tra In-Flight Mutex (Đang có lệnh in đang thực thi dở)
     if (inFlightPrintKeys.has(orderLockKey) || inFlightPrintKeys.has(fpLockKey)) {
@@ -437,8 +443,13 @@ export async function printOrderDirect(
     if (orderId && recentPrintTimestamps.has(orderLockKey)) {
       const elapsed = now - recentPrintTimestamps.get(orderLockKey)!;
       if (elapsed < RECENT_PRINT_COOLDOWN_MS) {
-        console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Đơn ${orderId} vừa được in cách đây ${elapsed}ms (< 15s).`);
-        return;
+        const record = printedOrderHistory.get(orderId);
+        if (record && itemCount > record.itemCount) {
+          // Có món mới bổ sung -> cho phép in tiếp!
+        } else {
+          console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Đơn ${orderId} vừa được in cách đây ${elapsed}ms (< 15s).`);
+          return;
+        }
       }
     }
 

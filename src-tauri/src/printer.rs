@@ -259,7 +259,7 @@ fn simple_hash(bytes: &[u8]) -> u64 {
 
 /// In ngầm trực tiếp hóa đơn nhị phân ESC/POS (Hỗ trợ cả Wi-Fi LAN TCP 9100 và USB Win32 Spooler)
 pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(), String> {
-    // 0. Chống in trùng lặp tuyệt đối ở tầng nhị phân ESC/POS (< 12 giây)
+    // 0. Chống in trùng lặp tuyệt đối ở tầng nhị phân ESC/POS (< 2 giây)
     // Chỉ áp dụng cho hóa đơn có dữ liệu dài (> 30 bytes), không chặn lệnh kick két tiền
     if data.len() > 30 {
         let hash = simple_hash(data);
@@ -267,8 +267,8 @@ pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(
         {
             let mut last_hash_lock = LAST_PRINT_RAW_HASH.lock().unwrap();
             if let Some((prev_hash, prev_time)) = *last_hash_lock {
-                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(12) {
-                    println!("[Print Raw] Bỏ qua lệnh in trùng lặp tuyệt đối (vừa in cách đây < 12s)");
+                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_millis(2000) {
+                    println!("[Print Raw] Bỏ qua lệnh in trùng lặp tuyệt đối (vừa in cách đây < 2s)");
                     return Ok(());
                 }
             }
@@ -288,30 +288,47 @@ pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(
         }
     }
 
-    // 2. Thử in trực tiếp qua TCP Socket Wi-Fi tới máy in 192.168.1.167:9100 trước
+    // 2. Trên Windows Desktop POS: ƯU TIÊN HÀNG ĐẦU LÀ IN TRỰC TIẾP QUA USB / WINDOWS SPOOLER
+    // Tốc độ phản hồi cực nhanh ~5ms, không bị delay timeout 2 giây
+    #[cfg(windows)]
+    {
+        let printer_to_use = match target_printer {
+            Some(name) if !name.trim().is_empty() => Some(name),
+            _ => {
+                let available = win32_spooler::list_printers().unwrap_or_default();
+                if let Some(pos_p) = available.iter().find(|p| {
+                    let low = p.to_lowercase();
+                    low.contains("pos") || low.contains("80") || low.contains("zy") || low.contains("receipt") || low.contains("thermal") || low.contains("xprinter")
+                }) {
+                    Some(pos_p.clone())
+                } else {
+                    win32_spooler::get_default_printer().ok()
+                }
+            }
+        };
+
+        if let Some(printer) = printer_to_use {
+            match win32_spooler::raw_print(&printer, data) {
+                Ok(()) => {
+                    println!("[Print] Đã in thành công siêu tốc qua Windows Spooler USB: {}", printer);
+                    return Ok(());
+                }
+                Err(err) => {
+                    println!("[Print] Không thể in qua máy in Windows '{}': {}. Thử fallback Wi-Fi...", printer, err);
+                }
+            }
+        }
+    }
+
+    // 3. Fallback sang Wi-Fi TCP Socket nếu máy in không cắm dây USB vào máy POS
     if let Ok(()) = print_tcp("192.168.1.167", 9100, data) {
         println!("[Print] Đã in thành công qua Wi-Fi TCP Socket 192.168.1.167:9100");
         return Ok(());
     }
 
-    // 3. Fallback sang cổng USB / Windows Spooler nếu cắm dây
     #[cfg(windows)]
     {
-        let printer = match target_printer {
-            Some(name) if !name.trim().is_empty() => name,
-            _ => {
-                let available = win32_spooler::list_printers().unwrap_or_default();
-                if let Some(pos_p) = available.iter().find(|p| {
-                    let low = p.to_lowercase();
-                    low.contains("pos") || low.contains("80") || low.contains("zy") || low.contains("receipt") || low.contains("thermal")
-                }) {
-                    pos_p.clone()
-                } else {
-                    win32_spooler::get_default_printer()?
-                }
-            }
-        };
-        win32_spooler::raw_print(&printer, data)
+        Err("Không tìm thấy máy in USB hoặc máy in Wi-Fi nào khả dụng!".to_string())
     }
     #[cfg(not(windows))]
     {

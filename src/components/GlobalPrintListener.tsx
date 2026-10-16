@@ -113,16 +113,10 @@ export default function GlobalPrintListener() {
         await new Promise(r => setTimeout(r, 300));
         if (orderId && isOrderAlreadyPrinted(orderId)) return;
 
-        try {
+          try {
           const items = await db.getOrderItems(orderId);
           if (items && items.length > 0) {
             if (orderId && isOrderAlreadyPrinted(orderId, items.length)) return;
-
-            markOrderAsPrinted(orderId, {
-              itemCount: items.length,
-              totalAmount: Number(newOrder.tong_tien || 0),
-              isPaid: newOrder.trang_thai_thanh_toan === 'Đã thanh toán'
-            });
 
             const currentTables = await db.getTables();
             const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
@@ -142,6 +136,12 @@ export default function GlobalPrintListener() {
                 subtotal: Number(i.thanh_tien || i.subtotal || 0),
                 notes: i.ghi_chu || ''
               }))
+            }, undefined, undefined, { isManualUserReprint: true });
+
+            markOrderAsPrinted(orderId, {
+              itemCount: items.length,
+              totalAmount: Number(newOrder.tong_tien || 0),
+              isPaid: newOrder.trang_thai_thanh_toan === 'Đã thanh toán'
             });
 
             toast.success(`🖨️ Đã in phiếu order (${matchedTable?.table_name || 'Khách mang về'}) từ điện thoại!`);
@@ -163,13 +163,6 @@ export default function GlobalPrintListener() {
               const currentTables = await db.getTables();
               const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
 
-              markOrderAsPrinted(orderId, {
-                itemCount: currentItems.length,
-                itemIds: currentItems.map((i: any) => i.id || i.product_id),
-                totalAmount: Number(newOrder.tong_tien || 0),
-                isPaid: false
-              });
-
               await printOrderDirect({
                 orderId: newOrder.id,
                 tableName: matchedTable?.table_name || 'Khách mang về',
@@ -184,6 +177,13 @@ export default function GlobalPrintListener() {
                   subtotal: Number(i.thanh_tien || i.subtotal || 0),
                   notes: i.ghi_chu || ''
                 }))
+              }, undefined, undefined, { isManualUserReprint: true });
+
+              markOrderAsPrinted(orderId, {
+                itemCount: currentItems.length,
+                itemIds: currentItems.map((i: any) => i.id || i.product_id),
+                totalAmount: Number(newOrder.tong_tien || 0),
+                isPaid: false
               });
 
               toast.success(`🖨️ Đã in món gọi thêm (${matchedTable?.table_name || 'Bàn'})!`);
@@ -216,11 +216,6 @@ export default function GlobalPrintListener() {
               const items = await db.getOrderItems(order.id);
               if (items && items.length > 0) {
                 if (isOrderAlreadyPrinted(order.id, items.length)) continue;
-                markOrderAsPrinted(order.id, {
-                  itemCount: items.length,
-                  totalAmount: Number(order.total_amount || 0),
-                  isPaid: false
-                });
                 const currentTables = await db.getTables();
                 const matchedTable = currentTables.find((t: any) => t.id === order.table_id);
                 await printOrderDirect({
@@ -237,7 +232,14 @@ export default function GlobalPrintListener() {
                     subtotal: Number(i.thanh_tien || i.subtotal || 0),
                     notes: i.ghi_chu || ''
                   }))
+                }, undefined, undefined, { isManualUserReprint: true });
+
+                markOrderAsPrinted(order.id, {
+                  itemCount: items.length,
+                  totalAmount: Number(order.total_amount || 0),
+                  isPaid: false
                 });
+
                 toast.success(`🖨️ Đã in phiếu bếp (${matchedTable?.table_name || 'Khách mang về'})!`);
               }
             }
