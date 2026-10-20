@@ -4750,14 +4750,14 @@ export default function AdminPage() {
                         setOtStartTime('06:30');
                         setOtEndTime('12:00');
                       } else {
-                        setOtStartTime('12:00');
+                        setOtStartTime('12:30');
                         setOtEndTime('17:30');
                       }
                     }}
                     className="w-full bg-[#FAF6F0] px-3.5 py-2.5 rounded-2xl border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark font-medium"
                   >
                     <option value="Ca sáng (06:30 - 12:00)">Ca sáng (06:30 - 12:00) [6:30am - 12:00pm]</option>
-                    <option value="Ca chiều (12:00 - 17:30)">Ca chiều (12:00 - 17:30) [12:00pm - 5:30pm]</option>
+                    <option value="Ca chiều (12:00 - 17:30)">Ca chiều (12:30 - 17:30) [12:30pm - 5:30pm]</option>
                   </select>
                 </div>
 

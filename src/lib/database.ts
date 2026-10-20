@@ -3916,11 +3916,30 @@ export const db = {
     location_address: string;
     ghi_chu_vao?: string;
   }) {
+    // Quy định: Ca sáng bắt buộc không được sớm hơn 06:30, Ca chiều bắt buộc không được sớm hơn 12:30
+    let safeCheckInTime = log.check_in_time;
+    try {
+      const inDate = new Date(log.check_in_time);
+      // Giờ theo múi giờ Việt Nam (UTC+7)
+      const inVN = new Date(inDate.getTime() + (7 * 60 * 60 * 1000));
+      const inH = inVN.getUTCHours();
+      const inM = inVN.getUTCMinutes();
+      const inMinutes = inH * 60 + inM;
+
+      if (log.shift.startsWith('Ca sáng') && inMinutes < 6 * 60 + 30) {
+        inVN.setUTCHours(6, 30, 0, 0);
+        safeCheckInTime = new Date(inVN.getTime() - (7 * 60 * 60 * 1000)).toISOString();
+      } else if (log.shift.startsWith('Ca chiều') && inMinutes < 12 * 60 + 30) {
+        inVN.setUTCHours(12, 30, 0, 0);
+        safeCheckInTime = new Date(inVN.getTime() - (7 * 60 * 60 * 1000)).toISOString();
+      }
+    } catch (_) {}
+
     const newLog = {
       id: generateShortId('log_'),
       user_id: log.user_id,
       shift: log.shift,
-      check_in_time: log.check_in_time,
+      check_in_time: safeCheckInTime,
       check_out_time: null,
       submitted_at: new Date().toISOString(),
       real_check_out_time: null,
@@ -3937,7 +3956,7 @@ export const db = {
         id: newLog.id,
         id_nhan_vien: log.user_id,
         ca_lam: log.shift,
-        gio_vao: log.check_in_time,
+        gio_vao: safeCheckInTime,
         gio_ra: null,
         thoi_gian_thuc_vao: newLog.submitted_at,
         thoi_gian_thuc_ra: null,

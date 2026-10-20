@@ -38,6 +38,30 @@ export default function TimeLogPage() {
   const [address, setAddress] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Tính toán giờ mặc định khi chấm công:
+  // Ca sáng bắt buộc không được sớm hơn 06:30 -> nếu sớm hơn thì để sẵn 06:30
+  // Ca chiều bắt buộc không được sớm hơn 12:30 -> nếu sớm hơn thì để sẵn 12:30
+  const getDefaultTimeInput = (targetShift: string, type: 'in' | 'out') => {
+    const now = new Date();
+    const curMinutes = now.getHours() * 60 + now.getMinutes();
+
+    if (type === 'in') {
+      if (targetShift.startsWith('Ca sáng')) {
+        if (curMinutes < 6 * 60 + 30) {
+          return '06:30';
+        }
+      } else if (targetShift.startsWith('Ca chiều')) {
+        if (curMinutes < 12 * 60 + 30) {
+          return '12:30';
+        }
+      }
+    }
+
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  };
+
   // Trạng thái Sửa ca làm
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingLog, setEditingLog] = useState<any>(null);
@@ -75,11 +99,21 @@ export default function TimeLogPage() {
       return;
     }
 
+    const [inH, inM] = editCheckInTime.split(':');
+    const inMins = parseInt(inH, 10) * 60 + parseInt(inM, 10);
+    if (editingLog.shift?.startsWith('Ca sáng') && inMins < 6 * 60 + 30) {
+      toast.error('Giờ vào Ca sáng bắt buộc không được sớm hơn 06:30!');
+      return;
+    }
+    if (editingLog.shift?.startsWith('Ca chiều') && inMins < 12 * 60 + 30) {
+      toast.error('Giờ vào Ca chiều bắt buộc không được sớm hơn 12:30!');
+      return;
+    }
+
     setSubmittingEdit(true);
     try {
       const logDay = new Date(editingLog.check_in_time);
       
-      const [inH, inM] = editCheckInTime.split(':');
       const newInDate = new Date(logDay);
       newInDate.setHours(parseInt(inH, 10), parseInt(inM, 10), 0, 0);
 
@@ -117,11 +151,8 @@ export default function TimeLogPage() {
     const type = params.get('type') === 'out' ? 'out' : 'in';
     setLogType(type);
 
-    // Mặc định giờ chấm công là giờ hiện tại (định dạng HH:mm)
-    const now = new Date();
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    setTimeInput(`${hours}:${minutes}`);
+    // Mặc định giờ chấm công: nếu sớm hơn giờ bắt đầu ca quy định thì để sẵn giờ đầu ca
+    setTimeInput(getDefaultTimeInput(shift, type));
 
     setCurrentUser(getCurrentUser());
   }, []);
@@ -176,6 +207,7 @@ export default function TimeLogPage() {
       const params = new URLSearchParams(window.location.search);
       const type = params.get('type') === 'out' ? 'out' : 'in';
       setLogType(type);
+      setTimeInput(getDefaultTimeInput(shift, type));
       
       // Reset form
       setCoords(null);
@@ -191,6 +223,7 @@ export default function TimeLogPage() {
       const type = params.get('type') === 'out' ? 'out' : 'in';
       if (type !== logType) {
         setLogType(type);
+        setTimeInput(getDefaultTimeInput(shift, type));
         setCoords(null);
         setAddress('');
         setNoteInput('');
@@ -201,7 +234,7 @@ export default function TimeLogPage() {
       window.removeEventListener('popstate', handleUrlChange);
       clearInterval(interval);
     };
-  }, [logType]);
+  }, [logType, shift]);
 
   // Hàm lấy vị trí GPS & dịch tọa độ ra địa chỉ
   const handleGetLocation = () => {
@@ -267,17 +300,42 @@ export default function TimeLogPage() {
     const totalMinutes = checkHour * 60 + checkMin;
 
     // 2. Kiểm tra giới hạn giờ khai báo theo ca
-    if (currentShift.startsWith('Ca sáng')) {
-      // Ca sáng: 06:30 - 12:00 (cho phép linh hoạt 06:00 - 13:30 để đến sớm hoặc ra trễ bàn giao)
-      if (totalMinutes < 6 * 60 || totalMinutes > 13 * 60 + 30) {
-        toast.error('Giờ khai báo Ca sáng chỉ được trong khoảng từ 06:00 đến 13:30!');
-        return;
+    if (logType === 'in') {
+      if (currentShift.startsWith('Ca sáng')) {
+        // Ca sáng: Bắt buộc không được sớm hơn 06:30
+        if (totalMinutes < 6 * 60 + 30) {
+          toast.error('Chấm công đầu Ca sáng bắt buộc không được sớm hơn 06:30!');
+          setTimeInput('06:30');
+          return;
+        }
+        if (totalMinutes > 13 * 60 + 30) {
+          toast.error('Giờ vào Ca sáng không được muộn hơn 13:30!');
+          return;
+        }
+      } else if (currentShift.startsWith('Ca chiều')) {
+        // Ca chiều: Bắt buộc không được sớm hơn 12:30
+        if (totalMinutes < 12 * 60 + 30) {
+          toast.error('Chấm công đầu Ca chiều bắt buộc không được sớm hơn 12:30!');
+          setTimeInput('12:30');
+          return;
+        }
+        if (totalMinutes > 18 * 60 + 30) {
+          toast.error('Giờ vào Ca chiều không được muộn hơn 18:30!');
+          return;
+        }
       }
-    } else if (currentShift.startsWith('Ca chiều')) {
-      // Ca chiều: 12:00 - 17:30 (cho phép linh hoạt 11:30 - 18:30 để đến sớm hoặc ra trễ)
-      if (totalMinutes < 11 * 60 + 30 || totalMinutes > 18 * 60 + 30) {
-        toast.error('Giờ khai báo Ca chiều chỉ được trong khoảng từ 11:30 đến 18:30!');
-        return;
+    } else {
+      // Giờ ra ca
+      if (currentShift.startsWith('Ca sáng')) {
+        if (totalMinutes < 6 * 60 + 30 || totalMinutes > 14 * 60) {
+          toast.error('Giờ ra Ca sáng phải trong khoảng từ 06:30 đến 14:00!');
+          return;
+        }
+      } else if (currentShift.startsWith('Ca chiều')) {
+        if (totalMinutes < 12 * 60 + 30 || totalMinutes > 19 * 60) {
+          toast.error('Giờ ra Ca chiều phải trong khoảng từ 12:30 đến 19:00!');
+          return;
+        }
       }
     }
 
@@ -448,11 +506,17 @@ export default function TimeLogPage() {
                     <label className="text-xs font-bold text-coffee-medium uppercase">Ca làm việc</label>
                     <select
                       value={shift}
-                      onChange={(e) => setShift(e.target.value)}
+                      onChange={(e) => {
+                        const newShift = e.target.value;
+                        setShift(newShift);
+                        if (logType === 'in') {
+                          setTimeInput(getDefaultTimeInput(newShift, 'in'));
+                        }
+                      }}
                       className="w-full h-11 bg-[#FAF6F0] px-4 py-0 rounded-2xl text-xs border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark block"
                     >
-                      <option>Ca sáng (06:30 - 12:00)</option>
-                      <option>Ca chiều (12:00 - 17:30)</option>
+                      <option value="Ca sáng (06:30 - 12:00)">Ca sáng (06:30 - 12:00)</option>
+                      <option value="Ca chiều (12:00 - 17:30)">Ca chiều (12:30 - 17:30)</option>
                     </select>
                   </div>
                 ) : (
@@ -472,10 +536,16 @@ export default function TimeLogPage() {
                   <input
                     type="time"
                     value={timeInput}
+                    min={logType === 'in' ? (shift.startsWith('Ca sáng') ? '06:30' : '12:30') : undefined}
                     onChange={(e) => setTimeInput(e.target.value)}
                     className="w-full h-11 bg-[#FAF6F0] px-4 py-0 rounded-2xl text-xs border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark block min-w-0"
                     required
                   />
+                  {logType === 'in' && (
+                    <p className="text-[10px] text-coffee-medium italic mt-1">
+                      * Giờ vào tối thiểu: {shift.startsWith('Ca sáng') ? '06:30' : '12:30'} (nếu đến sớm hơn sẽ tự động lấy giờ đầu ca)
+                    </p>
+                  )}
                 </div>
               </div>
 
