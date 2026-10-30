@@ -115,7 +115,8 @@ export default function InventoryPage() {
     }
 
     // Mỗi lần thanh toán sinh nhiều sự kiện kho liên tiếp -> gom lại thành 1 lần tải
-    const scheduleReload = createCoalescedRefresher(() => loadData(), 1000, 4000);
+    // (trang đang bị ẩn thì không tải, quay lại xem mới tải -> tiết kiệm băng thông Supabase)
+    const scheduleReload = createCoalescedRefresher(() => loadData(), 3000, 15000, { onlyWhenVisible: true });
     const unsubscribe = db.subscribeToInventoryChanges(scheduleReload);
 
     return () => {

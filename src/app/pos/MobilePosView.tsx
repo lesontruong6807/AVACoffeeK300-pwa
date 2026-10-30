@@ -173,7 +173,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
 
     // 2. Realtime listener cho bàn và đơn hàng
     // Gom các sự kiện dồn dập (mỗi lần thanh toán sinh hàng chục sự kiện) thành 1 lần tải lại -> điện thoại không bị lag
-    const scheduleRefresh = createCoalescedRefresher(() => refreshTables(), 400, 2000);
+    const scheduleRefresh = createCoalescedRefresher(() => refreshTables(), 500, 2500, { onlyWhenVisible: true });
     const unsubTables = db.subscribeToTableChanges(scheduleRefresh);
     const unsubOrders = db.subscribeToOrderChanges(scheduleRefresh);
 
@@ -193,8 +193,8 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
       } catch (_) {}
     }, 800, 3000);
     const unsubMenu = onRealtimeEvent('menu_update', () => reloadMenu());
-    // Dự phòng: tự làm mới thực đơn mỗi 10 phút
-    const menuTimer = setInterval(() => reloadMenu(), 10 * 60 * 1000);
+    // Dự phòng: tự làm mới thực đơn mỗi 60 phút (thay đổi thực đơn đã được báo ngay qua realtime)
+    const menuTimer = setInterval(() => reloadMenu(), 60 * 60 * 1000);
 
     let lastRefresh = 0;
     const handleWakeup = () => {

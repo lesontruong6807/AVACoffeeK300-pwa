@@ -122,7 +122,7 @@ export default function PaymentPage() {
     loadOrders();
 
     // 1. Realtime listener cho hóa đơn & chi tiết hóa đơn (gom sự kiện dồn dập thành 1 lần tải)
-    const scheduleReload = createCoalescedRefresher(() => loadOrders(true), 400, 2000);
+    const scheduleReload = createCoalescedRefresher(() => loadOrders(true), 600, 3000, { onlyWhenVisible: true });
     const unsubscribeOrders = db.subscribeToOrderChanges(scheduleReload);
     const unsubscribe = () => {
       scheduleReload.cancel();

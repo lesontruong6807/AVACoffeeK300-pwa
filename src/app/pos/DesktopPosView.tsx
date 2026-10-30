@@ -960,8 +960,8 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       } catch (_) {}
     }, 800, 3000);
     const unsubMenu = onRealtimeEvent('menu_update', () => reloadMenu());
-    // Dự phòng: tự làm mới thực đơn mỗi 10 phút
-    const menuTimer = setInterval(() => reloadMenu(), 10 * 60 * 1000);
+    // Dự phòng: tự làm mới thực đơn mỗi 60 phút (thay đổi thực đơn đã được báo ngay qua realtime)
+    const menuTimer = setInterval(() => reloadMenu(), 60 * 60 * 1000);
     const unsubPrints = onRealtimeEvent('order_update', async (rawPayload: any) => {
       scheduleRefresh();
       const payload = rawPayload?.payload || rawPayload;
@@ -979,9 +979,10 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       openCustomerDisplayWindow().catch(() => {});
     }, 1200);
 
-    // Dự phòng khi kết nối realtime bị rớt (Wi-Fi chập chờn): tự đồng bộ lại mỗi 45 giây
+    // Dự phòng khi kết nối realtime bị rớt (Wi-Fi chập chờn): tự đồng bộ lại mỗi 2 phút
     // và ngay khi có mạng trở lại, để sơ đồ bàn / đơn pha chế không bao giờ bị "đứng hình".
-    const pollTimer = setInterval(() => scheduleRefresh(), 45000);
+    // (2 phút thay vì 45 giây để tiết kiệm băng thông Supabase gói Free; realtime vẫn cập nhật tức thì)
+    const pollTimer = setInterval(() => scheduleRefresh(), 120000);
     const handleOnline = () => scheduleRefresh();
     window.addEventListener('online', handleOnline);
 

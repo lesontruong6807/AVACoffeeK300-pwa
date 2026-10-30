@@ -325,19 +325,77 @@ export default function AdminPage() {
       setLoading(false);
     }
 
-    // Gom tất cả sự kiện realtime dồn dập (1 lần thanh toán sinh ra hàng chục sự kiện) thành 1 lần tải lại ngầm
-    const scheduleReload = createCoalescedRefresher(() => {
-      if (getCurrentUser()?.role === 'Admin') return loadAllData(true);
-    }, 1500, 5000);
+    // TIẾT KIỆM BĂNG THÔNG SUPABASE (gói Free 5GB/tháng):
+    // - Mỗi loại sự kiện realtime chỉ tải lại ĐÚNG phần dữ liệu liên quan (không tải lại toàn bộ trang)
+    // - Đơn hàng & nhật ký kho chỉ tải phần HÔM QUA + HÔM NAY rồi ghép vào dữ liệu đang có
+    // - Trang Admin đang bị ẩn (tab khác / tắt màn hình) thì không tải, chỉ tải khi quay lại xem
+    const isAdmin = () => getCurrentUser()?.role === 'Admin';
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const vnDay = (offsetDays = 0) =>
+      new Date(Date.now() + offsetDays * DAY_MS).toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
 
-    const unsubInv = db.subscribeToInventoryChanges(scheduleReload);
-    const unsubReport = db.subscribeToReportChanges(scheduleReload);
-    const unsubTables = db.subscribeToTableChanges(scheduleReload);
-    const unsubAtt = db.subscribeToAttendanceChanges(scheduleReload);
-    const unsubOrders = db.subscribeToOrderChanges(scheduleReload);
+    const refreshRecentOrders = createCoalescedRefresher(async () => {
+      if (!isAdmin()) return;
+      const fromDay = vnDay(-1);
+      const toDay = vnDay(0);
+      const [fresh, expensesData] = await Promise.all([db.getOrdersForRange(fromDay, toDay), db.getExpenses()]);
+      // Khoảng thời gian mà getOrdersForRange vừa tải đầy đủ (có lề 1 ngày mỗi bên)
+      const winStart = new Date(`${fromDay}T00:00:00+07:00`).getTime() - DAY_MS;
+      const winEnd = new Date(`${toDay}T23:59:59.999+07:00`).getTime() + DAY_MS;
+      const inWindow = (d?: string | null) => {
+        if (!d) return false;
+        const t = new Date(d).getTime();
+        return t >= winStart && t <= winEnd;
+      };
+      const freshIds = new Set(fresh.orders.map((o: any) => o.id));
+      setOrders(prev => {
+        const kept = prev.filter(o => !freshIds.has(o.id) && !inWindow(o.created_at) && !inWindow(o.paid_at));
+        const keptIds = new Set(kept.map(o => o.id));
+        setAllOrderItems(prevItems => [
+          ...prevItems.filter(it => keptIds.has(it.order_id)),
+          ...fresh.items
+        ]);
+        return [...fresh.orders, ...kept];
+      });
+      setExpenses(expensesData);
+    }, 3000, 10000, { onlyWhenVisible: true });
+
+    const refreshInventory = createCoalescedRefresher(async () => {
+      if (!isAdmin()) return;
+      const sinceIso = new Date(`${vnDay(-1)}T00:00:00+07:00`).toISOString();
+      const sinceMs = new Date(sinceIso).getTime();
+      const [ingredientsData, freshLogs] = await Promise.all([db.getIngredients(), db.getInventoryLogs(sinceIso)]);
+      setIngredients(ingredientsData);
+      const freshIds = new Set(freshLogs.map((l: any) => l.id));
+      setInventoryLogs(prev => [
+        ...freshLogs,
+        ...prev.filter(l => !freshIds.has(l.id) && new Date(l.created_at).getTime() < sinceMs)
+      ]);
+    }, 5000, 20000, { onlyWhenVisible: true });
+
+    const refreshAttendance = createCoalescedRefresher(async () => {
+      if (!isAdmin()) return;
+      const [logs, leaves] = await Promise.all([db.getTimeLogs(), db.getLeaveRequests()]);
+      setTimeLogs(logs);
+      setLeaveRequests(leaves);
+    }, 2000, 8000, { onlyWhenVisible: true });
+
+    const refreshTables = createCoalescedRefresher(async () => {
+      if (!isAdmin()) return;
+      setTables(await db.getTables(true));
+    }, 2000, 8000, { onlyWhenVisible: true });
+
+    const unsubInv = db.subscribeToInventoryChanges(() => refreshInventory());
+    const unsubReport = db.subscribeToReportChanges(() => refreshRecentOrders());
+    const unsubTables = db.subscribeToTableChanges(() => refreshTables());
+    const unsubAtt = db.subscribeToAttendanceChanges(() => refreshAttendance());
+    const unsubOrders = db.subscribeToOrderChanges(() => refreshRecentOrders());
 
     return () => {
-      scheduleReload.cancel();
+      refreshRecentOrders.cancel();
+      refreshInventory.cancel();
+      refreshAttendance.cancel();
+      refreshTables.cancel();
       unsubInv();
       unsubReport();
       unsubTables();

@@ -32,7 +32,8 @@ export default function DailyReportPage() {
       const yesterdayVN = new Date(Date.now() - 24 * 60 * 60 * 1000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
       const results = await Promise.allSettled([
         db.getOrdersForRange(yesterdayVN, todayVN),
-        db.getInventoryLogs(),
+        // Báo cáo ca chỉ cần phiếu nhập kho hôm nay -> chỉ tải nhật ký kho từ hôm qua
+        db.getInventoryLogs(new Date(`${yesterdayVN}T00:00:00+07:00`).toISOString()),
         db.getRecipes()
       ]);
 
@@ -60,7 +61,8 @@ export default function DailyReportPage() {
 
     // 1. Realtime listener cho báo cáo ca trực (Đơn hàng, Chi phí, Nhập kho)
     // Gom các sự kiện dồn dập thành 1 lần tải lại ngầm để không nghẽn mạng
-    const scheduleReload = createCoalescedRefresher(() => loadData(true), 1500, 5000);
+    // (trang đang bị ẩn thì không tải, quay lại xem mới tải -> tiết kiệm băng thông Supabase)
+    const scheduleReload = createCoalescedRefresher(() => loadData(true), 3000, 10000, { onlyWhenVisible: true });
     const unsubReport = db.subscribeToReportChanges(scheduleReload);
     const unsubOrders = db.subscribeToOrderChanges(scheduleReload);
 

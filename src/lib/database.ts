@@ -94,9 +94,9 @@ let stockMutationQueue: Promise<unknown> = Promise.resolve();
 let lastSalesLogConsolidateTime = 0;
 let ordersInFlight: Promise<any[]> | null = null;
 let orderItemsInFlight: Promise<any[]> | null = null;
-// Công thức chỉ được giữ trong bộ nhớ tối đa 60 giây để máy POS chạy cả ngày
-// vẫn nhận ngay thay đổi định lượng (ví dụ bỏ ly đen) mà Admin vừa sửa trên web.
-const RECIPES_CACHE_TTL_MS = 60000;
+// Công thức được giữ trong bộ nhớ tối đa 5 phút; khi Admin sửa định lượng (ví dụ bỏ ly đen),
+// sự kiện realtime (congthuc / menu_update) xóa cache ngay nên máy POS nhận công thức mới tức thì.
+const RECIPES_CACHE_TTL_MS = 5 * 60 * 1000;
 // Thực đơn (món, giá, ảnh) giữ trong bộ nhớ tối đa 5 phút (ngoài ra còn được làm mới ngay qua sự kiện menu_update)
 const MENU_CACHE_TTL_MS = 5 * 60 * 1000;
 let lastProductsFetchTime = 0;
@@ -109,16 +109,43 @@ const PRODUCT_IMAGE_BUCKET = 'product-images';
  * Mỗi lần thanh toán sinh ra hàng chục sự kiện (hoadon, hoadondetail, nguyenlieu, lichsukho...),
  * nếu mỗi sự kiện đều tải lại toàn bộ dữ liệu thì máy sẽ bị nghẽn mạng và đứng.
  */
-export function createCoalescedRefresher(task: () => unknown, waitMs = 500, maxWaitMs = 2500) {
+export function createCoalescedRefresher(
+  task: () => unknown,
+  waitMs = 500,
+  maxWaitMs = 2500,
+  options?: {
+    // Tiết kiệm băng thông Supabase: màn hình đang bị ẩn (tab khác / điện thoại tắt màn hình)
+    // thì KHÔNG tải lại, chỉ ghi nhớ và tải 1 lần khi người dùng quay lại xem.
+    onlyWhenVisible?: boolean;
+  }
+) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let firstRequestAt = 0;
   let running = false;
   let queued = false;
   let disposed = false;
+  let pendingWhileHidden = false;
+
+  const isHidden = () =>
+    !!options?.onlyWhenVisible && typeof document !== 'undefined' && document.visibilityState === 'hidden';
+
+  const handleVisible = () => {
+    if (!isHidden() && pendingWhileHidden && !disposed) {
+      pendingWhileHidden = false;
+      schedule();
+    }
+  };
+  if (options?.onlyWhenVisible && typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisible);
+  }
 
   const run = async () => {
     timer = null;
     firstRequestAt = 0;
+    if (isHidden()) {
+      pendingWhileHidden = true;
+      return;
+    }
     if (running) {
       queued = true;
       return;
@@ -153,6 +180,9 @@ export function createCoalescedRefresher(task: () => unknown, waitMs = 500, maxW
     disposed = true;
     if (timer) clearTimeout(timer);
     timer = null;
+    if (options?.onlyWhenVisible && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisible);
+    }
   };
 
   return Object.assign(schedule, { cancel });
@@ -5013,7 +5043,8 @@ export const db = {
     return mockDb.getInventoryLogs().filter(l => l.status === 'Chờ duyệt');
   },
 
-  async getInventoryLogs() {
+  // sinceIso: chỉ tải nhật ký kho từ mốc thời gian này (tiết kiệm băng thông, ví dụ Báo cáo ca chỉ cần hôm nay)
+  async getInventoryLogs(sinceIso?: string) {
     // Gộp log bán hàng trùng lặp: tối đa 10 phút / lần (trước đây chạy mỗi lần tải trang -> tốn băng thông)
     if (Date.now() - lastSalesLogConsolidateTime > 10 * 60 * 1000) {
       lastSalesLogConsolidateTime = Date.now();
@@ -5024,14 +5055,16 @@ export const db = {
       let from = 0;
       const step = 1000;
       while (true) {
-        const { data, error } = await supabase
+        const query = supabase
           .from('lichsukho')
           .select(`
             *,
             nguyenlieu (ten_nguyen_lieu, don_vi_tinh),
             nguoidung (ho_ten)
-          `)
+          `);
+        const { data, error } = await (sinceIso ? query.gte('thoi_gian_tao', sinceIso) : query)
           .order('thoi_gian_tao', { ascending: false })
+          .order('id', { ascending: true })
           .range(from, from + step - 1);
 
         if (error || !data || data.length === 0) break;
@@ -5846,10 +5879,12 @@ export const db = {
   async consolidateDuplicateSalesLogs() {
     if (!isSupabaseConfigured || !supabase) return;
     try {
+      // Chỉ kiểm tra log 3 ngày gần nhất (log trùng chỉ phát sinh trong ngày) -> không tải toàn bộ lịch sử kho
       const { data: salesLogs, error } = await supabase
         .from('lichsukho')
-        .select('*')
-        .eq('loai_giao_dich', 'Bán hàng');
+        .select('id, id_nguyen_lieu, so_luong_thay_doi, thoi_gian_tao')
+        .eq('loai_giao_dich', 'Bán hàng')
+        .gte('thoi_gian_tao', new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString());
 
       if (error || !salesLogs || salesLogs.length === 0) return;
 
