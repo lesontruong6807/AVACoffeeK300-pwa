@@ -71,7 +71,9 @@ CREATE TABLE public.sanpham (
     gia_von NUMERIC NOT NULL CHECK (gia_von >= 0) DEFAULT 0,
     hinh_anh TEXT,
     mo_ta TEXT,
-    trang_thai TEXT NOT NULL CHECK (trang_thai IN ('Còn hàng', 'Hết hàng')) DEFAULT 'Còn hàng'
+    trang_thai TEXT NOT NULL CHECK (trang_thai IN ('Còn hàng', 'Hết hàng')) DEFAULT 'Còn hàng',
+    gia_mang_ve NUMERIC,
+    gia_ngoi_lai NUMERIC
 );
 
 -- 5. BẢNG NGUYÊN LIỆU KHO
