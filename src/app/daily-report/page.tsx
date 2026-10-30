@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { db, getCurrentUser, getDefaultCupId } from '@/lib/database';
+import { db, getCurrentUser, resolveItemCupId, createCoalescedRefresher } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { BarChart3, Clock, DollarSign, ShoppingBag, TrendingUp, ShieldCheck, Calendar, ArrowRightLeft, ArrowLeft, X } from 'lucide-react';
 
@@ -26,20 +26,27 @@ export default function DailyReportPage() {
   const loadData = async (isBackground = false) => {
     if (!isBackground) setLoading(true);
     try {
+      // Báo cáo ca chỉ cần đơn của hôm nay -> chỉ tải hóa đơn từ hôm qua đến hôm nay (giờ Việt Nam)
+      // thay vì toàn bộ lịch sử bán hàng như trước
+      const todayVN = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+      const yesterdayVN = new Date(Date.now() - 24 * 60 * 60 * 1000).toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
       const results = await Promise.allSettled([
-        db.getOrders(),
+        db.getOrdersForRange(yesterdayVN, todayVN),
         db.getInventoryLogs(),
-        db.getAllOrderItems(),
         db.getRecipes()
       ]);
 
-      const val = (idx: number, fallback: any = []) => 
+      const val = (idx: number, fallback: any = []) =>
         results[idx].status === 'fulfilled' ? (results[idx] as PromiseFulfilledResult<any>).value : fallback;
 
-      setOrders(val(0));
+      // Lỗi mạng -> giữ nguyên số liệu đang hiển thị, không xóa trắng báo cáo
+      if (results[0].status === 'fulfilled') {
+        const rangeData = (results[0] as PromiseFulfilledResult<any>).value;
+        setOrders(rangeData.orders);
+        setOrderItems(rangeData.items);
+      }
       setInventoryLogs(val(1));
-      setOrderItems(val(2));
-      setRecipes(val(3));
+      setRecipes(val(2));
     } catch (e) {
       console.error('Lỗi khi tải hóa đơn báo cáo:', e);
     } finally {
@@ -52,17 +59,15 @@ export default function DailyReportPage() {
     loadData();
 
     // 1. Realtime listener cho báo cáo ca trực (Đơn hàng, Chi phí, Nhập kho)
-    const unsubReport = db.subscribeToReportChanges(() => {
-      loadData(true);
-    });
-    const unsubOrders = db.subscribeToOrderChanges(() => {
-      loadData(true);
-    });
+    // Gom các sự kiện dồn dập thành 1 lần tải lại ngầm để không nghẽn mạng
+    const scheduleReload = createCoalescedRefresher(() => loadData(true), 1500, 5000);
+    const unsubReport = db.subscribeToReportChanges(scheduleReload);
+    const unsubOrders = db.subscribeToOrderChanges(scheduleReload);
 
     // 2. Tự động kiểm tra & đồng bộ khi mở sáng màn hình / kết nối mạng lại
     const handleWakeup = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        loadData(true);
+        scheduleReload();
       }
     };
 
@@ -73,6 +78,7 @@ export default function DailyReportPage() {
     }
 
     return () => {
+      scheduleReload.cancel();
       unsubReport();
       unsubOrders();
       if (typeof window !== 'undefined') {
@@ -212,43 +218,14 @@ export default function DailyReportPage() {
     let lyHoaVan = 0;
 
     shiftItems.forEach(item => {
-      const prodId = item.product_id;
       const qty = Number(item.quantity || 0);
-      
-      // Kiểm tra xem món có chỉ định đổi ly riêng không
-      let customCup = item.cup_id;
-      if (!customCup && item.notes) {
-        const m = item.notes.match(/\[Ly:\s*(ing_ly[a-z]+)\]/);
-        if (m) customCup = m[1];
-      }
 
-      if (customCup) {
-        if (customCup === 'ing_lyden') lyDen += qty;
-        else if (customCup === 'ing_lyhoavan') lyHoaVan += qty;
-        else lyTrang += qty;
-      } else {
-        const prodRecipes = recipes.filter(r => r.product_id === prodId);
-        let foundCupInRecipe = false;
-        prodRecipes.forEach(r => {
-          if (r.ingredient_id === 'ing_lyden') {
-            lyDen += Number(r.quantity_needed || 0) * qty;
-            foundCupInRecipe = true;
-          } else if (r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lytratac') {
-            lyTrang += Number(r.quantity_needed || 0) * qty;
-            foundCupInRecipe = true;
-          } else if (r.ingredient_id === 'ing_lyhoavan') {
-            lyHoaVan += Number(r.quantity_needed || 0) * qty;
-            foundCupInRecipe = true;
-          }
-        });
-
-        if (!foundCupInRecipe) {
-          const fallbackCup = getDefaultCupId(prodId, item.name || item.ten_san_pham, recipes);
-          if (fallbackCup === 'ing_lyden') lyDen += qty;
-          else if (fallbackCup === 'ing_lyhoavan') lyHoaVan += qty;
-          else if (fallbackCup === 'ing_lytrang') lyTrang += qty;
-        }
-      }
+      // Đếm ly đúng quy tắc trừ kho: chỉ món có ly trong công thức định lượng mới tính ly
+      // (ly nhân viên đổi riêng được ưu tiên; món không có ly như Bò húc / Nước suối không tính)
+      const cup = resolveItemCupId(item.product_id, item.name || item.ten_san_pham, item.notes || item.ghi_chu, item.cup_id, recipes);
+      if (cup === 'ing_lyden') lyDen += qty;
+      else if (cup === 'ing_lyhoavan') lyHoaVan += qty;
+      else if (cup === 'ing_lytrang') lyTrang += qty;
     });
 
     const totalLy = lyDen + lyTrang + lyHoaVan;

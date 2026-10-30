@@ -1,4 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
+import { hashPassword, verifyPassword, isHashedPassword, sessionPasswordMatches, userSalt } from '@/lib/passwordHash';
+import { dataUrlToBlob } from '@/lib/imageUtils';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
@@ -53,6 +55,20 @@ if (typeof window !== 'undefined') {
   } catch (e) {}
 }
 
+// Giới hạn thời gian chờ mỗi request Supabase: khi mạng chập chờn, request sẽ báo lỗi
+// thay vì treo vô hạn khiến nút "Thanh toán" / "Lưu đơn" quay mãi không dừng.
+const SUPABASE_REQUEST_TIMEOUT_MS = 20000;
+const fetchWithTimeout: typeof fetch = (input, init) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SUPABASE_REQUEST_TIMEOUT_MS);
+  const outerSignal = init?.signal;
+  if (outerSignal) {
+    if (outerSignal.aborted) controller.abort();
+    else outerSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+};
+
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
@@ -60,6 +76,9 @@ export const supabase = isSupabaseConfigured
         autoRefreshToken: false,
         detectSessionInUrl: false,
         storageKey: 'ava_none'
+      },
+      global: {
+        fetch: fetchWithTimeout
       }
     })
   : null;
@@ -70,6 +89,74 @@ let lastTablesFetchTime = 0;
 let cachedCategories: any[] | null = null;
 let cachedProducts: any[] | null = null;
 let cachedRecipes: any[] | null = null;
+let lastRecipesFetchTime = 0;
+let stockMutationQueue: Promise<unknown> = Promise.resolve();
+let lastSalesLogConsolidateTime = 0;
+let ordersInFlight: Promise<any[]> | null = null;
+let orderItemsInFlight: Promise<any[]> | null = null;
+// Công thức chỉ được giữ trong bộ nhớ tối đa 60 giây để máy POS chạy cả ngày
+// vẫn nhận ngay thay đổi định lượng (ví dụ bỏ ly đen) mà Admin vừa sửa trên web.
+const RECIPES_CACHE_TTL_MS = 60000;
+// Thực đơn (món, giá, ảnh) giữ trong bộ nhớ tối đa 5 phút (ngoài ra còn được làm mới ngay qua sự kiện menu_update)
+const MENU_CACHE_TTL_MS = 5 * 60 * 1000;
+let lastProductsFetchTime = 0;
+let lastCategoriesFetchTime = 0;
+// Kho ảnh món trên Supabase Storage (tạo bởi file supabase/nang_cap_v2_ava_k300.sql)
+const PRODUCT_IMAGE_BUCKET = 'product-images';
+
+/**
+ * Gom nhiều sự kiện realtime liên tiếp thành 1 lần tải lại dữ liệu duy nhất.
+ * Mỗi lần thanh toán sinh ra hàng chục sự kiện (hoadon, hoadondetail, nguyenlieu, lichsukho...),
+ * nếu mỗi sự kiện đều tải lại toàn bộ dữ liệu thì máy sẽ bị nghẽn mạng và đứng.
+ */
+export function createCoalescedRefresher(task: () => unknown, waitMs = 500, maxWaitMs = 2500) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let firstRequestAt = 0;
+  let running = false;
+  let queued = false;
+  let disposed = false;
+
+  const run = async () => {
+    timer = null;
+    firstRequestAt = 0;
+    if (running) {
+      queued = true;
+      return;
+    }
+    running = true;
+    try {
+      await task();
+    } catch (err) {
+      console.warn('Lỗi khi tải lại dữ liệu realtime:', err);
+    } finally {
+      running = false;
+      if (queued && !disposed) {
+        queued = false;
+        schedule();
+      }
+    }
+  };
+
+  const schedule = () => {
+    if (disposed) return;
+    const now = Date.now();
+    if (!firstRequestAt) firstRequestAt = now;
+    if (timer) {
+      // Đã chờ quá lâu vì sự kiện dồn dập liên tục -> để timer hiện tại chạy, không lùi thêm
+      if (now - firstRequestAt >= maxWaitMs) return;
+      clearTimeout(timer);
+    }
+    timer = setTimeout(run, waitMs);
+  };
+
+  const cancel = () => {
+    disposed = true;
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+
+  return Object.assign(schedule, { cancel });
+}
 
 // Shared Realtime Sync Channel & Event Listeners
 let sharedRealtimeChannel: any = null;
@@ -78,7 +165,9 @@ const realtimeListeners: { [event: string]: Set<(payload: any) => void> } = {
   order_update: new Set(),
   report_update: new Set(),
   inventory_update: new Set(),
-  attendance_update: new Set()
+  attendance_update: new Set(),
+  // Admin thêm / sửa món, đổi ảnh, đổi giá, đổi công thức -> mọi máy tải lại thực đơn
+  menu_update: new Set()
 };
 
 function getSharedRealtimeChannel() {
@@ -110,6 +199,16 @@ function getSharedRealtimeChannel() {
       .on('broadcast', { event: 'inventory_update' }, (msg: any) => {
         const payload = msg?.payload || msg;
         realtimeListeners['inventory_update']?.forEach(fn => {
+          try { fn(payload); } catch (e) { console.error(e); }
+        });
+      })
+      .on('broadcast', { event: 'menu_update' }, (msg: any) => {
+        cachedProducts = null;
+        cachedCategories = null;
+        cachedRecipes = null;
+        lastRecipesFetchTime = 0;
+        const payload = msg?.payload || msg;
+        realtimeListeners['menu_update']?.forEach(fn => {
           try { fn(payload); } catch (e) { console.error(e); }
         });
       })
@@ -171,12 +270,17 @@ function getSharedRealtimeChannel() {
           try { fn(payload); } catch (e) { console.error(e); }
         });
       })
+      // Admin sửa công thức định lượng -> xóa cache công thức để lần trừ kho kế tiếp dùng công thức mới
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'congthuc' }, () => {
+        cachedRecipes = null;
+        lastRecipesFetchTime = 0;
+      })
       .subscribe();
   }
   return sharedRealtimeChannel;
 }
 
-export function broadcastRealtimeEvent(event: 'table_update' | 'order_update' | 'report_update' | 'inventory_update' | 'attendance_update', payload?: any) {
+export function broadcastRealtimeEvent(event: 'table_update' | 'order_update' | 'report_update' | 'inventory_update' | 'attendance_update' | 'menu_update', payload?: any) {
   try {
     const ch = getSharedRealtimeChannel();
     if (ch) {
@@ -192,7 +296,7 @@ export function broadcastRealtimeEvent(event: 'table_update' | 'order_update' | 
 }
 
 export function onRealtimeEvent(
-  event: 'table_update' | 'order_update' | 'report_update' | 'inventory_update' | 'attendance_update',
+  event: 'table_update' | 'order_update' | 'report_update' | 'inventory_update' | 'attendance_update' | 'menu_update',
   callback: (payload: any) => void
 ): () => void {
   getSharedRealtimeChannel();
@@ -1321,6 +1425,22 @@ export const setCurrentUser = (user: typeof MOCK_USERS[0] | null) => {
   }
 };
 
+// Sự kiện báo cho MainLayout biết phiên đăng nhập vừa thay đổi (đăng xuất từ màn hình POS, v.v.)
+export const AUTH_CHANGE_EVENT = 'ava-auth-change';
+
+/**
+ * Đăng xuất tài khoản hiện tại.
+ * Không phụ thuộc window.location.reload(): trên app POS (.exe Tauri) trang có thể đang ở
+ * đường dẫn client-side (/pos, /admin...) mà khi reload WebView không nạp lại đúng trang,
+ * khiến bấm "Đăng xuất" như không có tác dụng. MainLayout lắng nghe sự kiện và hiện ngay màn hình đăng nhập.
+ */
+export const logoutCurrentUser = () => {
+  setCurrentUser(null);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AUTH_CHANGE_EVENT));
+  }
+};
+
 // --- DATA MAPPER FUNCTIONS (MAPPING BETWEEN FRONTEND AND VIETNAMESE DB COLUMNS) ---
 const mapUserToClient = (u: any) => u ? {
   id: u.id,
@@ -1332,11 +1452,27 @@ const mapUserToClient = (u: any) => u ? {
   created_at: u.ngay_tao
 } : null;
 
+// Các nguyên liệu ly được trừ kho (ly trà tắc cũ đã được thay bằng ly hoa văn tại K300)
+const CUP_INGREDIENT_IDS = ['ing_lyden', 'ing_lytrang', 'ing_lyhoavan'];
+const RECIPE_CUP_INGREDIENT_IDS = [...CUP_INGREDIENT_IDS, 'ing_lytratac'];
+const CUP_TAG_REGEX = /\[Ly:\s*(ing_ly[a-z]+)\]/;
+
+function normalizeCupId(cupId?: string | null): string | undefined {
+  if (!cupId) return undefined;
+  if (cupId === 'ing_lytratac') return 'ing_lyhoavan';
+  return CUP_INGREDIENT_IDS.includes(cupId) ? cupId : undefined;
+}
+
+/** Xóa thẻ [Ly: ...] khỏi ghi chú món */
+export function stripCupTag(notes?: string | null): string {
+  return (notes || '').replace(/\s*\[Ly:\s*ing_ly[a-z]+\]/g, '').trim();
+}
+
 /**
- * Trả về mã nguyên liệu ly mặc định cho một sản phẩm dựa trên:
- * 1. Danh sách công thức (nếu đã tải)
- * 2. Bảng ánh xạ mã món chuẩn (chuẩn hóa theo thực đơn K300, 0ms, không phụ thuộc mạng)
- * 3. Quy tắc từ khóa tên món (nếu là món mới thêm)
+ * Trả về mã nguyên liệu ly mặc định cho một sản phẩm.
+ * NGUYÊN TẮC: Công thức định lượng là nguồn duy nhất quyết định món có dùng ly hay không.
+ * - Khi đã có danh sách công thức: món nào công thức có ly mới trả về ly, công thức không có ly -> không trừ ly.
+ * - Chỉ khi chưa tải được công thức (mất mạng lúc khởi động) mới dùng bảng tra cứu dự phòng bên dưới.
  */
 export function getDefaultCupId(productId?: string, productName?: string, recipesList?: any[]): string | undefined {
   if (!productId && !productName) return undefined;
@@ -1349,22 +1485,21 @@ export function getDefaultCupId(productId?: string, productName?: string, recipe
     return undefined;
   }
 
-  // 1. Kiểm tra từ công thức (nếu danh sách recipes đã sẵn sàng)
-  if (recipesList && recipesList.length > 0 && pId) {
-    const cupRecipe = recipesList.find(
+  // 1. Công thức định lượng (ưu tiên danh sách truyền vào, sau đó tới cache công thức trong bộ nhớ)
+  const recipeSource = recipesList && recipesList.length > 0 ? recipesList : cachedRecipes;
+  if (recipeSource && recipeSource.length > 0 && pId) {
+    const cupRecipe = recipeSource.find(
       r => (r.product_id === pId || r.id_san_pham === pId) &&
-           ['ing_lyden', 'ing_lytrang', 'ing_lyhoavan', 'ing_lytratac'].includes(r.ingredient_id || r.id_nguyen_lieu)
+           RECIPE_CUP_INGREDIENT_IDS.includes(r.ingredient_id || r.id_nguyen_lieu)
     );
-    if (cupRecipe) {
-      const ingId = cupRecipe.ingredient_id || cupRecipe.id_nguyen_lieu;
-      if (ingId === 'ing_lytratac') return 'ing_lyhoavan';
-      return ingId;
-    }
+    // Công thức không có ly (ví dụ Bò húc, Nước suối đã bỏ ly đen) -> tuyệt đối không gán ly
+    return cupRecipe ? normalizeCupId(cupRecipe.ingredient_id || cupRecipe.id_nguyen_lieu) : undefined;
   }
 
-  // 2. Tra cứu tức thì (0ms) theo mã món chuẩn thực đơn AVA Coffee K300
-  // Ly Đen AVA: CP001 (Cà phê đá), TUK006 (Chanh nóng), N002 (Bò Húc), N005 (Nước suối)
-  const LY_DEN_IDS = ['CP001', 'TUK006', 'N002', 'N005'];
+  // 2. DỰ PHÒNG khi chưa tải được công thức: tra cứu tức thì (0ms) theo mã món chuẩn thực đơn AVA Coffee K300
+  // Ly Đen AVA: CP001 (Cà phê đá), TUK006 (Chanh nóng)
+  // (Bò Húc N002 và Nước suối N005 đã bỏ ly đen trong công thức theo yêu cầu của quán)
+  const LY_DEN_IDS = ['CP001', 'TUK006'];
   if (pId && LY_DEN_IDS.includes(pId)) return 'ing_lyden';
 
   // Ly Hoa Văn AVA: Cà phê sữa tươi (CP003), Sữa đá lớn (CP009), Chanh đá (TUK005),
@@ -1388,12 +1523,13 @@ export function getDefaultCupId(productId?: string, productName?: string, recipe
 
   // 3. Quy tắc từ khóa tên món (phòng trường hợp admin tạo thêm món mới)
   const lowerName = (productName || '').toLowerCase().trim();
+  if (lowerName.includes('bò húc') || lowerName.includes('nước suối')) {
+    return undefined;
+  }
   if (
     lowerName.includes('cà phê đá') ||
     (lowerName.includes('đen') && !lowerName.includes('lớn')) ||
-    lowerName.includes('chanh nóng') ||
-    lowerName.includes('bò húc') ||
-    lowerName.includes('nước suối')
+    lowerName.includes('chanh nóng')
   ) {
     return 'ing_lyden';
   }
@@ -1411,6 +1547,100 @@ export function getDefaultCupId(productId?: string, productName?: string, recipe
   }
 
   return 'ing_lytrang';
+}
+
+/**
+ * Xác định chính xác loại ly sẽ trừ kho cho 1 món trong đơn.
+ * - Công thức món KHÔNG có ly -> trả về undefined (không trừ ly nào, bỏ qua mọi thẻ [Ly: ...] cũ trong ghi chú).
+ * - Công thức món CÓ ly -> dùng ly nhân viên đã chọn đổi (cup_id / thẻ [Ly: ...]) nếu có, không thì dùng ly trong công thức.
+ */
+export function resolveItemCupId(
+  productId?: string,
+  productName?: string,
+  notes?: string | null,
+  explicitCupId?: string | null,
+  recipesList?: any[]
+): string | undefined {
+  const requestedCup = normalizeCupId(explicitCupId) || normalizeCupId((notes || '').match(CUP_TAG_REGEX)?.[1]);
+  const recipeSource = recipesList && recipesList.length > 0 ? recipesList : cachedRecipes;
+
+  if (recipeSource && recipeSource.length > 0 && productId) {
+    const recipeCup = getDefaultCupId(productId, productName, recipeSource);
+    if (!recipeCup) return undefined;
+    return requestedCup || recipeCup;
+  }
+
+  // Chưa tải được công thức: giữ nguyên lựa chọn của nhân viên, không có thì tra cứu dự phòng
+  return requestedCup || getDefaultCupId(productId, productName);
+}
+
+/**
+ * Tính tổng lượng nguyên liệu cần trừ cho danh sách món dựa trên công thức định lượng.
+ * Dùng chung cho trừ kho khi bán và hoàn kho khi hủy để 2 chiều luôn khớp nhau.
+ */
+function buildIngredientChanges(
+  items: Array<{ product_id: string; quantity: number; name?: string; notes?: string; ghi_chu?: string; cup_id?: string }>,
+  recipes: any[]
+): { [ingredientId: string]: { deductQty: number; productIds: string[] } } {
+  const changes: { [ingredientId: string]: { deductQty: number; productIds: string[] } } = {};
+  for (const item of items) {
+    const qty = Number(item.quantity) || 0;
+    if (!item.product_id || qty <= 0) continue;
+    const itemRecipes = recipes.filter(r => r.product_id === item.product_id);
+    const recipeHasCup = itemRecipes.some(r => RECIPE_CUP_INGREDIENT_IDS.includes(r.ingredient_id));
+    const chosenCup = recipeHasCup
+      ? resolveItemCupId(item.product_id, item.name, item.notes || item.ghi_chu || '', item.cup_id, recipes)
+      : undefined;
+
+    for (const rec of itemRecipes) {
+      let targetIngId = rec.ingredient_id;
+      if (RECIPE_CUP_INGREDIENT_IDS.includes(targetIngId)) {
+        // Ly trà tắc cũ -> ly hoa văn; nhân viên đổi loại ly -> trừ đúng loại ly đã chọn
+        targetIngId = chosenCup || normalizeCupId(targetIngId) || targetIngId;
+      }
+      const deductQty = (Number(rec.quantity_needed) || 0) * qty;
+      if (deductQty <= 0) continue;
+      if (!changes[targetIngId]) changes[targetIngId] = { deductQty: 0, productIds: [] };
+      changes[targetIngId].deductQty += deductQty;
+      if (!changes[targetIngId].productIds.includes(item.product_id)) {
+        changes[targetIngId].productIds.push(item.product_id);
+      }
+    }
+  }
+  return changes;
+}
+
+// =========================================================================
+// HÀM KHO NGUYÊN TỬ TRÊN SUPABASE (file supabase/nang_cap_v2_ava_k300.sql)
+// - Đã chạy file SQL: cộng/trừ kho thực hiện thẳng trên server, 2 máy bán cùng lúc không bao giờ lệch kho.
+// - Chưa chạy file SQL: tự động dùng cách cũ, app vẫn bán hàng bình thường.
+// =========================================================================
+let stockRpcUnavailableAt = 0;
+
+async function callStockRpc(fnName: string, params: Record<string, any>): Promise<'ok' | 'unavailable'> {
+  if (!isSupabaseConfigured || !supabase) return 'unavailable';
+  // Vừa xác nhận chưa có hàm -> 10 phút sau mới thử lại (lúc đó có thể Admin đã chạy file SQL)
+  if (stockRpcUnavailableAt && Date.now() - stockRpcUnavailableAt < 10 * 60 * 1000) return 'unavailable';
+  const { error } = await supabase.rpc(fnName, params);
+  if (!error) {
+    stockRpcUnavailableAt = 0;
+    return 'ok';
+  }
+  const code = (error as any).code || '';
+  const message = String((error as any).message || '');
+  if (code === 'PGRST202' || code === '42883' || /could not find the function|does not exist/i.test(message)) {
+    stockRpcUnavailableAt = Date.now();
+    return 'unavailable';
+  }
+  // Lỗi khác (mạng...) -> KHÔNG chuyển sang cách cũ vì có thể server đã trừ kho rồi (tránh trừ 2 lần)
+  throw error;
+}
+
+/** Chuẩn hóa ghi chú món: bỏ thẻ ly cũ và gắn lại đúng thẻ ly theo công thức hiện hành */
+function buildItemNoteWithCup(rawNote: string, cupId?: string): string {
+  const clean = stripCupTag(rawNote);
+  if (!cupId) return clean;
+  return clean ? `${clean} [Ly: ${cupId}]` : `[Ly: ${cupId}]`;
 }
 
 export function getCupLabel(cupId?: string): string {
@@ -1497,7 +1727,7 @@ const mapOrderToClient = (o: any) => {
         thanh_tien: sub,
         notes: d.ghi_chu || d.notes || '',
         ghi_chu: d.ghi_chu || d.notes || '',
-        cup_id: d.cup_id || (d.ghi_chu && d.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(d.idsp || d.product_id, d.ten_san_pham || d.name || d.sanpham?.ten_san_pham),
+        cup_id: resolveItemCupId(d.idsp || d.product_id, d.ten_san_pham || d.name || d.sanpham?.ten_san_pham, d.ghi_chu, d.cup_id),
         products: {
           name: d.ten_san_pham || d.name || d.sanpham?.ten_san_pham || 'Món',
           image_url: d.sanpham?.hinh_anh || ''
@@ -1518,7 +1748,7 @@ const mapOrderItemToClient = (oi: any) => oi ? {
   subtotal: Number(oi.thanh_tien),
   ghi_chu: oi.ghi_chu || '',
   notes: oi.ghi_chu || '',
-  cup_id: oi.cup_id || (oi.ghi_chu && oi.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(oi.idsp, oi.ten_san_pham || oi.sanpham?.ten_san_pham),
+  cup_id: resolveItemCupId(oi.idsp, oi.ten_san_pham || oi.sanpham?.ten_san_pham, oi.ghi_chu, oi.cup_id),
   cost_price: Number(oi.gia_von || 0),
   products: {
     name: oi.ten_san_pham || oi.sanpham?.ten_san_pham || 'Món',
@@ -1588,7 +1818,7 @@ export const db = {
             return { valid: false, reason: 'deleted' };
           }
 
-          if (validUser.password && loggedUser.password && validUser.password !== loggedUser.password) {
+          if (!sessionPasswordMatches(loggedUser.password, validUser.password)) {
             // Mật khẩu THỰC SỰ đã bị Admin đổi trên Supabase
             return { valid: false, reason: 'password_changed' };
           }
@@ -1608,19 +1838,34 @@ export const db = {
   },
 
   async login(username: string, password: string) {
+    const cleanUsername = (username || '').trim();
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase
         .from('nguoidung')
         .select('*')
-        .eq('username', username)
-        .eq('password', password);
-      
-      if (!error && data && data.length > 0) {
-        return mapUserToClient(data[0]);
+        .eq('username', cleanUsername);
+
+      if (!error && data) {
+        const row = data.find((u: any) => verifyPassword(password, u.password));
+        if (!row) return null;
+        const user = mapUserToClient(row) as any;
+
+        // Mật khẩu cũ còn lưu dạng chữ thường -> tự động mã hóa ngay (nhân viên không cần làm gì)
+        if (!isHashedPassword(row.password)) {
+          const hashed = hashPassword(password, userSalt(row.id));
+          const { error: upgradeErr } = await supabase
+            .from('nguoidung')
+            .update({ password: hashed })
+            .eq('id', row.id)
+            .eq('password', row.password);
+          if (!upgradeErr) user.password = hashed;
+        }
+        return user;
       }
+      
     }
     const users = mockDb.getUsers();
-    const user = users.find(u => u.username === username && u.password === password);
+    const user = users.find(u => u.username === cleanUsername && verifyPassword(password, u.password));
     return user || null;
   },
 
@@ -1638,6 +1883,8 @@ export const db = {
 
   async createUser(user: any) {
     const newUser = { id: user.id || generateShortId('u_'), ...user };
+    // Luôn lưu mật khẩu dạng mã hóa
+    if (newUser.password) newUser.password = hashPassword(String(newUser.password), userSalt(newUser.id));
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.from('nguoidung').insert([{
         id: newUser.id,
@@ -1649,6 +1896,8 @@ export const db = {
         ngay_tao: newUser.created_at || new Date().toISOString()
       }]).select();
       if (!error && data) return mapUserToClient(data[0]);
+      // Báo lỗi thật (ví dụ trùng mã đăng nhập / email) thay vì báo thành công giả
+      if (error) throw new Error(error.message || 'Không thể tạo tài khoản nhân viên.');
     }
     const users = mockDb.getUsers();
     users.push(newUser);
@@ -1660,13 +1909,15 @@ export const db = {
     if (isSupabaseConfigured && supabase) {
       const dbUpdates: any = {};
       if (updates.username !== undefined) dbUpdates.username = updates.username;
-      if (updates.password !== undefined) dbUpdates.password = updates.password;
+      // Luôn lưu mật khẩu dạng mã hóa
+      if (updates.password !== undefined && updates.password !== '') dbUpdates.password = hashPassword(String(updates.password), userSalt(id));
       if (updates.email !== undefined) dbUpdates.email = updates.email;
       if (updates.full_name !== undefined) dbUpdates.ho_ten = updates.full_name;
       if (updates.role !== undefined) dbUpdates.vai_tro = updates.role;
 
       const { data, error } = await supabase.from('nguoidung').update(dbUpdates).eq('id', id).select();
       if (!error && data) return mapUserToClient(data[0]);
+      if (error) throw new Error(error.message || 'Không thể cập nhật tài khoản nhân viên.');
     }
     const users = mockDb.getUsers();
     const index = users.findIndex(u => u.id === id);
@@ -1835,11 +2086,12 @@ export const db = {
 
   // --- CATEGORIES (danhmuc) ---
   async getCategories() {
-    if (cachedCategories) return cachedCategories;
+    if (cachedCategories && Date.now() - lastCategoriesFetchTime < MENU_CACHE_TTL_MS) return cachedCategories;
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.from('danhmuc').select('*');
       if (!error && data) {
         cachedCategories = data.map(mapCategoryToClient).filter(Boolean).sort((a: any, b: any) => a.name.localeCompare(b.name)) as any[];
+        lastCategoriesFetchTime = Date.now();
         mockDb.setCategories(cachedCategories);
         return cachedCategories;
       }
@@ -1872,12 +2124,39 @@ export const db = {
   },
 
   // --- PRODUCTS (sanpham) ---
+  /**
+   * Tải ảnh món (đã nén) lên kho ảnh Supabase Storage, trả về đường link công khai của ảnh.
+   * Trả về null nếu kho ảnh chưa được tạo (chưa chạy file SQL nâng cấp) -> app dùng ảnh base64 như cũ.
+   */
+  async uploadProductImage(dataUrl: string): Promise<string | null> {
+    if (!isSupabaseConfigured || !supabase || !dataUrl.startsWith('data:image/')) return null;
+    try {
+      const blob = dataUrlToBlob(dataUrl);
+      const ext = blob.type === 'image/jpeg' ? 'jpg' : blob.type === 'image/png' ? 'png' : 'webp';
+      const path = `products/${Date.now()}-${generateShortId('')}.${ext}`;
+      const { error } = await supabase.storage.from(PRODUCT_IMAGE_BUCKET).upload(path, blob, {
+        contentType: blob.type,
+        cacheControl: '31536000',
+        upsert: false
+      });
+      if (error) {
+        console.warn('Chưa tải được ảnh lên kho ảnh, dùng ảnh nén lưu trực tiếp:', error.message);
+        return null;
+      }
+      return supabase.storage.from(PRODUCT_IMAGE_BUCKET).getPublicUrl(path).data.publicUrl || null;
+    } catch (err) {
+      console.warn('Lỗi tải ảnh lên kho ảnh:', err);
+      return null;
+    }
+  },
+
   async getProducts() {
-    if (cachedProducts) return cachedProducts;
+    if (cachedProducts && Date.now() - lastProductsFetchTime < MENU_CACHE_TTL_MS) return cachedProducts;
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.from('sanpham').select('*');
       if (!error && data) {
         cachedProducts = data.map(mapProductToClient).filter(Boolean) as any[];
+        lastProductsFetchTime = Date.now();
         mockDb.setProducts(cachedProducts);
         return cachedProducts;
       }
@@ -2335,52 +2614,71 @@ export const db = {
   },
 
   // Đồng bộ/Cập nhật toàn bộ món ăn trong đơn chưa thanh toán (khi thêm món/xóa món của bàn đang phục vụ)
-  async syncUnpaidOrder(orderId: string, orderData: { total_amount: number; discount?: number; notes?: string; items: any[] }) {
-    const { total_amount, discount = 0, notes = '', items } = orderData;
+  async syncUnpaidOrder(orderId: string, orderData: { total_amount: number; discount?: number; notes?: string; items: any[]; kitchen_done?: boolean }) {
+    const { total_amount, discount = 0, notes = '', items, kitchen_done = false } = orderData;
     if (isSupabaseConfigured && supabase) {
-      // 1. Cập nhật thông tin tổng tiền, giảm giá, ghi chú của hóa đơn
-      await supabase
+      // Giữ lại dấu "[Đã pha chế]" nếu quầy pha chế đã làm xong và không có món mới gọi thêm,
+      // tránh việc đơn đã làm xong bị hiện lại ở cột "Đang pha chế" mỗi khi cập nhật/thanh toán.
+      const cleanNotes = notes.replace(/\[?Đã pha chế\]?/gi, '').trim();
+      const headerNote = kitchen_done ? `${cleanNotes} [Đã pha chế]`.trim() : cleanNotes;
+
+      const productIds = Array.from(new Set(items.map(i => i.product_id).filter(Boolean)));
+      const [oldDetailsResult, productsResult, recipes] = await Promise.all([
+        supabase.from('hoadondetail').select('id').eq('idhoadon', orderId),
+        productIds.length > 0
+          ? supabase.from('sanpham').select('id, gia_von').in('id', productIds)
+          : Promise.resolve({ data: [] as any[], error: null }),
+        this.getRecipes()
+      ]);
+      if (oldDetailsResult.error) throw oldDetailsResult.error;
+      const oldDetailIds = (oldDetailsResult.data || []).map((d: any) => d.id);
+      const dbProducts: any[] = productsResult.data || [];
+
+      const orderItemsToInsert = items.map(item => {
+        const dbProd = dbProducts.find(p => p.id === item.product_id);
+        const costPrice = dbProd ? Number(dbProd.gia_von || 0) : 0;
+        const rawNote = item.notes || item.ghi_chu || '';
+        const cupId = resolveItemCupId(item.product_id, item.name, rawNote, item.cup_id, recipes);
+        return {
+          id: generateShortId('item_'),
+          idhoadon: orderId,
+          idsp: item.product_id,
+          ten_san_pham: item.name || 'Sản phẩm',
+          don_vi_tinh: item.don_vi_tinh || 'Ly',
+          don_gia: item.price || item.unit_price || 0,
+          so_luong: item.quantity,
+          thanh_tien: item.subtotal,
+          ghi_chu: buildItemNoteWithCup(rawNote, cupId),
+          gia_von: costPrice
+        };
+      });
+
+      // 1. Chèn danh sách món MỚI trước. Nếu lỗi -> dừng lại, danh sách món cũ vẫn còn nguyên (không bao giờ mất món)
+      if (orderItemsToInsert.length > 0) {
+        const { error: insertErr } = await supabase.from('hoadondetail').insert(orderItemsToInsert);
+        if (insertErr) throw insertErr;
+      }
+
+      // 2. Sau khi món mới đã lưu chắc chắn mới xóa các dòng món cũ
+      if (oldDetailIds.length > 0) {
+        const { error: deleteErr } = await supabase.from('hoadondetail').delete().in('id', oldDetailIds);
+        if (deleteErr) {
+          // Rollback: gỡ các dòng vừa chèn để không bị nhân đôi món
+          await supabase.from('hoadondetail').delete().in('id', orderItemsToInsert.map(i => i.id));
+          throw deleteErr;
+        }
+      }
+
+      // 3. Cập nhật tổng tiền, giảm giá, ghi chú của hóa đơn
+      const { error: headerErr } = await supabase
         .from('hoadon')
         .update({
           tong_tien: total_amount,
           giam_gia: discount,
-          ghi_chu: notes
+          ghi_chu: headerNote
         })
         .eq('id', orderId);
-
-      // 2. Xóa các chi tiết cũ của hóa đơn
-      await supabase.from('hoadondetail').delete().eq('idhoadon', orderId);
-
-      // 3. Chèn lại danh sách chi tiết mới
-      if (items.length > 0) {
-        const productIds = items.map(i => i.product_id);
-        const { data: dbProds } = await supabase.from('sanpham').select('id, gia_von').in('id', productIds);
-        const dbProducts = dbProds || [];
-
-        const orderItemsToInsert = items.map((item, idx) => {
-          const dbProd = dbProducts.find(p => p.id === item.product_id);
-          const costPrice = dbProd ? Number(dbProd.gia_von || 0) : 0;
-          let itemNote = item.notes || item.ghi_chu || '';
-          const targetCupId = item.cup_id || (itemNote && itemNote.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id, item.name);
-          if (targetCupId && !itemNote.includes('[Ly:')) {
-            itemNote = itemNote ? `${itemNote} [Ly: ${targetCupId}]` : `[Ly: ${targetCupId}]`;
-          }
-          return {
-            id: generateShortId('item_'),
-            idhoadon: orderId,
-            idsp: item.product_id,
-            ten_san_pham: item.name || 'Sản phẩm',
-            don_vi_tinh: item.don_vi_tinh || 'Ly',
-            don_gia: item.price || item.unit_price || 0,
-            so_luong: item.quantity,
-            thanh_tien: item.subtotal,
-            ghi_chu: itemNote,
-            gia_von: costPrice
-          };
-        });
-
-        await supabase.from('hoadondetail').insert(orderItemsToInsert);
-      }
+      if (headerErr) throw headerErr;
 
       cachedTables = null;
       lastTablesFetchTime = 0;
@@ -2417,12 +2715,14 @@ export const db = {
   // Gộp Bàn: Gộp một hoặc nhiều bàn đang phục vụ vào bàn đích
   async mergeTables(targetTableId: string, sourceTableIds: string[], targetOrderId: string) {
     if (isSupabaseConfigured && supabase) {
-      // 1. Lấy thông tin các món hiện tại của bàn đích
-      const { data: targetDetail } = await supabase
-        .from('hoadondetail')
-        .select('*')
-        .eq('idhoadon', targetOrderId);
-      
+      // 1. Lấy thông tin đơn đích (giảm giá, ghi chú) và các món hiện tại của bàn đích
+      const [{ data: targetOrderRow, error: targetOrderErr }, { data: targetDetail, error: targetDetailErr }] = await Promise.all([
+        supabase.from('hoadon').select('giam_gia, ghi_chu').eq('id', targetOrderId).maybeSingle(),
+        supabase.from('hoadondetail').select('*').eq('idhoadon', targetOrderId)
+      ]);
+      if (targetOrderErr) throw targetOrderErr;
+      if (targetDetailErr) throw targetDetailErr;
+
       const targetItems = (targetDetail || []).map((i: any) => ({
         product_id: i.idsp,
         name: i.ten_san_pham,
@@ -2433,75 +2733,81 @@ export const db = {
         notes: i.ghi_chu || ''
       }));
 
-      // 2. Với mỗi bàn nguồn, tìm đơn chưa thanh toán và lấy chi tiết
+      // 2. Gom món từ các bàn nguồn (CHỈ đơn 'Chưa thanh toán'; tuyệt đối không đụng đơn đã thanh toán / chờ duyệt hủy)
+      const sourceOrderIds: string[] = [];
       for (const sourceId of sourceTableIds) {
-        const { data: sourceOrders } = await supabase
+        const { data: sourceOrders, error: sourceErr } = await supabase
           .from('hoadon')
           .select('id')
           .eq('id_ban', sourceId)
-          .neq('trang_thai_thanh_toan', 'Đã thanh toán')
-          .neq('trang_thai_thanh_toan', 'Đã hủy')
+          .eq('trang_thai_thanh_toan', 'Chưa thanh toán')
           .order('ngay_tao', { ascending: false });
+        if (sourceErr) throw sourceErr;
 
-        if (sourceOrders && sourceOrders.length > 0) {
-          for (const sOrder of sourceOrders) {
-            const { data: sDetails } = await supabase
-              .from('hoadondetail')
-              .select('*')
-              .eq('idhoadon', sOrder.id);
+        for (const sOrder of (sourceOrders || [])) {
+          if (sOrder.id === targetOrderId) continue;
+          const { data: sDetails, error: sDetailErr } = await supabase
+            .from('hoadondetail')
+            .select('*')
+            .eq('idhoadon', sOrder.id);
+          if (sDetailErr) throw sDetailErr;
 
-            if (sDetails) {
-              for (const sItem of sDetails) {
-                const existing = targetItems.find(
-                  (ti: any) => ti.product_id === sItem.idsp && (ti.notes || '') === (sItem.ghi_chu || '')
-                );
-                if (existing) {
-                  existing.quantity += Number(sItem.so_luong || 1);
-                  existing.subtotal += Number(sItem.thanh_tien || 0);
-                } else {
-                  targetItems.push({
-                    product_id: sItem.idsp,
-                    name: sItem.ten_san_pham,
-                    don_vi_tinh: sItem.don_vi_tinh,
-                    price: Number(sItem.don_gia || 0),
-                    quantity: Number(sItem.so_luong || 1),
-                    subtotal: Number(sItem.thanh_tien || 0),
-                    notes: sItem.ghi_chu || ''
-                  });
-                }
-              }
+          for (const sItem of (sDetails || [])) {
+            const existing = targetItems.find(
+              (ti: any) => ti.product_id === sItem.idsp && (ti.notes || '') === (sItem.ghi_chu || '')
+            );
+            if (existing) {
+              existing.quantity += Number(sItem.so_luong || 1);
+              existing.subtotal += Number(sItem.thanh_tien || 0);
+            } else {
+              targetItems.push({
+                product_id: sItem.idsp,
+                name: sItem.ten_san_pham,
+                don_vi_tinh: sItem.don_vi_tinh,
+                price: Number(sItem.don_gia || 0),
+                quantity: Number(sItem.so_luong || 1),
+                subtotal: Number(sItem.thanh_tien || 0),
+                notes: sItem.ghi_chu || ''
+              });
             }
-
-            // Đóng đơn nguồn vì đã gộp vào bàn đích
-            await supabase
-              .from('hoadon')
-              .update({
-                trang_thai_thanh_toan: 'Đã hủy',
-                ghi_chu: `Đã gộp vào đơn #${targetOrderId.slice(0, 8)}`
-              })
-              .eq('id', sOrder.id);
           }
+          sourceOrderIds.push(sOrder.id);
         }
-
-        // Trả bàn nguồn về Trống
-        await supabase
-          .from('danhsachban')
-          .update({ trang_thai: 'Trống' })
-          .eq('id', sourceId);
       }
 
-      // 3. Tính lại tổng tiền và cập nhật lại bàn đích
-      const totalAmount = targetItems.reduce((sum: number, i: any) => sum + (Number(i.subtotal) || 0), 0);
+      // 3. LƯU ĐƠN ĐÍCH TRƯỚC (giữ nguyên giảm giá & ghi chú của bàn đích). Lỗi -> dừng, đơn nguồn còn nguyên
+      const subtotal = targetItems.reduce((sum: number, i: any) => sum + (Number(i.subtotal) || 0), 0);
+      const discount = Math.min(subtotal, Number(targetOrderRow?.giam_gia || 0));
+      const totalAmount = Math.max(0, subtotal - discount);
       await this.syncUnpaidOrder(targetOrderId, {
         total_amount: totalAmount,
+        discount,
+        notes: (targetOrderRow?.ghi_chu || '').replace(/\[?Đã pha chế\]?/gi, '').trim(),
         items: targetItems
       });
+
+      // 4. Sau khi đơn đích đã lưu chắc chắn mới đóng các đơn nguồn và trả bàn nguồn
+      for (const sourceOrderId of sourceOrderIds) {
+        await supabase
+          .from('hoadon')
+          .update({
+            trang_thai_thanh_toan: 'Đã hủy',
+            ghi_chu: `Đã gộp vào đơn #${targetOrderId.slice(0, 8)}`
+          })
+          .eq('id', sourceOrderId)
+          .eq('trang_thai_thanh_toan', 'Chưa thanh toán');
+      }
+      for (const sourceId of sourceTableIds) {
+        if (sourceId !== targetTableId) {
+          await this.releaseTableIfFree(sourceId).catch(err => console.error('Lỗi trả bàn nguồn:', err));
+        }
+      }
 
       cachedTables = null;
       lastTablesFetchTime = 0;
       broadcastRealtimeEvent('order_update');
       broadcastRealtimeEvent('table_update');
-      return { totalAmount, items: targetItems };
+      return { totalAmount, discount, items: targetItems };
     }
 
     // Mock DB Fallback
@@ -2552,7 +2858,75 @@ export const db = {
     return { totalAmount, items: targetItems };
   },
 
-  async getOrders() {
+  /**
+   * Tải hóa đơn THEO KHOẢNG NGÀY (giờ Việt Nam) thay vì toàn bộ lịch sử - dùng cho Admin & Báo cáo ca.
+   * - Lấy đơn TẠO hoặc THANH TOÁN trong khoảng ngày (thêm lề 1 ngày mỗi bên, màn hình tự lọc chính xác như cũ)
+   * - Luôn kèm mọi đơn đang "Chờ duyệt hủy" (dù thuộc ngày nào) để Admin duyệt
+   * - Trả về luôn danh sách món của các đơn đó (không phải tải toàn bộ bảng chi tiết hóa đơn)
+   */
+  async getOrdersForRange(startDateVN: string, endDateVN: string): Promise<{ orders: any[]; items: any[] }> {
+    if (!isSupabaseConfigured || !supabase) {
+      const orders = await this.getOrders();
+      return { orders, items: mockDb.getOrderItems() };
+    }
+    const sb = supabase;
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const startIso = new Date(new Date(`${startDateVN}T00:00:00+07:00`).getTime() - DAY_MS).toISOString();
+    const endIso = new Date(new Date(`${endDateVN}T23:59:59.999+07:00`).getTime() + DAY_MS).toISOString();
+    const selectCols = `
+      *,
+      danhsachban (ten_ban),
+      nguoidung (ho_ten),
+      hoadondetail (id, idhoadon, idsp, ten_san_pham, don_gia, so_luong, thanh_tien, ghi_chu, gia_von)
+    `;
+
+    const fetchAllPages = async (applyFilter: (q: any) => any): Promise<any[]> => {
+      const rows: any[] = [];
+      const step = 1000;
+      for (let from = 0; ; from += step) {
+        const { data, error } = await applyFilter(sb.from('hoadon').select(selectCols))
+          .order('ngay_tao', { ascending: false })
+          .order('id', { ascending: true })
+          .range(from, from + step - 1);
+        if (error) throw error;
+        rows.push(...(data || []));
+        if (!data || data.length < step) break;
+      }
+      return rows;
+    };
+
+    const [inRange, pendingByStatus, pendingByNote] = await Promise.all([
+      fetchAllPages(q => q.or(
+        `and(ngay_tao.gte.${startIso},ngay_tao.lte.${endIso}),and(ngay_thanh_toan.gte.${startIso},ngay_thanh_toan.lte.${endIso})`
+      )),
+      fetchAllPages(q => q.eq('trang_thai_thanh_toan', 'Chờ duyệt hủy')),
+      fetchAllPages(q => q.ilike('ghi_chu', '%Chờ duyệt hủy%'))
+    ]);
+
+    const byId = new Map<string, any>();
+    [...inRange, ...pendingByStatus, ...pendingByNote].forEach(row => byId.set(row.id, row));
+    const rawOrders = Array.from(byId.values()).sort(
+      (a, b) => new Date(b.ngay_tao).getTime() - new Date(a.ngay_tao).getTime()
+    );
+
+    const orders = rawOrders.map(mapOrderToClient).filter(Boolean) as any[];
+    const items = rawOrders.flatMap(o => (o.hoadondetail || []).map((d: any) => ({
+      ...mapOrderItemToClient({ ...d, idhoadon: d.idhoadon || o.id }),
+      products: { name: d.ten_san_pham || '', image_url: '' }
+    })));
+    return { orders, items };
+  },
+
+  async getOrders(): Promise<any[]> {
+    // Nhiều màn hình cùng gọi một lúc (Admin + Báo cáo + realtime) -> dùng chung 1 lượt tải đang chạy
+    if (ordersInFlight) return ordersInFlight;
+    ordersInFlight = this.fetchAllOrders().finally(() => {
+      ordersInFlight = null;
+    });
+    return ordersInFlight;
+  },
+
+  async fetchAllOrders(): Promise<any[]> {
     if (isSupabaseConfigured && supabase) {
       let allOrders: any[] = [];
       let from = 0;
@@ -2567,6 +2941,7 @@ export const db = {
             hoadondetail (id, idsp, ten_san_pham, don_gia, so_luong, thanh_tien, ghi_chu)
           `)
           .order('ngay_tao', { ascending: false })
+          .order('id', { ascending: true })
           .range(from, from + step - 1);
 
         if (error || !data || data.length === 0) break;
@@ -2588,14 +2963,13 @@ export const db = {
 
   async getOrderItems(orderId: string) {
     if (isSupabaseConfigured && supabase) {
+      // Không tải kèm ảnh sản phẩm (ảnh lưu dạng base64 rất nặng, chi tiết đơn không hiển thị ảnh)
       const { data, error } = await supabase
         .from('hoadondetail')
-        .select(`
-          *,
-          sanpham (hinh_anh)
-        `)
+        .select('*')
         .eq('idhoadon', orderId);
       if (!error && data) return data.map(mapOrderItemToClient).filter(Boolean) as any[];
+      if (error) throw error;
     }
     const items = mockDb.getOrderItems();
     const products = mockDb.getProducts();
@@ -2633,11 +3007,12 @@ export const db = {
         .limit(1)
         .maybeSingle();
 
-      if (error || !data) return null;
+      if (error) throw error;
+      if (!data) return null;
       const mappedOrder = mapOrderToClient(data);
       if (!mappedOrder) return null;
-      const items = await this.getOrderItems(mappedOrder.id);
-      return { order: mappedOrder, items };
+      // Chi tiết món đã được nạp kèm trong cùng 1 truy vấn, không cần gọi thêm lần nữa
+      return { order: mappedOrder, items: mappedOrder.order_items || [] };
     }
 
     const orders = mockDb.getOrders();
@@ -2655,18 +3030,29 @@ export const db = {
     return { order: fullOrder, items };
   },
 
-  async getAllOrderItems() {
+  async getAllOrderItems(): Promise<any[]> {
+    if (orderItemsInFlight) return orderItemsInFlight;
+    orderItemsInFlight = this.fetchAllOrderItems().finally(() => {
+      orderItemsInFlight = null;
+    });
+    return orderItemsInFlight;
+  },
+
+  async fetchAllOrderItems(): Promise<any[]> {
     if (isSupabaseConfigured && supabase) {
       let allItems: any[] = [];
       let from = 0;
       const step = 1000;
       while (true) {
+        // Chỉ lấy tên sản phẩm, KHÔNG tải ảnh base64 cho từng dòng món đã bán (gây nghẽn mạng nghiêm trọng)
+        // Bắt buộc sắp xếp theo id để phân trang ổn định (không trùng / không sót dòng giữa các trang)
         const { data, error } = await supabase
           .from('hoadondetail')
           .select(`
             *,
-            sanpham (ten_san_pham, hinh_anh)
+            sanpham (ten_san_pham)
           `)
+          .order('id', { ascending: true })
           .range(from, from + step - 1);
 
         if (error || !data || data.length === 0) break;
@@ -2680,7 +3066,7 @@ export const db = {
           ...mapOrderItemToClient(oi),
           products: {
             name: oi.sanpham?.ten_san_pham || oi.ten_san_pham || '',
-            image_url: oi.sanpham?.hinh_anh || ''
+            image_url: ''
           }
         })).filter(Boolean) as any[];
       }
@@ -2688,62 +3074,54 @@ export const db = {
     return mockDb.getOrderItems();
   },
 
-  async createOrder(orderData: { id?: string; table_id: string; staff_id: string; total_amount: number; discount?: number; notes?: string; items: any[] }) {
-    const { id: customId, table_id, staff_id, total_amount, discount = 0, notes = '', items } = orderData;
+  /**
+   * Tạo đơn hàng mới.
+   * - Mặc định: nếu bàn (không phải mang về) đang có đơn chưa thanh toán thì CỘNG DỒN món vào đơn đó (order từ điện thoại).
+   * - force_new = true: luôn tạo đơn riêng biệt (dùng cho Tách bill / Thanh toán ngay tại quầy),
+   *   tránh trường hợp phần tách bị gộp ngược vào đơn gốc rồi thanh toán nhầm cả bàn.
+   * - kitchen_done = true: các món đã được pha chế trước đó (tách từ đơn đã làm xong), không hiện lại ở quầy pha chế.
+   */
+  async createOrder(orderData: { id?: string; table_id: string; staff_id: string; total_amount: number; discount?: number; notes?: string; items: any[]; force_new?: boolean; kitchen_done?: boolean }) {
+    const { id: customId, table_id, staff_id, total_amount, discount = 0, notes = '', items, force_new = false, kitchen_done = false } = orderData;
     const createdAt = new Date().toISOString();
 
     if (isSupabaseConfigured && supabase) {
-      const productIds = items.map(item => item.product_id);
+      const productIds = Array.from(new Set(items.map(item => item.product_id).filter(Boolean)));
 
-      const [productsResult, tableResult, unpaidResult] = await Promise.all([
-        supabase.from('sanpham').select('id, gia_von').in('id', productIds),
+      const [productsResult, tableResult, unpaidResult, recipes] = await Promise.all([
+        productIds.length > 0
+          ? supabase.from('sanpham').select('id, gia_von').in('id', productIds)
+          : Promise.resolve({ data: [] as any[], error: null }),
         supabase.from('danhsachban').select('ten_ban').eq('id', table_id).maybeSingle(),
-        supabase.from('hoadon')
-          .select('*')
-          .eq('id_ban', table_id)
-          .eq('trang_thai_thanh_toan', 'Chưa thanh toán')
-          .order('ngay_tao', { ascending: false })
-          .limit(1)
-          .maybeSingle()
+        force_new
+          ? Promise.resolve({ data: null as any, error: null })
+          : supabase.from('hoadon')
+              .select('*')
+              .eq('id_ban', table_id)
+              .eq('trang_thai_thanh_toan', 'Chưa thanh toán')
+              .order('ngay_tao', { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+        this.getRecipes()
       ]);
 
-      const dbProducts = productsResult.data || [];
+      const dbProducts: any[] = productsResult.data || [];
       const tableData = tableResult.data;
       const existingUnpaidOrder = unpaidResult.data;
       const isTakeaway = tableData?.ten_ban === 'Khách mang về' || table_id === 'tb_mangve';
 
-      if (!isTakeaway && existingUnpaidOrder) {
+      if (!force_new && !isTakeaway && existingUnpaidOrder) {
         const existingOrderId = existingUnpaidOrder.id;
         const newTotalAmount = Number(existingUnpaidOrder.tong_tien || 0) + total_amount;
         const newDiscount = Number(existingUnpaidOrder.giam_gia || 0) + discount;
 
-        const [updateOrderResult, detailsResult] = await Promise.all([
-          supabase
-            .from('hoadon')
-            .update({
-              tong_tien: newTotalAmount,
-              giam_gia: newDiscount
-            })
-            .eq('id', existingOrderId)
-            .select(`
-              *,
-              danhsachban (ten_ban),
-              nguoidung (ho_ten)
-            `)
-            .single(),
-          supabase
-            .from('hoadondetail')
-            .select('*')
-            .eq('idhoadon', existingOrderId)
-        ]);
+        const { data: existingDetailsData, error: detailsErr } = await supabase
+          .from('hoadondetail')
+          .select('*')
+          .eq('idhoadon', existingOrderId);
+        if (detailsErr) throw detailsErr;
 
-        if (updateOrderResult.error) {
-          console.error('Lỗi cập nhật hóa đơn cộng dồn:', updateOrderResult.error);
-          throw updateOrderResult.error;
-        }
-
-        const updatedOrder = updateOrderResult.data;
-        const existingDetails = detailsResult.data || [];
+        const existingDetails: any[] = existingDetailsData || [];
         const dbInserts: any[] = [];
         const dbUpdates: any[] = [];
 
@@ -2753,11 +3131,8 @@ export const db = {
           const dbProd = dbProducts.find(p => p.id === item.product_id);
           const costPrice = dbProd ? Number(dbProd.gia_von || 0) : 0;
 
-          let itemNote = item.notes || item.ghi_chu || '';
-          const targetCupId = item.cup_id || (itemNote && itemNote.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id, item.name);
-          if (targetCupId && !itemNote.includes('[Ly:')) {
-            itemNote = itemNote ? `${itemNote} [Ly: ${targetCupId}]` : `[Ly: ${targetCupId}]`;
-          }
+          const rawNote = item.notes || item.ghi_chu || '';
+          let itemNote = buildItemNoteWithCup(rawNote, resolveItemCupId(item.product_id, item.name, rawNote, item.cup_id, recipes));
           if (idx === 0 && notes && !itemNote.includes('[Ghi chú đơn: ')) {
             itemNote = itemNote ? `${itemNote} [Ghi chú đơn: ${notes}]` : `[Ghi chú đơn: ${notes}]`;
           }
@@ -2795,14 +3170,39 @@ export const db = {
         if (dbInserts.length > 0) {
           promises.push(supabase.from('hoadondetail').insert(dbInserts));
         }
-        if (!isTakeaway) {
-          promises.push(
-            supabase.from('danhsachban').update({ trang_thai: 'Đang phục vụ' }).eq('id', table_id)
-          );
+        const detailResults = await Promise.all(promises);
+        const detailError = detailResults.find((r: any) => r?.error)?.error;
+        if (detailError) {
+          console.error('Lỗi cộng dồn món vào hóa đơn:', detailError);
+          throw detailError;
         }
-        if (promises.length > 0) {
-          await Promise.all(promises);
+
+        // Món mới gọi thêm -> gỡ dấu "[Đã pha chế]" để đơn hiện lại cho quầy pha chế làm món mới
+        const existingHeaderNote: string = existingUnpaidOrder.ghi_chu || '';
+        const headerUpdate: any = { tong_tien: newTotalAmount, giam_gia: newDiscount };
+        if (existingHeaderNote.includes('Đã pha chế')) {
+          headerUpdate.ghi_chu = existingHeaderNote.replace(/\s*\[?Đã pha chế\]?/gi, '').trim();
         }
+
+        const [updateOrderResult] = await Promise.all([
+          supabase
+            .from('hoadon')
+            .update(headerUpdate)
+            .eq('id', existingOrderId)
+            .select(`
+              *,
+              danhsachban (ten_ban),
+              nguoidung (ho_ten)
+            `)
+            .single(),
+          supabase.from('danhsachban').update({ trang_thai: 'Đang phục vụ' }).eq('id', table_id)
+        ]);
+
+        if (updateOrderResult.error) {
+          console.error('Lỗi cập nhật hóa đơn cộng dồn:', updateOrderResult.error);
+          throw updateOrderResult.error;
+        }
+        const updatedOrder = updateOrderResult.data;
 
         cachedTables = null;
         lastTablesFetchTime = 0;
@@ -2816,6 +3216,7 @@ export const db = {
       const orderId = customId || generateShortId('ord_');
       const validStaffId = (staff_id && staff_id !== 'u1') ? staff_id : 'admin';
 
+      const headerNote = kitchen_done ? `${notes} [Đã pha chế]`.trim() : notes;
       const insertPayload: any = {
         id: orderId,
         id_ban: table_id,
@@ -2825,8 +3226,8 @@ export const db = {
         trang_thai_thanh_toan: 'Chưa thanh toán',
         ngay_tao: createdAt
       };
-      if (notes) {
-        insertPayload.ghi_chu = notes;
+      if (headerNote) {
+        insertPayload.ghi_chu = headerNote;
       }
 
       let { data: order, error: orderErr } = await supabase
@@ -2838,6 +3239,23 @@ export const db = {
           nguoidung (ho_ten)
         `)
         .single();
+
+      // Bấm lưu lại sau khi lần trước mạng bị ngắt giữa chừng (đơn đã lên server nhưng máy không nhận được phản hồi):
+      // dùng lại đúng đơn đó, tuyệt đối không tạo đơn trùng.
+      if (orderErr && customId && (orderErr as any).code === '23505') {
+        const [{ data: existingOrderRow }, { data: existingDetailRows }] = await Promise.all([
+          supabase.from('hoadon').select(`*, danhsachban (ten_ban), nguoidung (ho_ten)`).eq('id', orderId).maybeSingle(),
+          supabase.from('hoadondetail').select('*').eq('idhoadon', orderId)
+        ]);
+        if (existingOrderRow && existingDetailRows && existingDetailRows.length > 0) {
+          const mappedExisting = mapOrderToClient({ ...existingOrderRow, hoadondetail: existingDetailRows });
+          return mappedExisting;
+        }
+        if (existingOrderRow) {
+          order = existingOrderRow;
+          orderErr = null;
+        }
+      }
 
       if (orderErr) {
         console.warn('Thử lại lưu hóa đơn với tài khoản admin:', orderErr);
@@ -2867,11 +3285,8 @@ export const db = {
       const orderItemsToInsert = items.map((item, idx) => {
         const dbProd = dbProducts.find(p => p.id === item.product_id);
         const costPrice = dbProd ? Number(dbProd.gia_von || 0) : 0;
-        let itemNote = item.notes || item.ghi_chu || '';
-        const targetCupId = item.cup_id || (itemNote && itemNote.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id, item.name);
-        if (targetCupId && !itemNote.includes('[Ly:')) {
-          itemNote = itemNote ? `${itemNote} [Ly: ${targetCupId}]` : `[Ly: ${targetCupId}]`;
-        }
+        const rawNote = item.notes || item.ghi_chu || '';
+        let itemNote = buildItemNoteWithCup(rawNote, resolveItemCupId(item.product_id, item.name, rawNote, item.cup_id, recipes));
         if (idx === 0 && notes && !itemNote.includes('[Ghi chú đơn: ')) {
           itemNote = itemNote ? `${itemNote} [Ghi chú đơn: ${notes}]` : `[Ghi chú đơn: ${notes}]`;
         }
@@ -2899,7 +3314,16 @@ export const db = {
         );
       }
 
-      await Promise.all(detailPromises);
+      const [detailInsertResult] = await Promise.all(detailPromises);
+      if (detailInsertResult?.error) {
+        // Không lưu được món -> gỡ hóa đơn rỗng vừa tạo để không phát sinh đơn 0đ / mất món
+        console.error('Lỗi lưu chi tiết món của hóa đơn:', detailInsertResult.error);
+        await supabase.from('hoadon').delete().eq('id', orderId);
+        if (!isTakeaway) {
+          await this.releaseTableIfFree(table_id);
+        }
+        throw new Error(detailInsertResult.error.message || 'Không thể lưu chi tiết món của đơn hàng.');
+      }
       cachedTables = null;
       lastTablesFetchTime = 0;
       broadcastRealtimeEvent('order_update');
@@ -3049,46 +3473,60 @@ export const db = {
       const order = orderResult.data;
       const items = itemsResult.data;
 
+      if (orderResult.error || !order) {
+        throw new Error(orderResult.error?.message || 'Không tìm thấy hóa đơn cần thanh toán.');
+      }
+      if (itemsResult.error) throw itemsResult.error;
+
       // Bảo vệ chống thanh toán trùng lặp (Idempotency Guard)
-      if (order?.trang_thai_thanh_toan === 'Đã thanh toán') {
+      if (order.trang_thai_thanh_toan === 'Đã thanh toán') {
         console.warn(`Hóa đơn ${orderId} đã được thanh toán trước đó, bỏ qua trừ kho lặp.`);
         return mapOrderToClient(order);
       }
 
-      // 2. Tối ưu siêu tốc: Chạy song song cập nhật hóa đơn, trả bàn và khấu trừ kho cùng một lúc
-      cachedTables = null;
-      const stockDeductionPromise = (items && items.length > 0)
-        ? this.deductStockFromOrder(items.map(item => ({
-            product_id: item.idsp,
-            quantity: item.so_luong,
-            notes: item.ghi_chu || ''
-          })))
-            .catch(err => console.error('Lỗi khấu trừ kho khi thanh toán:', err))
-        : Promise.resolve();
+      // 2. Chốt thanh toán có điều kiện (chỉ khi đơn còn 'Chưa thanh toán'):
+      // 2 máy cùng bấm thanh toán 1 đơn thì chỉ 1 máy thành công -> không bao giờ trừ kho 2 lần.
+      const { data: paidRow, error: payError } = await supabase
+        .from('hoadon')
+        .update({
+          trang_thai_thanh_toan: 'Đã thanh toán',
+          phuong_thuc_thanh_toan: paymentMethod,
+          ngay_thanh_toan: paidAt
+        })
+        .eq('id', orderId)
+        .eq('trang_thai_thanh_toan', 'Chưa thanh toán')
+        .select()
+        .maybeSingle();
 
-      const updatePromises: any[] = [
-        supabase
-          .from('hoadon')
-          .update({
-            trang_thai_thanh_toan: 'Đã thanh toán',
-            phuong_thuc_thanh_toan: paymentMethod,
-            ngay_thanh_toan: paidAt
-          })
-          .eq('id', orderId)
-          .select()
-          .single(),
-        order?.id_ban
-          ? supabase.from('danhsachban').update({ trang_thai: 'Trống' }).eq('id', order.id_ban)
-          : Promise.resolve(),
-        stockDeductionPromise
-      ];
-      const [payResult] = await Promise.all(updatePromises);
-      if (!payResult.error && payResult.data) {
-        broadcastRealtimeEvent('order_update');
-        broadcastRealtimeEvent('table_update');
-        broadcastRealtimeEvent('report_update');
-        return mapOrderToClient(payResult.data);
+      if (payError) {
+        console.error('Lỗi cập nhật trạng thái thanh toán:', payError);
+        throw payError;
       }
+      if (!paidRow) {
+        const { data: latest } = await supabase.from('hoadon').select('*').eq('id', orderId).maybeSingle();
+        if (latest?.trang_thai_thanh_toan === 'Đã thanh toán') {
+          return mapOrderToClient(latest);
+        }
+        throw new Error('Hóa đơn không còn ở trạng thái chờ thanh toán (có thể đã bị hủy).');
+      }
+
+      // 3. Đã chốt tiền thành công -> trả bàn (nếu bàn không còn đơn nào khác) & khấu trừ kho song song
+      cachedTables = null;
+      await Promise.all([
+        order.id_ban ? this.releaseTableIfFree(order.id_ban).catch(err => console.error('Lỗi trả bàn:', err)) : Promise.resolve(),
+        (items && items.length > 0)
+          ? this.deductStockFromOrder(items.map(item => ({
+              product_id: item.idsp,
+              quantity: item.so_luong,
+              notes: item.ghi_chu || ''
+            }))).catch(err => console.error('Lỗi khấu trừ kho khi thanh toán:', err))
+          : Promise.resolve()
+      ]);
+
+      broadcastRealtimeEvent('order_update');
+      broadcastRealtimeEvent('table_update');
+      broadcastRealtimeEvent('report_update');
+      return mapOrderToClient(paidRow);
     }
 
     const orders = mockDb.getOrders();
@@ -3121,19 +3559,36 @@ export const db = {
     return null;
   },
 
+  // Trả bàn về 'Trống' CHỈ KHI bàn không còn hóa đơn nào chưa thanh toán
+  // (ví dụ tách bill: thanh toán phần tách xong, phần còn lại vẫn đang phục vụ thì bàn phải giữ 'Đang phục vụ')
+  async releaseTableIfFree(tableId: string) {
+    if (!tableId || !isSupabaseConfigured || !supabase) return;
+    const { count, error } = await supabase
+      .from('hoadon')
+      .select('id', { count: 'exact', head: true })
+      .eq('id_ban', tableId)
+      .eq('trang_thai_thanh_toan', 'Chưa thanh toán');
+    if (error) throw error;
+    if (!count) {
+      await supabase.from('danhsachban').update({ trang_thai: 'Trống' }).eq('id', tableId);
+    }
+    cachedTables = null;
+    lastTablesFetchTime = 0;
+  },
+
   async cancelOrder(orderId: string) {
     if (isSupabaseConfigured && supabase) {
       const { data: order } = await supabase.from('hoadon').select('id_ban').eq('id', orderId).single();
-      
+
       // 1. Delete details
       await supabase.from('hoadondetail').delete().eq('idhoadon', orderId);
-      
+
       // 2. Delete main order
       const { error } = await supabase.from('hoadon').delete().eq('id', orderId);
-      
+
       if (!error && order?.id_ban) {
-        // 3. Reset table status
-        await supabase.from('danhsachban').update({ trang_thai: 'Trống' }).eq('id', order.id_ban);
+        // 3. Reset table status (chỉ khi bàn không còn đơn chưa thanh toán nào khác)
+        await this.releaseTableIfFree(order.id_ban).catch(err => console.error('Lỗi trả bàn:', err));
         cachedTables = null;
         lastTablesFetchTime = 0;
         broadcastRealtimeEvent('order_update');
@@ -3214,16 +3669,18 @@ export const db = {
           return await this.cancelOrder(orderId);
         }
 
-        // Lấy chi tiết món để hoàn kho ngay lập tức
+        // Lấy chi tiết món để hoàn kho ngay lập tức (kèm ghi chú để hoàn đúng loại ly đã dùng)
         const { data: dbItems } = await supabase
           .from('hoadondetail')
-          .select('idsp, so_luong')
+          .select('idsp, so_luong, ghi_chu, ten_san_pham')
           .eq('idhoadon', orderId);
 
         if (dbItems && dbItems.length > 0) {
           items = dbItems.map(item => ({
             product_id: item.idsp,
-            quantity: item.so_luong
+            quantity: item.so_luong,
+            notes: item.ghi_chu || '',
+            name: item.ten_san_pham || ''
           }));
         }
 
@@ -3354,20 +3811,39 @@ export const db = {
           // 2. Thu hồi kho: Trừ ngược lại số lượng nguyên liệu đã hoàn
           const { data: dbItems } = await supabase
             .from('hoadondetail')
-            .select('idsp, so_luong')
+            .select('idsp, so_luong, ghi_chu, ten_san_pham')
             .eq('idhoadon', orderId);
 
           if (dbItems && dbItems.length > 0) {
-            const recipes = await this.getRecipes();
-            const ingredients = await this.getIngredients();
+            const [recipes, ingredients] = await Promise.all([this.getRecipes(), this.getIngredients()]);
             const ingDeductions: { [id: string]: number } = {};
 
-            for (const item of dbItems) {
-              const itemRecipes = recipes.filter(r => r.product_id === item.idsp);
-              for (const rec of itemRecipes) {
-                const qty = Number(rec.quantity_needed || 0) * Number(item.so_luong || 0);
-                ingDeductions[rec.ingredient_id] = (ingDeductions[rec.ingredient_id] || 0) + qty;
-              }
+            // Thu hồi đúng y như lúc bán (cùng quy tắc trừ ly theo công thức)
+            const changes = buildIngredientChanges(dbItems.map(item => ({
+              product_id: item.idsp,
+              quantity: Number(item.so_luong || 0),
+              notes: item.ghi_chu || '',
+              name: item.ten_san_pham || ''
+            })), recipes);
+            for (const ingId in changes) {
+              ingDeductions[ingId] = changes[ingId].deductQty;
+            }
+
+            // ƯU TIÊN: trừ kho nguyên tử trên server (nếu đã chạy file SQL nâng cấp v2)
+            const revokePayload = Object.entries(ingDeductions)
+              .filter(([, qty]) => qty > 0)
+              .map(([id, qty]) => ({ id_nguyen_lieu: id, so_luong: -qty }));
+            const revokeRpc = revokePayload.length > 0
+              ? await callStockRpc('ava_dieu_chinh_kho', {
+                  p_changes: revokePayload,
+                  p_loai: 'Khác',
+                  p_ghi_chu: `[Từ chối hủy đơn #${orderId}] Thu hồi kho về trạng thái đã bán`,
+                  p_nhan_vien: adminId,
+                  p_trang_thai: 'Đã duyệt'
+                })
+              : 'ok';
+            if (revokeRpc === 'ok') {
+              for (const k of Object.keys(ingDeductions)) delete ingDeductions[k];
             }
 
             const revokeLogs: any[] = [];
@@ -4482,7 +4958,7 @@ export const db = {
   },
 
   async getRecipes() {
-    if (cachedRecipes) return cachedRecipes;
+    if (cachedRecipes && Date.now() - lastRecipesFetchTime < RECIPES_CACHE_TTL_MS) return cachedRecipes;
     if (isSupabaseConfigured && supabase) {
       const { data, error } = await supabase.from('congthuc').select('*');
       if (!error && data) {
@@ -4493,9 +4969,12 @@ export const db = {
           quantity_needed: Number(rec.so_luong_can),
           unit: rec.don_vi_tinh
         }));
+        lastRecipesFetchTime = Date.now();
         mockDb.setRecipes(cachedRecipes);
         return cachedRecipes;
       }
+      // Mất mạng: tiếp tục dùng công thức đã tải gần nhất thay vì công thức mẫu
+      if (cachedRecipes) return cachedRecipes;
     }
     return mockDb.getRecipes();
   },
@@ -4535,7 +5014,11 @@ export const db = {
   },
 
   async getInventoryLogs() {
-    this.consolidateDuplicateSalesLogs().catch(err => console.error(err));
+    // Gộp log bán hàng trùng lặp: tối đa 10 phút / lần (trước đây chạy mỗi lần tải trang -> tốn băng thông)
+    if (Date.now() - lastSalesLogConsolidateTime > 10 * 60 * 1000) {
+      lastSalesLogConsolidateTime = Date.now();
+      this.consolidateDuplicateSalesLogs().catch(err => console.error(err));
+    }
     if (isSupabaseConfigured && supabase) {
       let allLogs: any[] = [];
       let from = 0;
@@ -5089,26 +5572,69 @@ export const db = {
       reason?: string;
     }
   ) {
+    // Xếp hàng chung với trừ kho để không ghi đè số tồn lẫn nhau
+    const run = stockMutationQueue.then(() => this.restoreStockFromOrderNow(items, options));
+    stockMutationQueue = run.catch(() => undefined);
+    return run;
+  },
+
+  // Đọc số tồn MỚI NHẤT trực tiếp từ server trước khi cộng/trừ kho.
+  // Nếu server lỗi thì báo lỗi luôn, tuyệt đối không dùng số tồn cũ trong bộ nhớ máy để ghi đè lên số thật.
+  async getIngredientsForStockMutation(): Promise<any[]> {
+    if (isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.from('nguyenlieu').select('id, so_luong_ton');
+      if (error) throw error;
+      return (data || []).map(ing => ({
+        id: ing.id,
+        stock_quantity: Number(ing.so_luong_ton)
+      }));
+    }
+    return this.getIngredients();
+  },
+
+  async restoreStockFromOrderNow(
+    items: Array<{ product_id: string; quantity: number }>,
+    options?: {
+      orderId?: string;
+      staffId?: string;
+      status?: 'Chờ duyệt' | 'Đã duyệt';
+      reason?: string;
+    }
+  ) {
     try {
-      const recipes = await this.getRecipes();
-      const ingredients = await this.getIngredients();
+      // ƯU TIÊN: cộng kho nguyên tử trên server (nếu đã chạy file SQL nâng cấp v2)
+      if (isSupabaseConfigured && supabase) {
+        const rpcRecipes = await this.getRecipes();
+        const rpcChanges = buildIngredientChanges(items, rpcRecipes);
+        const payload = Object.entries(rpcChanges).map(([id, c]) => ({
+          id_nguyen_lieu: id,
+          so_luong: c.deductQty,
+          ghi_chu: options?.reason || (options?.orderId
+            ? `Hoàn kho do hủy đơn #${options.orderId} (Mã SP: ${c.productIds.join(', ')})`
+            : `Hoàn kho do hủy đơn hàng (Mã SP: ${c.productIds.join(', ')})`)
+        }));
+        if (payload.length === 0) return;
+        const rpcResult = await callStockRpc('ava_dieu_chinh_kho', {
+          p_changes: payload,
+          p_loai: 'Khác',
+          p_ghi_chu: null,
+          p_nhan_vien: options?.staffId || null,
+          p_trang_thai: options?.status || 'Chờ duyệt'
+        });
+        if (rpcResult === 'ok') {
+          broadcastRealtimeEvent('inventory_update');
+          return;
+        }
+      }
+
+      const [recipes, ingredients] = await Promise.all([this.getRecipes(), this.getIngredientsForStockMutation()]);
       let updated = false;
 
-      // Group ingredient changes
+      // Hoàn kho đúng y như lúc trừ kho (đúng loại ly đã dùng, món không có ly thì không hoàn ly)
       const ingChanges: { [id: string]: { restoreQty: number; productIds: string[] } } = {};
-
-      for (const item of items) {
-        const itemRecipes = recipes.filter(r => r.product_id === item.product_id);
-        for (const rec of itemRecipes) {
-          const restoreQty = rec.quantity_needed * item.quantity;
-          if (!ingChanges[rec.ingredient_id]) {
-            ingChanges[rec.ingredient_id] = { restoreQty: 0, productIds: [] };
-          }
-          ingChanges[rec.ingredient_id].restoreQty += restoreQty;
-          if (!ingChanges[rec.ingredient_id].productIds.includes(item.product_id)) {
-            ingChanges[rec.ingredient_id].productIds.push(item.product_id);
-          }
-        }
+      const deducted = buildIngredientChanges(items, recipes);
+      for (const ingId in deducted) {
+        ingChanges[ingId] = { restoreQty: deducted[ingId].deductQty, productIds: deducted[ingId].productIds };
       }
 
       const dbUpdates: any[] = [];
@@ -5180,15 +5706,36 @@ export const db = {
   },
 
   // Tự động khấu trừ kho khi có đơn bán hàng mới ở POS
+  // Các lần trừ kho được xếp hàng chạy lần lượt: thanh toán 2 đơn liên tiếp sẽ không đọc cùng 1 số tồn cũ rồi ghi đè lẫn nhau.
   async deductStockFromOrder(items: Array<{ product_id: string; quantity: number }>) {
+    const run = stockMutationQueue.then(() => this.deductStockFromOrderNow(items));
+    stockMutationQueue = run.catch(() => undefined);
+    return run;
+  },
+
+  async deductStockFromOrderNow(items: Array<{ product_id: string; quantity: number }>) {
     try {
+      // ƯU TIÊN: trừ kho nguyên tử trên server (nếu đã chạy file SQL nâng cấp v2)
+      if (isSupabaseConfigured && supabase) {
+        const rpcRecipes = await this.getRecipes();
+        const rpcChanges = buildIngredientChanges(items, rpcRecipes);
+        const payload = Object.entries(rpcChanges).map(([id, c]) => ({ id_nguyen_lieu: id, so_luong: c.deductQty }));
+        if (payload.length === 0) return;
+        const rpcNote = `Khấu trừ tổng hợp bán hàng POS ngày ${new Date().toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`;
+        const rpcResult = await callStockRpc('ava_tru_kho_ban_hang', { p_changes: payload, p_ghi_chu: rpcNote });
+        if (rpcResult === 'ok') {
+          broadcastRealtimeEvent('inventory_update');
+          return;
+        }
+      }
+
       // Song song: lấy công thức, lấy nguyên liệu, và lấy nhật ký kho hôm nay cùng lúc
       const now = new Date();
       const vnDateStr = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
 
       const [recipes, ingredients, historyLogsResult] = await Promise.all([
         this.getRecipes(),
-        this.getIngredients(),
+        this.getIngredientsForStockMutation(),
         isSupabaseConfigured && supabase
           ? supabase
               .from('lichsukho')
@@ -5201,58 +5748,10 @@ export const db = {
 
       let updated = false;
 
-      const CUP_INGREDIENTS = ['ing_lyden', 'ing_lytrang', 'ing_lyhoavan'];
-      const ingChanges: { [id: string]: { deductQty: number; productIds: string[] } } = {};
-      for (const item of items) {
-        // Kiểm tra xem món có chọn đổi ly riêng không (từ thuộc tính hoặc ghi chú [Ly: ing_...])
-        let customCupId = (item as any).cup_id || (item as any).selected_cup_id;
-        const notesStr = (item as any).notes || (item as any).ghi_chu || '';
-        if (!customCupId && notesStr) {
-          const m = notesStr.match(/\[Ly:\s*(ing_ly[a-z]+)\]/);
-          if (m) customCupId = m[1];
-        }
-        if (!customCupId) {
-          customCupId = getDefaultCupId(item.product_id, (item as any).name);
-        }
-
-        const itemRecipes = recipes.filter(r => r.product_id === item.product_id);
-        let cupReplaced = false;
-
-        for (const rec of itemRecipes) {
-          let targetIngId = rec.ingredient_id;
-
-          // Nếu công thức có ly trà tắc cũ -> đổi sang ly hoa văn vì K300 dùng ly hoa văn
-          if (targetIngId === 'ing_lytratac') {
-            targetIngId = 'ing_lyhoavan';
-          }
-
-          // Nếu là nguyên liệu ly và đơn hàng có chỉ định đổi ly riêng (ví dụ uống nóng -> đổi ly đen)
-          if (CUP_INGREDIENTS.includes(targetIngId) && customCupId && CUP_INGREDIENTS.includes(customCupId)) {
-            targetIngId = customCupId;
-            cupReplaced = true;
-          }
-
-          const deductQty = rec.quantity_needed * item.quantity;
-          if (!ingChanges[targetIngId]) {
-            ingChanges[targetIngId] = { deductQty: 0, productIds: [] };
-          }
-          ingChanges[targetIngId].deductQty += deductQty;
-          if (!ingChanges[targetIngId].productIds.includes(item.product_id)) {
-            ingChanges[targetIngId].productIds.push(item.product_id);
-          }
-        }
-
-        // Nếu món ban đầu không có ly trong công thức nhưng nhân viên chọn ly
-        if (!cupReplaced && customCupId && CUP_INGREDIENTS.includes(customCupId)) {
-          if (!ingChanges[customCupId]) {
-            ingChanges[customCupId] = { deductQty: 0, productIds: [] };
-          }
-          ingChanges[customCupId].deductQty += item.quantity;
-          if (!ingChanges[customCupId].productIds.includes(item.product_id)) {
-            ingChanges[customCupId].productIds.push(item.product_id);
-          }
-        }
-      }
+      // NGUYÊN TẮC TRỪ LY: chỉ trừ ly khi CÔNG THỨC ĐỊNH LƯỢNG của món có ly (đen / trắng / hoa văn).
+      // Công thức không có ly (Bò húc, Nước suối...) -> không trừ ly nào, kể cả khi ghi chú còn thẻ [Ly: ...] cũ.
+      // Công thức có ly + nhân viên đổi loại ly -> trừ đúng loại ly đã chọn thay cho ly trong công thức.
+      const ingChanges = buildIngredientChanges(items, recipes);
 
       let existingTodayLogs: any[] = [];
       if (historyLogsResult?.data) {
@@ -5833,6 +6332,20 @@ export const db = {
   getDefaultCupId,
   getCupLabel
 };
+
+// Mọi thao tác thay đổi thực đơn (món, giá, ảnh, công thức, loại món) xong -> báo tất cả máy POS / điện thoại
+// tải lại thực đơn ngay, không phải đợi khởi động lại app mới thấy ảnh / giá mới.
+(['createProduct', 'updateProduct', 'deleteProduct', 'createProductWithRecipe', 'updateProductWithRecipe', 'createCategory', 'deleteCategory'] as const)
+  .forEach(methodName => {
+    const original = (db as any)[methodName] as (...args: any[]) => Promise<any>;
+    (db as any)[methodName] = async function (this: any, ...args: any[]) {
+      const result = await original.apply(this, args);
+      cachedProducts = null;
+      cachedCategories = null;
+      broadcastRealtimeEvent('menu_update', { timestamp: Date.now() });
+      return result;
+    };
+  });
 
 
 

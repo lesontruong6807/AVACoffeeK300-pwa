@@ -3,18 +3,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-
-static LAST_HTTP_HASH: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
-
-fn simple_hash(bytes: &[u8]) -> u64 {
-    let mut h = 14695981039346656037u64;
-    for &b in bytes {
-        h = (h ^ (b as u64)).wrapping_mul(1099511628211u64);
-    }
-    h
-}
+use std::time::Duration;
 
 pub fn start_http_print_server(port: u16, app: Option<tauri::AppHandle>) {
     let addr = format!("0.0.0.0:{}", port);
@@ -206,30 +195,28 @@ fn handle_print_payload(body: &[u8], app: Option<&tauri::AppHandle>) -> Result<S
             return Err("Dữ liệu mã in rỗng".to_string());
         }
 
-        // Chống in lặp tuyệt đối ở tầng Native Rust (cửa sổ 4 giây cho cùng nội dung byte)
-        if raw_bytes.len() > 30 {
-            let hash = simple_hash(&raw_bytes);
-            let now = Instant::now();
-            {
-                let mut last_lock = LAST_HTTP_HASH.lock().unwrap();
-                if let Some((prev_hash, prev_time)) = *last_lock {
-                    if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(4) {
-                        println!("[HTTP Print Bridge] Bỏ qua lệnh in trùng lặp tuyệt đối (< 4s)");
-                        return Ok("Đã in hóa đơn thành công (bỏ qua in lặp)".to_string());
-                    }
-                }
-                *last_lock = Some((hash, now));
-            }
-        }
+        // Chống in lặp theo mã đơn (dùng chung sổ lưu vết với lệnh in tại quầy):
+        // điện thoại gửi lại / mạng chập chờn / lệnh dự phòng realtime -> 1 đơn vẫn chỉ in đúng 1 lần.
+        // Hai đơn khác nhau dù giống hệt món vẫn in đủ 2 bill.
+        let dedup_key = val.get("dedupKey")
+            .and_then(|p| p.as_str())
+            .map(|s| s.to_string());
+        let allow_reprint = val.get("allowReprint")
+            .and_then(|p| p.as_bool())
+            .unwrap_or(false);
 
-        crate::printer::print_escpos_raw(&raw_bytes, printer_name)?;
+        let printed = crate::printer::print_receipt(&raw_bytes, printer_name, dedup_key, allow_reprint)?;
 
-        // Thông báo cho Webview Tauri biết lệnh in này đã hoàn tất
+        // Thông báo cho Webview Tauri biết đơn này đã được in (kể cả khi vừa bỏ qua vì in lặp)
+        // để bộ in dự phòng trên máy POS không in thêm lần nữa
         if let (Some(app_handle), Some(oid)) = (app, order_id) {
             use tauri::Emitter;
             let _ = app_handle.emit("print-completed", serde_json::json!({ "orderId": oid }));
         }
 
+        if !printed {
+            return Ok("Đơn này đã được in trước đó (bỏ qua in lặp)".to_string());
+        }
         return Ok("Đã in hóa đơn thành công".to_string());
     }
 

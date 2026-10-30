@@ -6,7 +6,11 @@ import {
   db, 
   getCurrentUser,
   getDefaultCupId,
-  getCupLabel
+  getCupLabel,
+  resolveItemCupId,
+  createCoalescedRefresher,
+  generateShortId,
+  onRealtimeEvent
 } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { printOrderDirect } from '@/lib/printerService';
@@ -168,8 +172,29 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
     loadData();
 
     // 2. Realtime listener cho bàn và đơn hàng
-    const unsubTables = db.subscribeToTableChanges(() => refreshTables());
-    const unsubOrders = db.subscribeToOrderChanges(() => refreshTables());
+    // Gom các sự kiện dồn dập (mỗi lần thanh toán sinh hàng chục sự kiện) thành 1 lần tải lại -> điện thoại không bị lag
+    const scheduleRefresh = createCoalescedRefresher(() => refreshTables(), 400, 2000);
+    const unsubTables = db.subscribeToTableChanges(scheduleRefresh);
+    const unsubOrders = db.subscribeToOrderChanges(scheduleRefresh);
+
+    // Admin thêm / sửa món, đổi giá, đổi ảnh -> tự tải lại thực đơn (không cần khởi động lại app)
+    const reloadMenu = createCoalescedRefresher(async () => {
+      const [categoriesData, productsData, recipesData] = await Promise.all([
+        db.getCategories(),
+        db.getProducts(),
+        db.getRecipes()
+      ]);
+      setCategories(categoriesData);
+      setProducts(productsData);
+      if (recipesData) setRecipes(recipesData);
+      try {
+        localStorage.setItem('ava_pos_cache_categories', JSON.stringify(categoriesData));
+        localStorage.setItem('ava_pos_cache_products', JSON.stringify(productsData));
+      } catch (_) {}
+    }, 800, 3000);
+    const unsubMenu = onRealtimeEvent('menu_update', () => reloadMenu());
+    // Dự phòng: tự làm mới thực đơn mỗi 10 phút
+    const menuTimer = setInterval(() => reloadMenu(), 10 * 60 * 1000);
 
     let lastRefresh = 0;
     const handleWakeup = () => {
@@ -177,7 +202,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
         const now = Date.now();
         if (now - lastRefresh < 2500) return;
         lastRefresh = now;
-        refreshTables();
+        scheduleRefresh();
       }
     };
 
@@ -188,8 +213,12 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
     }
 
     return () => {
+      scheduleRefresh.cancel();
       unsubTables();
       unsubOrders();
+      unsubMenu();
+      reloadMenu.cancel();
+      clearInterval(menuTimer);
       if (typeof window !== 'undefined') {
         window.removeEventListener('visibilitychange', handleWakeup);
         window.removeEventListener('focus', handleWakeup);
@@ -317,8 +346,30 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
   const existingOrderTotal = existingOrder ? Number(existingOrder.total_amount || 0) : 0;
   const displayTotalAmount = (existingOrder ? existingOrderTotal : 0) + finalTotalAmount;
 
+  // Chỉ áp dụng kết quả tải của lần chọn bàn MỚI NHẤT (bấm nhanh bàn A rồi bàn B không bị hiện lẫn món)
+  const selectTableRequestRef = useRef(0);
+  // Mã đơn ổn định khi bấm lại sau lỗi mạng -> không tạo đơn trùng
+  const pendingOrderRef = useRef<{ key: string; id: string } | null>(null);
+  const getStableOrderId = (key: string) => {
+    if (pendingOrderRef.current?.key === key) return pendingOrderRef.current.id;
+    const id = generateShortId('ord_');
+    pendingOrderRef.current = { key, id };
+    return id;
+  };
+  const cartKey = (items: CartItem[]) =>
+    items.map(i => `${i.product_id}|${i.quantity}|${i.price}|${i.notes || ''}`).sort().join(';');
+
+  // Gửi lệnh in chạy nền: không bắt nhân viên đứng chờ máy in (có thể mất vài giây qua Wi-Fi)
+  const printInBackground = (orderData: Parameters<typeof printOrderDirect>[0]) => {
+    printOrderDirect(orderData).catch(printErr => {
+      console.warn('Lỗi gửi lệnh in từ điện thoại:', printErr);
+      toast.error('⚠️ Chưa gửi được lệnh in tới máy POS. Vui lòng kiểm tra Wi-Fi / máy in.');
+    });
+  };
+
   // Chọn bàn
   const handleSelectTable = async (table: any) => {
+    const requestId = ++selectTableRequestRef.current;
     setSelectedTable(table);
     setPosStep('menu');
     setCart([]);
@@ -332,49 +383,46 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
     let cachedMatch = unpaidOrders.find(o => o.table_id === table.id);
     const isOccupied = !isTakeaway && (table.status === 'Đang phục vụ' || !!cachedMatch);
 
+    // Loại ly của từng món được xác định lại theo công thức định lượng hiện hành
+    const withCup = (items: any[]) => (items || []).map((i: any) => ({
+      ...i,
+      cup_id: resolveItemCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, i.ghi_chu || i.notes, i.cup_id, recipes)
+    }));
+
     if (isOccupied) {
       if (cachedMatch) {
         setExistingOrder(cachedMatch);
         if (cachedMatch.order_items && Array.isArray(cachedMatch.order_items) && cachedMatch.order_items.length > 0) {
-          const mapped = cachedMatch.order_items.map((i: any) => ({
-            ...i,
-            cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes)
-          }));
-          setExistingOrderItems(mapped);
+          setExistingOrderItems(withCup(cachedMatch.order_items));
         }
+      } else {
+        setExistingOrder(null);
+        setExistingOrderItems([]);
       }
 
       setLoadingExistingOrder(true);
       try {
-        if (cachedMatch?.id) {
-          const items = await db.getOrderItems(cachedMatch.id);
-          const mapped = (items || []).map((i: any) => ({
-            ...i,
-            cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes)
-          }));
-          setExistingOrderItems(mapped);
+        // Luôn đối chiếu lại với server (1 truy vấn) để đủ 100% món, kể cả khi đơn vừa được thanh toán ở máy khác
+        const res = await db.getUnpaidOrderByTableId(table.id);
+        if (selectTableRequestRef.current !== requestId) return; // Nhân viên đã chọn bàn khác
+        if (res?.order) {
+          setExistingOrder(res.order);
+          setExistingOrderItems(withCup(res.items || []));
         } else {
-          const res = await db.getUnpaidOrderByTableId(table.id);
-          if (res?.order) {
-            setExistingOrder(res.order);
-            const mapped = (res.items || []).map((i: any) => ({
-              ...i,
-              cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes)
-            }));
-            setExistingOrderItems(mapped);
-          } else {
-            setExistingOrder(null);
-            setExistingOrderItems([]);
-          }
+          setExistingOrder(null);
+          setExistingOrderItems([]);
         }
       } catch (e) {
         console.error('Lỗi khi tải đơn đang phục vụ của bàn:', e);
       } finally {
-        setLoadingExistingOrder(false);
+        if (selectTableRequestRef.current === requestId) {
+          setLoadingExistingOrder(false);
+        }
       }
     } else {
       setExistingOrder(null);
       setExistingOrderItems([]);
+      setLoadingExistingOrder(false);
     }
   };
 
@@ -414,6 +462,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
 
       if (cart.length > 0) {
         const savedOrder = await db.createOrder({
+          id: existingOrder ? undefined : getStableOrderId(`pay|${selectedTable?.id || ''}|${cartKey(cart)}|${finalTotalAmount}`),
           table_id: selectedTable?.id || 'tb_mangve',
           staff_id: currentUser?.id || 'admin',
           total_amount: finalTotalAmount,
@@ -432,29 +481,27 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
       }
 
       await db.payOrder(orderIdToPay, method);
+      pendingOrderRef.current = null;
 
       // In hóa đơn: CHỈ in nếu là đơn tạo mới và thanh toán ngay lập tức (cart.length > 0 && !existingOrder)
       // Nếu là bàn đã gọi món và lưu từ trước (existingOrder) thì tuyệt đối không in lại khi ấn thanh toán
+      // (gửi lệnh in chạy nền, không bắt nhân viên chờ)
       if (cart.length > 0 && !existingOrder) {
-        try {
-          await printOrderDirect({
-            tableName: selectedTable?.table_name || 'Khách mang về',
-            staffName: currentUser?.full_name || 'Nhân viên',
-            orderId: orderIdToPay,
-            items: cart.map(i => ({
-              name: i.name,
-              quantity: i.quantity,
-              price: i.price,
-              subtotal: i.subtotal,
-              notes: i.notes
-            })),
-            totalAmount: displayTotalAmount,
-            discount: discountAmount,
-            notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-          });
-        } catch (printErr) {
-          console.warn('Lỗi gửi lệnh in từ điện thoại:', printErr);
-        }
+        printInBackground({
+          tableName: selectedTable?.table_name || 'Khách mang về',
+          staffName: currentUser?.full_name || 'Nhân viên',
+          orderId: orderIdToPay,
+          items: cart.map(i => ({
+            name: i.name,
+            quantity: i.quantity,
+            price: i.price,
+            subtotal: i.subtotal,
+            notes: i.notes
+          })),
+          totalAmount: displayTotalAmount,
+          discount: discountAmount,
+          notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
+        });
       }
 
       confetti({
@@ -471,10 +518,10 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
       setExistingOrderItems([]);
       setSelectedTable(null);
       setPosStep('table');
-      await refreshTables();
-    } catch (e) {
+      refreshTables();
+    } catch (e: any) {
       console.error('Lỗi thanh toán tại POS:', e);
-      toast.error('Gặp lỗi khi xử lý thanh toán.');
+      toast.error(`Thanh toán CHƯA thành công (${e?.message || 'lỗi kết nối'}). Vui lòng bấm lại.`);
     } finally {
       setSubmittingPayment(false);
     }
@@ -496,6 +543,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
 
     try {
       const savedOrder = await db.createOrder({
+        id: existingOrder ? undefined : getStableOrderId(`save|${selectedTable?.id || ''}|${cartKey(cart)}|${finalTotalAmount}`),
         table_id: selectedTable?.id || 'tb_mangve',
         staff_id: currentUser?.id || 'admin',
         total_amount: finalTotalAmount,
@@ -503,26 +551,23 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
         notes: orderNotes.trim(),
         items: cart
       });
+      pendingOrderRef.current = null;
 
-      // Tự động in phiếu order ra máy in quầy POS qua Wi-Fi
-      try {
-        await printOrderDirect({
-          tableName: selectedTable?.table_name || 'Khách mang về',
-          staffName: currentUser?.full_name || 'Nhân viên',
-          orderId: savedOrder?.id || `OD-${Date.now()}`,
-          items: cart.map(i => ({
-            name: i.name,
-            quantity: i.quantity,
-            price: i.price,
-            subtotal: i.subtotal
-          })),
-          totalAmount: finalTotalAmount,
-          discount: discountAmount,
-          notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
-        });
-      } catch (printErr) {
-        console.warn('Lỗi in phiếu order:', printErr);
-      }
+      // Tự động in phiếu order ra máy in quầy POS qua Wi-Fi (chạy nền, không bắt nhân viên chờ)
+      printInBackground({
+        tableName: selectedTable?.table_name || 'Khách mang về',
+        staffName: currentUser?.full_name || 'Nhân viên',
+        orderId: savedOrder?.id || `OD-${Date.now()}`,
+        items: cart.map(i => ({
+          name: i.name,
+          quantity: i.quantity,
+          price: i.price,
+          subtotal: i.subtotal
+        })),
+        totalAmount: finalTotalAmount,
+        discount: discountAmount,
+        notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
+      });
 
       if (selectedTable?.table_name !== 'Khách mang về') {
         const activeOrderData = savedOrder || {
@@ -554,11 +599,11 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
       setExistingOrderItems([]);
       setSelectedTable(null);
       setPosStep('table');
-      await refreshTables();
-    } catch (e) {
+      refreshTables();
+    } catch (e: any) {
       console.error('Lỗi lưu đơn hàng:', e);
       setTables(oldTables);
-      toast.error('Không thể lưu đơn hàng. Vui lòng thử lại!');
+      toast.error(`Chưa lưu được đơn (${e?.message || 'lỗi kết nối'}). Món vẫn còn trong giỏ, vui lòng thử lại!`);
     } finally {
       isSavingRef.current = false;
       setSavingOrder(false);
@@ -649,6 +694,12 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                 type="button"
                 onClick={() => {
                   if (posStep === 'menu') {
+                    // Còn món chưa lưu -> hỏi lại, tránh bấm nhầm làm mất món vừa chọn
+                    if (cart.length > 0 && !window.confirm(
+                      `${selectedTable?.table_name || 'Bàn này'} còn ${cart.reduce((s, i) => s + i.quantity, 0)} món CHƯA LƯU. Bỏ các món này và đổi bàn?`
+                    )) {
+                      return;
+                    }
                     setPosStep('table');
                     setSelectedTable(null);
                     setExistingOrder(null);
@@ -1004,6 +1055,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                     <p className="font-bold text-coffee-dark line-clamp-1">{item.name}</p>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-[10px] text-coffee-medium">{item.price.toLocaleString('vi-VN')}đ</span>
+                      {item.cup_id && (
                       <button
                         type="button"
                         onClick={() => handleCycleCupType(idx)}
@@ -1018,6 +1070,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                       >
                         {item.cup_id === 'ing_lyden' ? '☕ Ly Đen' : item.cup_id === 'ing_lyhoavan' ? '🌸 Hoa Văn' : '🥤 Ly Trắng'}
                       </button>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
@@ -1157,6 +1210,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                     <p className="font-bold text-coffee-dark">{item.name}</p>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-[10px] text-coffee-medium">{item.price.toLocaleString('vi-VN')}đ</span>
+                      {item.cup_id && (
                       <button
                         type="button"
                         onClick={() => handleCycleCupType(idx)}
@@ -1171,6 +1225,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                       >
                         {item.cup_id === 'ing_lyden' ? '☕ Ly Đen' : item.cup_id === 'ing_lyhoavan' ? '🌸 Hoa Văn' : '🥤 Ly Trắng'}
                       </button>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center space-x-2">
@@ -1274,7 +1329,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                   <p className="text-[11px] text-coffee-medium italic py-1">Không có món ăn trong đơn.</p>
                 ) : (
                   existingOrderItems.map((item) => {
-                    const cupId = item.cup_id || (item.ghi_chu && item.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(item.product_id || item.idsp, item.products?.name || item.ten_san_pham, recipes);
+                    const cupId = resolveItemCupId(item.product_id || item.idsp, item.products?.name || item.ten_san_pham, item.ghi_chu || item.notes, item.cup_id, recipes);
                     return (
                       <div key={item.id} className="flex justify-between items-center py-1.5 text-xs">
                         <div>
@@ -1304,8 +1359,8 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
               {cart.length > 0 && (
                 <div className="space-y-1.5 border border-emerald-200 bg-emerald-50/30 rounded-xl p-3">
                   <p className="text-[10px] font-bold text-emerald-800 uppercase">Món mới chọn thêm (+{cart.length})</p>
-                  {cart.map((item) => (
-                    <div key={item.product_id} className="flex justify-between items-center py-1 text-xs">
+                  {cart.map((item, idx) => (
+                    <div key={`${item.product_id}-${idx}`} className="flex justify-between items-center py-1 text-xs">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span>{item.name} x {item.quantity}</span>
                         {item.cup_id && (
@@ -1360,7 +1415,7 @@ export default function MobilePosView({ onSwitchToDesktop }: MobilePosViewProps)
                       totalAmount: Number(existingOrder.total_amount || 0),
                       discount: Number(existingOrder.discount || 0),
                       notes: existingOrder.notes || ''
-                    });
+                    }, undefined, undefined, { allowReprint: true }); // Nhân viên chủ động bấm in lại
                     toast.success('Đã gửi lệnh in bill!');
                   } catch (e) {
                     toast.error('Không thể in bill.');

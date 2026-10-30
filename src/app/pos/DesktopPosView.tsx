@@ -2,17 +2,21 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
-import { 
-  db, 
-  getCurrentUser, 
+import {
+  db,
+  getCurrentUser,
   isSupabaseConfigured,
   onRealtimeEvent,
   getDefaultCupId,
   getCupLabel,
-  generateShortId
+  generateShortId,
+  resolveItemCupId,
+  stripCupTag,
+  logoutCurrentUser,
+  createCoalescedRefresher
 } from '@/lib/database';
 import { toast } from '@/lib/toast';
-import { printOrderDirect, tryAcquirePrintLock, markOrderAsPrinted } from '@/lib/printerService';
+import { printOrderDirect, tryAcquirePrintLock, markOrderAsPrinted, isOrderAlreadyPrinted, OrderData } from '@/lib/printerService';
 import { getVietQrUrl, TECHCOMBANK_INFO } from '@/lib/vietqr';
 import { 
   syncCustomerDisplay, 
@@ -56,7 +60,8 @@ import {
   Save,
   Volume2,
   PhoneCall,
-  Printer
+  Printer,
+  LogOut
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -122,12 +127,76 @@ const CATEGORY_COLORS: Record<string, { bg: string; border: string; text: string
   }
 };
 
-const DEFAULT_CATEGORY_COLOR = { 
-  bg: '#F3F4F6', 
-  border: '#E5E7EB', 
-  text: '#374151', 
-  bar: '#9CA3AF' 
+const DEFAULT_CATEGORY_COLOR = {
+  bg: '#F3F4F6',
+  border: '#E5E7EB',
+  text: '#374151',
+  bar: '#9CA3AF'
 };
+
+// Chuyển 1 dòng món (từ DB, bộ nhớ hoặc giỏ hàng) về đúng định dạng dòng giỏ hàng POS,
+// loại ly được xác định lại theo công thức định lượng hiện hành.
+function toCartItem(i: any, recipesList: any[]): CartItem {
+  const unitPrice = Number(i.unit_price || i.don_gia || i.price || 0);
+  const qty = Number(i.quantity || i.so_luong || 1);
+  const notes = i.ghi_chu || i.notes || '';
+  const productId = i.product_id || i.idsp || i.id;
+  const name = i.products?.name || i.ten_san_pham || i.name || 'Món';
+  return {
+    product_id: productId,
+    name,
+    price: unitPrice,
+    quantity: qty,
+    subtotal: Number(i.subtotal || i.thanh_tien || (qty * unitPrice)),
+    notes,
+    cup_id: resolveItemCupId(productId, name, notes, i.cup_id, recipesList)
+  };
+}
+
+// Dấu vân tay danh sách món (dùng để biết giỏ hàng có thay đổi so với đơn đã lưu hay không)
+function cartSignature(items: CartItem[]): string {
+  return items
+    .map(i => `${i.product_id}|${Number(i.quantity)}|${Number(i.price)}|${stripCupTag(i.notes)}|${i.cup_id || ''}`)
+    .sort()
+    .join(';');
+}
+
+// Có món mới gọi thêm (hoặc tăng số lượng) so với đơn đã lưu hay không
+function hasAddedItems(nextItems: CartItem[], prevItems: CartItem[]): boolean {
+  const before = new Map<string, number>();
+  prevItems.forEach(i => before.set(i.product_id, (before.get(i.product_id) || 0) + Number(i.quantity || 0)));
+  const after = new Map<string, number>();
+  nextItems.forEach(i => after.set(i.product_id, (after.get(i.product_id) || 0) + Number(i.quantity || 0)));
+  for (const [productId, qty] of after) {
+    if (qty > (before.get(productId) || 0)) return true;
+  }
+  return false;
+}
+
+// Dòng món đầy đủ các tên trường (cho danh sách đơn bếp / đơn chưa thanh toán trong bộ nhớ)
+function toOrderItemRecord(item: CartItem, orderId: string) {
+  return {
+    id: generateShortId('item_'),
+    order_id: orderId,
+    product_id: item.product_id,
+    name: item.name,
+    ten_san_pham: item.name,
+    quantity: item.quantity,
+    so_luong: item.quantity,
+    price: item.price,
+    unit_price: item.price,
+    don_gia: item.price,
+    subtotal: item.subtotal,
+    thanh_tien: item.subtotal,
+    notes: item.notes,
+    ghi_chu: item.notes,
+    cup_id: item.cup_id
+  };
+}
+
+function errorMessage(err: any): string {
+  return err?.message || err?.toString?.() || 'Lỗi không xác định';
+}
 
 export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?: () => void }) {
   // Dữ liệu chính
@@ -193,13 +262,56 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   const [merging, setMerging] = useState(false);
 
   // Trạng thái Tách hóa đơn (Split Bill)
+  // splitQtys[i] = số lượng của dòng món thứ i trong giỏ hàng mà khách này muốn trả riêng
   const [isSplitModalOpen, setIsSplitModalOpen] = useState(false);
-  const [splitCart, setSplitCart] = useState<CartItem[]>([]);
-  const [splitRemainingCart, setSplitRemainingCart] = useState<CartItem[]>([]);
-  const [splitActionType, setSplitActionType] = useState<'pay_now' | 'move_table'>('pay_now');
-  const [splitTargetTableId, setSplitTargetTableId] = useState<string>('');
+  const [splitQtys, setSplitQtys] = useState<number[]>([]);
   const [splitPaymentMethod, setSplitPaymentMethod] = useState<'Tiền mặt' | 'Chuyển khoản'>('Tiền mặt');
   const [splitting, setSplitting] = useState(false);
+
+  const splitCart = useMemo<CartItem[]>(() => (
+    cart
+      .map((item, idx) => ({ item, qty: Math.min(item.quantity, splitQtys[idx] || 0) }))
+      .filter(x => x.qty > 0)
+      .map(({ item, qty }) => ({ ...item, quantity: qty, subtotal: qty * item.price }))
+  ), [cart, splitQtys]);
+
+  const splitRemainingCart = useMemo<CartItem[]>(() => (
+    cart
+      .map((item, idx) => ({ item, qty: item.quantity - Math.min(item.quantity, splitQtys[idx] || 0) }))
+      .filter(x => x.qty > 0)
+      .map(({ item, qty }) => ({ ...item, quantity: qty, subtotal: qty * item.price }))
+  ), [cart, splitQtys]);
+
+  // Chống bấm 2 lần / thanh toán chồng
+  const isPayingRef = useRef(false);
+  // Mã đơn ổn định cho lần lưu/thanh toán đang thực hiện: bấm lại sau khi mạng lỗi sẽ dùng lại đúng mã đơn cũ
+  // -> server nhận ra đơn đã tồn tại, tuyệt đối không tạo đơn trùng / tính tiền 2 lần.
+  const pendingOrderRef = useRef<{ key: string; id: string } | null>(null);
+  const getStableOrderId = (key: string) => {
+    if (pendingOrderRef.current?.key === key) return pendingOrderRef.current.id;
+    const id = generateShortId('ord_');
+    pendingOrderRef.current = { key, id };
+    return id;
+  };
+
+  // Chọn bàn: chỉ áp dụng kết quả tải của LẦN CHỌN BÀN MỚI NHẤT (bấm nhanh bàn A rồi bàn B không bị lẫn món)
+  const selectTableRequestRef = useRef(0);
+  // Thu ngân đã thao tác giỏ hàng sau khi chọn bàn chưa (để không ghi đè món vừa bấm)
+  const cartTouchedRef = useRef(false);
+
+  // Menu tài khoản trên header POS
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+
+  // Đăng xuất tài khoản ngay tại màn hình POS
+  const handleLogout = () => {
+    setIsUserMenuOpen(false);
+    if (cart.length > 0 && !existingOrder) {
+      const ok = window.confirm('Giỏ hàng còn món CHƯA LƯU. Đăng xuất sẽ bỏ các món này. Bạn vẫn muốn đăng xuất?');
+      if (!ok) return;
+    }
+    syncCustomerDisplay({ items: [], totalAmount: 0, orderStatus: 'idle' }).catch(() => {});
+    logoutCurrentUser();
+  };
 
   // Tải danh sách đơn đã làm xong của bếp trong ngày & SĐT MoMo từ LocalStorage
   useEffect(() => {
@@ -272,8 +384,22 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     if (!selectedTable || selectedSourceTableIds.length === 0 || !existingOrder?.id) return;
     setMerging(true);
     try {
-      const res = await db.mergeTables(selectedTable.id, selectedSourceTableIds, existingOrder.id);
-      setCart(res.items);
+      const res: any = await db.mergeTables(selectedTable.id, selectedSourceTableIds, existingOrder.id);
+      // Giỏ hàng + đơn hiện tại khớp 100% với đơn đã gộp trên server (tránh in lại "gọi thêm món" sai)
+      const mergedCart = (res.items || []).map((i: any) => toCartItem(i, recipes));
+      const mergedRecords = mergedCart.map((i: CartItem) => toOrderItemRecord(i, existingOrder.id));
+      cartTouchedRef.current = false;
+      setCart(mergedCart);
+      setExistingOrderItems(mergedRecords);
+      setExistingOrder((prev: any) => prev ? {
+        ...prev,
+        total_amount: res.totalAmount,
+        discount: res.discount ?? prev.discount,
+        kitchen_done: false,
+        order_items: mergedRecords
+      } : prev);
+      setDiscountType('amount');
+      setDiscountValue(Number(res.discount ?? existingOrder.discount ?? 0));
       setIsMergeModalOpen(false);
       setSelectedSourceTableIds([]);
       toast.success(`Đã gộp thành công các bàn vào ${selectedTable.table_name}!`);
@@ -290,319 +416,189 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   const handleOpenSplitModal = () => {
     let sourceCart = cart;
     if (sourceCart.length === 0 && existingOrderItems.length > 0) {
-      sourceCart = existingOrderItems.map((i: any) => ({
-        product_id: i.product_id || i.idsp,
-        name: i.products?.name || i.ten_san_pham || i.name || 'Món',
-        price: Number(i.unit_price || i.don_gia || i.price || 0),
-        quantity: Number(i.quantity || i.so_luong || 1),
-        subtotal: Number(i.subtotal || i.thanh_tien || (Number(i.quantity || 1) * Number(i.unit_price || i.don_gia || 0))),
-        notes: i.ghi_chu || i.notes || '',
-        cup_id: i.cup_id || null
-      }));
+      sourceCart = existingOrderItems.map((i: any) => toCartItem(i, recipes));
       setCart(sourceCart);
     }
-    setSplitRemainingCart(JSON.parse(JSON.stringify(sourceCart)));
-    setSplitCart([]);
-    setSplitActionType('pay_now');
-    setSplitTargetTableId('');
+    setSplitQtys(new Array(sourceCart.length).fill(0));
+    setSplitPaymentMethod('Tiền mặt');
     setIsSplitModalOpen(true);
   };
 
-  // Cập nhật số lượng món muốn tách trả tiền riêng trực quan
-  const handleSetSplitItemQty = (product_id: string, newSplitQty: number) => {
-    const originalItem = cart.find(i => i.product_id === product_id);
+  // Cập nhật số lượng món (theo dòng trong giỏ) muốn tách trả tiền riêng
+  const handleSetSplitItemQty = (index: number, newSplitQty: number) => {
+    const originalItem = cart[index];
     if (!originalItem) return;
     const clampedQty = Math.max(0, Math.min(originalItem.quantity, newSplitQty));
-
-    let updatedSplit = [...splitCart];
-    const sIdx = updatedSplit.findIndex(i => i.product_id === product_id);
-    if (clampedQty === 0) {
-      if (sIdx >= 0) updatedSplit.splice(sIdx, 1);
-    } else {
-      if (sIdx >= 0) {
-        updatedSplit[sIdx] = {
-          ...updatedSplit[sIdx],
-          quantity: clampedQty,
-          subtotal: clampedQty * originalItem.price
-        };
-      } else {
-        updatedSplit.push({
-          ...originalItem,
-          quantity: clampedQty,
-          subtotal: clampedQty * originalItem.price
-        });
-      }
-    }
-    setSplitCart(updatedSplit);
-
-    let updatedRemaining: CartItem[] = [];
-    cart.forEach(cItem => {
-      const sp = updatedSplit.find(s => s.product_id === cItem.product_id);
-      const spQ = sp ? sp.quantity : 0;
-      const remQ = cItem.quantity - spQ;
-      if (remQ > 0) {
-        updatedRemaining.push({
-          ...cItem,
-          quantity: remQ,
-          subtotal: remQ * cItem.price
-        });
-      }
+    setSplitQtys(prev => {
+      const next = cart.map((_, i) => prev[i] || 0);
+      next[index] = clampedQty;
+      return next;
     });
-    setSplitRemainingCart(updatedRemaining);
   };
 
-  // Chuyển 1 số lượng món sang hóa đơn tách
-  const handleMoveItemToSplit = (idx: number) => {
-    const item = splitRemainingCart[idx];
-    if (!item) return;
-
-    // Giảm ở bên còn lại
-    const updatedRemaining = [...splitRemainingCart];
-    if (item.quantity > 1) {
-      updatedRemaining[idx] = {
-        ...item,
-        quantity: item.quantity - 1,
-        subtotal: (item.quantity - 1) * item.price
-      };
-    } else {
-      updatedRemaining.splice(idx, 1);
-    }
-    setSplitRemainingCart(updatedRemaining);
-
-    // Tăng ở bên tách
-    const updatedSplit = [...splitCart];
-    const existingSplitIdx = updatedSplit.findIndex(
-      i => i.product_id === item.product_id && (i.notes || '') === (item.notes || '')
-    );
-    if (existingSplitIdx >= 0) {
-      const spItem = updatedSplit[existingSplitIdx];
-      updatedSplit[existingSplitIdx] = {
-        ...spItem,
-        quantity: spItem.quantity + 1,
-        subtotal: (spItem.quantity + 1) * spItem.price
-      };
-    } else {
-      updatedSplit.push({
-        ...item,
-        quantity: 1,
-        subtotal: item.price
-      });
-    }
-    setSplitCart(updatedSplit);
-  };
-
-  // Chuyển tất cả số lượng của món sang hóa đơn tách
-  const handleMoveAllToSplit = (idx: number) => {
-    const item = splitRemainingCart[idx];
-    if (!item) return;
-
-    const updatedRemaining = splitRemainingCart.filter((_, i) => i !== idx);
-    setSplitRemainingCart(updatedRemaining);
-
-    const updatedSplit = [...splitCart];
-    const existingSplitIdx = updatedSplit.findIndex(
-      i => i.product_id === item.product_id && (i.notes || '') === (item.notes || '')
-    );
-    if (existingSplitIdx >= 0) {
-      const spItem = updatedSplit[existingSplitIdx];
-      updatedSplit[existingSplitIdx] = {
-        ...spItem,
-        quantity: spItem.quantity + item.quantity,
-        subtotal: (spItem.quantity + item.quantity) * spItem.price
-      };
-    } else {
-      updatedSplit.push({
-        ...item
-      });
-    }
-    setSplitCart(updatedSplit);
-  };
-
-  // Trả 1 số lượng món từ hóa đơn tách về hóa đơn gốc
-  const handleReturnItemFromSplit = (idx: number) => {
-    const item = splitCart[idx];
-    if (!item) return;
-
-    // Giảm ở bên tách
-    const updatedSplit = [...splitCart];
-    if (item.quantity > 1) {
-      updatedSplit[idx] = {
-        ...item,
-        quantity: item.quantity - 1,
-        subtotal: (item.quantity - 1) * item.price
-      };
-    } else {
-      updatedSplit.splice(idx, 1);
-    }
-    setSplitCart(updatedSplit);
-
-    // Tăng ở bên gốc
-    const updatedRemaining = [...splitRemainingCart];
-    const existingRemainingIdx = updatedRemaining.findIndex(
-      i => i.product_id === item.product_id && (i.notes || '') === (item.notes || '')
-    );
-    if (existingRemainingIdx >= 0) {
-      const rmItem = updatedRemaining[existingRemainingIdx];
-      updatedRemaining[existingRemainingIdx] = {
-        ...rmItem,
-        quantity: rmItem.quantity + 1,
-        subtotal: (rmItem.quantity + 1) * rmItem.price
-      };
-    } else {
-      updatedRemaining.push({
-        ...item,
-        quantity: 1,
-        subtotal: item.price
-      });
-    }
-    setSplitRemainingCart(updatedRemaining);
-  };
-
-  // Trả toàn bộ món từ hóa đơn tách về hóa đơn gốc
-  const handleReturnAllFromSplit = (idx: number) => {
-    const item = splitCart[idx];
-    if (!item) return;
-
-    const updatedSplit = splitCart.filter((_, i) => i !== idx);
-    setSplitCart(updatedSplit);
-
-    const updatedRemaining = [...splitRemainingCart];
-    const existingRemainingIdx = updatedRemaining.findIndex(
-      i => i.product_id === item.product_id && (i.notes || '') === (item.notes || '')
-    );
-    if (existingRemainingIdx >= 0) {
-      const rmItem = updatedRemaining[existingRemainingIdx];
-      updatedRemaining[existingRemainingIdx] = {
-        ...rmItem,
-        quantity: rmItem.quantity + item.quantity,
-        subtotal: (rmItem.quantity + item.quantity) * rmItem.price
-      };
-    } else {
-      updatedRemaining.push({ ...item });
-    }
-    setSplitRemainingCart(updatedRemaining);
-  };
-
-  // Xác nhận Tách hóa đơn
+  // ─────────────────────────────────────────────────────────────
+  // XÁC NHẬN TÁCH HÓA ĐƠN: KHÁCH NÀY TRẢ TRƯỚC PHẦN ĐÃ CHỌN
+  // Quy trình an toàn (không bao giờ mất món, không tính tiền 2 lần):
+  //   1. Cập nhật đơn gốc của bàn chỉ còn các món chưa trả
+  //   2. Tạo 1 đơn MỚI RIÊNG BIỆT cho phần tách (không gộp ngược vào đơn gốc)
+  //   3. In bill riêng + thanh toán đơn tách (trừ kho đúng phần tách, cộng doanh thu đúng phần tách)
+  //   Bàn vẫn giữ trạng thái "Đang phục vụ" cho phần còn lại.
+  // ─────────────────────────────────────────────────────────────
   const handleConfirmSplit = async () => {
-    if (splitCart.length === 0 || splitting) return;
+    if (splitCart.length === 0 || splitting || isPayingRef.current) return;
+
+    // Khách trả toàn bộ các món -> chính là thanh toán cả bàn
+    if (splitRemainingCart.length === 0) {
+      setIsSplitModalOpen(false);
+      await handleProcessPayment(splitPaymentMethod);
+      return;
+    }
+
+    isPayingRef.current = true;
     setSplitting(true);
 
+    const table = selectedTable;
+    const tableName = table?.table_name || 'Bàn';
+    const sourceOrder = existingOrder;
+    const fullCart = [...cart];
+    const splitItems = [...splitCart];
+    const remainingItems = [...splitRemainingCart];
+    const method = splitPaymentMethod;
+    const notesTrim = orderNotes.trim();
+
+    const splitTotal = splitItems.reduce((s, i) => s + i.subtotal, 0);
+    const remainingSubtotal = remainingItems.reduce((s, i) => s + i.subtotal, 0);
+    // Giảm giá của bàn được giữ cho phần còn lại (tính lại theo số tiền còn lại)
+    const remainingDiscount = discountType === 'percent'
+      ? Math.min(remainingSubtotal, Math.round((remainingSubtotal * Math.min(100, Math.max(0, Number(discountValue) || 0))) / 100))
+      : Math.min(remainingSubtotal, discountAmount);
+    const remainingTotal = Math.max(0, remainingSubtotal - remainingDiscount);
+
+    const sourceItems = existingOrderItems.map((i: any) => toCartItem(i, recipes));
+    const sourceKitchenDone = !!sourceOrder && isOrderKitchenDone(sourceOrder);
+    const cartHasNewItems = sourceOrder ? hasAddedItems(fullCart, sourceItems) : true;
+
+    let sourceUpdated = false;
+    let splitOrderId: string | null = null;
+
     try {
-      const splitTotal = splitCart.reduce((s, i) => s + i.subtotal, 0);
-      const remainingTotal = splitRemainingCart.reduce((s, i) => s + i.subtotal, 0);
+      // 1. Đơn gốc chỉ còn lại các món chưa trả
+      if (sourceOrder?.id) {
+        await db.syncUnpaidOrder(sourceOrder.id, {
+          total_amount: remainingTotal,
+          discount: remainingDiscount,
+          notes: notesTrim,
+          items: remainingItems,
+          kitchen_done: sourceKitchenDone && !cartHasNewItems
+        });
+        sourceUpdated = true;
+      }
 
-      if (splitActionType === 'pay_now') {
-        // 1. Tạo đơn mới và thanh toán ngay phần tách
-        const newOrder = await db.createOrder({
-          table_id: selectedTable?.id || 'tb_mangve',
-          staff_id: currentUser?.id || 'admin',
+      // 2. Tạo đơn riêng cho phần tách
+      const newOrderId = getStableOrderId(`split|${table?.id || ''}|${cartSignature(splitItems)}|${splitTotal}`);
+      reservePrintForNewOrder(newOrderId, splitItems.length, splitTotal, true);
+      await db.createOrder({
+        id: newOrderId,
+        table_id: table?.id || 'tb_mangve',
+        staff_id: currentUser?.id || 'admin',
+        total_amount: splitTotal,
+        discount: 0,
+        notes: `Tách từ ${tableName}`,
+        items: splitItems,
+        force_new: true,
+        kitchen_done: sourceKitchenDone && !cartHasNewItems
+      });
+      splitOrderId = newOrderId;
+
+      // 3. In bill riêng ngay (không chờ máy in) rồi chốt thanh toán
+      if (!locallyPrintedIdsRef.current.has(newOrderId)) {
+        printInBackground(newOrderId, {
+          tableName: `${tableName} (Tách bill)`,
+          staffName: currentUser?.full_name || 'Admin',
+          items: splitItems.map(i => ({ name: i.name, quantity: i.quantity, price: i.price, subtotal: i.subtotal })),
+          totalAmount: splitTotal,
+          discount: 0,
+          notes: '(ĐÃ THANH TOÁN)'
+        }, true);
+      }
+      await db.payOrder(newOrderId, method);
+      pendingOrderRef.current = null;
+      kickCashDrawer().catch(() => {});
+
+      // 4. Cập nhật giao diện: bàn chỉ còn các món chưa trả
+      const remainingRecords = remainingItems.map(i => toOrderItemRecord(i, sourceOrder?.id || ''));
+      setCart(remainingItems);
+      setSplitQtys([]);
+      setSelectedCartIndex(-1);
+      if (discountType === 'amount') setDiscountValue(remainingDiscount);
+      if (sourceOrder) {
+        const updatedSource = { ...sourceOrder, total_amount: remainingTotal, discount: remainingDiscount, order_items: remainingRecords };
+        setExistingOrder(updatedSource);
+        setExistingOrderItems(remainingRecords);
+        setUnpaidOrders(prev => prev.map(o => o.id === sourceOrder.id ? updatedSource : o));
+      }
+      if (!(sourceKitchenDone && !cartHasNewItems)) {
+        setRecentOrders(prev => [{
+          id: newOrderId,
+          table_id: table?.id || 'tb_mangve',
           total_amount: splitTotal,
           discount: 0,
-          notes: `Tách từ ${selectedTable?.table_name || 'Bàn'}`,
-          items: splitCart
-        });
-
-        if (newOrder?.id) {
-          await db.payOrder(newOrder.id, splitPaymentMethod);
-          try {
-            await printOrderDirect({
-              tableName: `${selectedTable?.table_name || 'Khách'} (Tách bill)`,
-              staffName: currentUser?.full_name || 'Admin',
-              orderId: newOrder.id,
-              items: splitCart.map(i => ({ name: i.name, quantity: i.quantity, price: i.price, subtotal: i.subtotal })),
-              totalAmount: splitTotal,
-              discount: 0,
-              notes: '(ĐÃ THANH TOÁN)'
-            });
-
-            markOrderAsPrinted(newOrder.id, {
-              itemCount: splitCart.length,
-              totalAmount: splitTotal,
-              isPaid: true
-            });
-            await kickCashDrawer();
-          } catch (_) {}
-        }
-
-        // 2. Cập nhật phần còn lại cho bàn gốc
-        if (splitRemainingCart.length === 0) {
-          if (existingOrder?.id) {
-            await db.payOrder(existingOrder.id, 'Tiền mặt');
-          }
-          handleClearCart();
-          setExistingOrder(null);
-          setSelectedTable(null);
-          setViewMode('tables');
-          toast.success(`Đã thanh toán hóa đơn tách! ${selectedTable?.table_name || 'Bàn'} đã được dọn sạch.`);
-        } else {
-          if (existingOrder?.id) {
-            await db.syncUnpaidOrder(existingOrder.id, {
-              total_amount: remainingTotal,
-              discount: discountAmount,
-              notes: orderNotes.trim(),
-              items: splitRemainingCart
-            });
-          }
-          setCart(splitRemainingCart);
-          toast.success(`Đã thanh toán hóa đơn tách! ${selectedTable?.table_name || 'Bàn'} còn lại ${remainingTotal.toLocaleString('vi-VN')} đ.`);
-        }
-
-      } else {
-        // Chuyển phần tách sang bàn trống khác
-        if (!splitTargetTableId) {
-          toast.error('Vui lòng chọn bàn muốn chuyển đến');
-          setSplitting(false);
-          return;
-        }
-
-        const targetT = tables.find(t => t.id === splitTargetTableId);
-        // Tạo đơn mới cho bàn đích
-        await db.createOrder({
-          table_id: splitTargetTableId,
-          staff_id: currentUser?.id || 'admin',
-          total_amount: splitTotal,
-          discount: 0,
-          notes: `Tách từ ${selectedTable?.table_name || 'Bàn'}`,
-          items: splitCart
-        });
-
-        // Cập nhật bàn gốc
-        if (splitRemainingCart.length === 0) {
-          if (existingOrder?.id) {
-            await db.payOrder(existingOrder.id, 'Tiền mặt');
-          }
-          handleClearCart();
-          setExistingOrder(null);
-          setSelectedTable(null);
-          setViewMode('tables');
-          toast.success(`Đã chuyển toàn bộ sang ${targetT?.table_name || 'Bàn mới'}!`);
-        } else {
-          if (existingOrder?.id) {
-            await db.syncUnpaidOrder(existingOrder.id, {
-              total_amount: remainingTotal,
-              discount: discountAmount,
-              notes: orderNotes.trim(),
-              items: splitRemainingCart
-            });
-          }
-          setCart(splitRemainingCart);
-          toast.success(`Đã tách các món sang ${targetT?.table_name || 'Bàn mới'}!`);
-        }
+          payment_status: 'Đã thanh toán',
+          payment_method: method,
+          notes: `Tách từ ${tableName}`,
+          tables: { table_name: tableName },
+          users: { full_name: currentUser?.full_name || 'Admin' },
+          created_at: new Date().toISOString(),
+          paid_at: new Date().toISOString(),
+          kitchen_done: false,
+          order_items: splitItems.map(i => toOrderItemRecord(i, newOrderId))
+        }, ...prev.filter(o => o.id !== newOrderId)]);
       }
 
       setIsSplitModalOpen(false);
-      await refreshData();
+      toast.success(`Đã thu ${splitTotal.toLocaleString('vi-VN')} đ phần tách! ${tableName} còn lại ${remainingTotal.toLocaleString('vi-VN')} đ.`);
+      scheduleRefresh();
     } catch (e) {
       console.error('Lỗi tách hóa đơn:', e);
-      toast.error('Gặp lỗi khi tách hóa đơn');
+      if (splitOrderId) {
+        // Đơn tách đã được tạo nhưng chưa chốt được tiền -> đơn tách nằm trong "Đơn chưa TT" của bàn
+        setCart(remainingItems);
+        setSplitQtys([]);
+        setIsSplitModalOpen(false);
+        toast.error(`Đã tách đơn nhưng chưa thanh toán được (${errorMessage(e)}). Mở "Đơn chưa TT" để thanh toán lại phần tách.`);
+        scheduleRefresh();
+      } else {
+        if (sourceUpdated && sourceOrder?.id) {
+          // Khôi phục lại đơn gốc đầy đủ món như trước khi tách
+          try {
+            await db.syncUnpaidOrder(sourceOrder.id, {
+              total_amount: finalTotalAmount,
+              discount: discountAmount,
+              notes: notesTrim,
+              items: fullCart,
+              kitchen_done: sourceKitchenDone && !cartHasNewItems
+            });
+          } catch (restoreErr) {
+            console.error('Lỗi khôi phục đơn gốc sau khi tách thất bại:', restoreErr);
+          }
+        }
+        toast.error(`Chưa tách được hóa đơn (${errorMessage(e)}). Vui lòng thử lại.`);
+      }
     } finally {
+      isPayingRef.current = false;
       setSplitting(false);
     }
   };
 
   // Thanh toán nhanh trực tiếp từ thẻ hóa đơn bếp hoặc đơn chưa thanh toán
   const handleQuickPayFromTicket = async (order: any) => {
+    // Đang chọn món dở cho bàn khác -> hỏi lại trước khi thay giỏ hàng (tránh mất món chưa lưu)
+    if (cartTouchedRef.current && cart.length > 0 && order.id !== existingOrder?.id) {
+      const ok = window.confirm(
+        `${selectedTable?.table_name || 'Bàn đang chọn'} còn món CHƯA LƯU. Mở thanh toán đơn khác sẽ bỏ các món đó. Tiếp tục?`
+      );
+      if (!ok) return;
+    }
     const matchedTable = tables.find(t => t.id === order.table_id) || {
       id: order.table_id || 'tb_mangve',
       table_name: order.tables?.table_name || 'Khách mang về'
@@ -621,23 +617,12 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       } catch (_) {}
     }
 
-    const formattedCart: CartItem[] = items.map((i: any) => {
-      const uPrice = Number(i.unit_price || i.don_gia || i.price || 0);
-      const qty = Number(i.quantity || i.so_luong || 1);
-      const sub = Number(i.subtotal || i.thanh_tien || (qty * uPrice));
-      return {
-        product_id: i.product_id || i.idsp || i.id,
-        name: i.name || i.ten_san_pham || i.products?.name || 'Món',
-        price: uPrice,
-        quantity: qty,
-        subtotal: sub,
-        notes: i.ghi_chu || i.notes || '',
-        cup_id: i.cup_id || (i.ghi_chu && i.ghi_chu.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes) || null
-      };
-    });
+    const formattedCart: CartItem[] = items.map((i: any) => toCartItem(i, recipes));
 
+    cartTouchedRef.current = false;
     setExistingOrderItems(items);
     setCart(formattedCart);
+    setDiscountType('amount');
     setDiscountValue(Number(order.discount || order.giam_gia || 0));
     setOrderNotes(order.notes || '');
     setCustomerCashGiven(Number(order.total_amount || 0));
@@ -645,7 +630,15 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   };
 
   // Cơ chế 1-chạm đổi loại ly trừ kho nhanh (Ly Đen -> Ly Hoa Văn -> Ly Trắng)
+  // Chỉ áp dụng cho món có ly trong công thức định lượng (món không dùng ly thì không trừ ly)
   const handleCycleCupType = (index: number) => {
+    const target = cart[index];
+    if (!target) return;
+    if (!target.cup_id) {
+      toast.info(`${target.name} không dùng ly trong công thức định lượng`);
+      return;
+    }
+    cartTouchedRef.current = true;
     setCart(prev => {
       const next = [...prev];
       const item = { ...next[index] };
@@ -680,35 +673,50 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   };
 
   // In hóa đơn tạm tính thủ công (khi khách cần xem hoặc in bổ sung)
+  // ĐÂY LÀ CÁCH DUY NHẤT ĐỂ IN LẠI 1 ĐƠN ĐÃ IN: nhân viên chủ động bấm "In bill" / "In hoá đơn"
   const handlePrintTemporaryBill = async (customOrder?: any) => {
+    // In từ danh sách "Đơn chưa thanh toán" -> in đúng đơn được chọn, không lấy món trong giỏ của bàn đang mở
+    const isOtherOrder = !!customOrder && customOrder.id !== existingOrder?.id;
     const targetOrder = customOrder || existingOrder;
-    const currentTable = selectedTable || (targetOrder ? tables.find(t => t.id === targetOrder.table_id) : null);
+    const currentTable = isOtherOrder
+      ? tables.find(t => t.id === targetOrder.table_id)
+      : (selectedTable || (targetOrder ? tables.find(t => t.id === targetOrder.table_id) : null));
     const orderId = targetOrder?.id;
+    const toPrintItem = (i: any) => ({
+      product_id: i.product_id || i.idsp,
+      name: i.products?.name || i.ten_san_pham || i.name || 'Món',
+      price: Number(i.unit_price || i.don_gia || i.price || 0),
+      quantity: Number(i.quantity || i.so_luong || 1),
+      subtotal: Number(i.subtotal || i.thanh_tien || 0),
+      notes: i.ghi_chu || i.notes || ''
+    });
 
-    let itemsToPrint = cart;
-    if (itemsToPrint.length === 0 && existingOrderItems.length > 0) {
-      itemsToPrint = existingOrderItems.map((i: any) => ({
-        product_id: i.product_id || i.idsp,
-        name: i.products?.name || i.ten_san_pham || i.name || 'Món',
-        price: Number(i.unit_price || i.don_gia || i.price || 0),
-        quantity: Number(i.quantity || i.so_luong || 1),
-        subtotal: Number(i.subtotal || i.thanh_tien || 0),
-        notes: i.ghi_chu || i.notes || ''
-      }));
-    } else if (itemsToPrint.length === 0 && orderId) {
-      try {
-        const fetched = await db.getOrderItems(orderId);
-        if (fetched) {
-          itemsToPrint = fetched.map((i: any) => ({
-            product_id: i.product_id || i.idsp,
-            name: i.products?.name || i.ten_san_pham || i.name || 'Món',
-            price: Number(i.unit_price || i.don_gia || i.price || 0),
-            quantity: Number(i.quantity || i.so_luong || 1),
-            subtotal: Number(i.subtotal || i.thanh_tien || 0),
-            notes: i.ghi_chu || i.notes || ''
-          }));
-        }
-      } catch (_) {}
+    let itemsToPrint: any[] = [];
+    let totalToPrint = 0;
+    let discountToPrint = 0;
+
+    if (isOtherOrder) {
+      itemsToPrint = (targetOrder.order_items || []).map(toPrintItem);
+      if (orderId) {
+        try {
+          const fetched = await db.getOrderItems(orderId);
+          if (fetched && fetched.length > 0) itemsToPrint = fetched.map(toPrintItem);
+        } catch (_) {}
+      }
+      totalToPrint = Number(targetOrder.total_amount || 0);
+      discountToPrint = Number(targetOrder.discount || 0);
+    } else {
+      itemsToPrint = cart;
+      if (itemsToPrint.length === 0 && existingOrderItems.length > 0) {
+        itemsToPrint = existingOrderItems.map(toPrintItem);
+      } else if (itemsToPrint.length === 0 && orderId) {
+        try {
+          const fetched = await db.getOrderItems(orderId);
+          if (fetched) itemsToPrint = fetched.map(toPrintItem);
+        } catch (_) {}
+      }
+      totalToPrint = finalTotalAmount || Number(targetOrder?.total_amount || 0);
+      discountToPrint = discountAmount || Number(targetOrder?.discount || 0);
     }
 
     if (itemsToPrint.length === 0) {
@@ -721,14 +729,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         orderId: orderId,
         tableName: currentTable?.table_name || targetOrder?.tables?.table_name || 'Khách mang về',
         staffName: currentUser?.full_name || 'Admin',
-        totalAmount: finalTotalAmount || targetOrder?.total_amount || 0,
-        discount: discountAmount || targetOrder?.discount || 0,
+        totalAmount: totalToPrint,
+        discount: discountToPrint,
         notes: '(HÓA ĐƠN TẠM TÍNH)',
         items: itemsToPrint
-      }, undefined, undefined, { isManualUserReprint: true });
-      toast.success(`🖨️ Đã gửi lệnh in bill (${currentTable?.table_name || 'Bàn'})!`);
+      }, undefined, undefined, { allowReprint: true });
+      toast.success(`🖨️ Đã gửi lệnh in bill (${currentTable?.table_name || targetOrder?.tables?.table_name || 'Bàn'})!`);
     } catch (e: any) {
-      toast.error('Gặp lỗi khi gửi lệnh in!');
+      toast.error(`Gặp lỗi khi gửi lệnh in: ${errorMessage(e)}`);
     }
   };
 
@@ -786,8 +794,16 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       setUnpaidOrders(unpaidData);
       setRecentOrders(prev => {
         // Hợp nhất: nếu có đơn vừa thanh toán / vừa lưu trong prev mà server chưa kịp trả về (do độ trễ mạng), giữ lại trong danh sách
+        // (chỉ giữ tối đa 10 phút để đơn tạm không nằm mãi trên màn hình pha chế)
         const serverIds = new Set(recentData.map(o => o.id));
-        const pendingLocals = prev.filter(p => !serverIds.has(p.id) && !completedKitchenOrderIds.includes(p.id) && !p.kitchen_done);
+        const doneIds = completedKitchenIdsRef.current;
+        const now = Date.now();
+        const pendingLocals = prev.filter(p =>
+          !serverIds.has(p.id) &&
+          !doneIds.includes(p.id) &&
+          !p.kitchen_done &&
+          now - new Date(p.created_at || now).getTime() < 10 * 60 * 1000
+        );
         return [...pendingLocals, ...recentData];
       });
       if (recipesData) setRecipes(recipesData);
@@ -802,8 +818,57 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     }
   };
 
+  // Luôn trỏ tới phiên bản refreshData mới nhất (tránh dùng state cũ trong các listener realtime)
+  const refreshDataRef = useRef(refreshData);
+  const completedKitchenIdsRef = useRef<string[]>(completedKitchenOrderIds);
+  useEffect(() => {
+    refreshDataRef.current = refreshData;
+    completedKitchenIdsRef.current = completedKitchenOrderIds;
+  });
+
+  // Gom tất cả sự kiện realtime dồn dập thành 1 lần làm mới.
+  // Trước đây mỗi lần thanh toán sinh ra hàng chục sự kiện -> hàng chục lượt tải lại toàn bộ dữ liệu cùng lúc,
+  // làm máy POS nghẽn mạng, bấm Thanh toán / Lưu đơn quay rất lâu.
+  // (Bộ gom được tạo trong useEffect khởi động màn hình POS bên dưới)
+  const scheduleRefreshRef = useRef<ReturnType<typeof createCoalescedRefresher> | null>(null);
+  const scheduleRefresh = () => scheduleRefreshRef.current?.();
+
+  // Đơn đã được quầy pha chế bấm "Đã làm xong" chưa
+  const isOrderKitchenDone = (order: any) =>
+    !!order && (!!order.kitchen_done || completedKitchenOrderIds.includes(order.id));
+
+  // Các đơn mà CHÍNH máy POS này đã gửi lệnh in (để bấm lại sau lỗi mạng không in thêm bill thứ 2)
+  const locallyPrintedIdsRef = useRef<Set<string>>(new Set());
+
+  // Đánh dấu TRƯỚC khi lưu lên server: sự kiện realtime "có đơn mới" có thể về tới máy POS trước khi
+  // lưu xong, đánh dấu sớm để GlobalPrintListener tuyệt đối không in lặp đơn này như đơn từ điện thoại.
+  const reservePrintForNewOrder = (orderId: string, itemCount: number, totalAmount: number, isPaid: boolean) => {
+    markOrderAsPrinted(orderId, { itemCount, totalAmount, isPaid });
+  };
+
+  // In bill chạy nền: KHÔNG bắt màn hình bán hàng chờ máy in.
+  // In lỗi thì báo cho thu ngân biết để bấm "In bill" in lại (không còn im lặng mất bill).
+  const printInBackground = (orderId: string, data: Omit<OrderData, 'orderId'>, isPaid: boolean) => {
+    locallyPrintedIdsRef.current.add(orderId);
+    markOrderAsPrinted(orderId, {
+      itemCount: data.items.length,
+      totalAmount: data.totalAmount,
+      isPaid
+    });
+    // Lệnh in tự động: đi qua bộ chống in lặp theo mã đơn (1 đơn chỉ in 1 lần)
+    printOrderDirect({ ...data, orderId })
+      .catch(err => {
+        console.warn('Lỗi in bill:', err);
+        toast.error(`⚠️ Chưa in được bill ${data.tableName}: ${errorMessage(err)}. Kiểm tra máy in rồi bấm "In bill".`);
+      });
+  };
+
   // Khởi động & Prefetch dữ liệu
   useEffect(() => {
+    if (!scheduleRefreshRef.current) {
+      scheduleRefreshRef.current = createCoalescedRefresher(() => refreshDataRef.current(), 350, 1500);
+    }
+
     async function initPos() {
       const todayDateKey = new Date().toLocaleDateString('en-CA');
       // 1. Tải từ cache trước (0ms)
@@ -876,10 +941,29 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     initPos();
 
     // Lắng nghe Realtime thay đổi từ Supabase để tự động cập nhật sơ đồ bàn & danh sách đơn
-    const unsubTables = db.subscribeToTableChanges(() => refreshData());
-    const unsubOrders = db.subscribeToOrderChanges(() => refreshData());
+    // (subscribeToOrderChanges và onRealtimeEvent('order_update') dùng chung kênh nên chỉ đăng ký 1 lần)
+    const unsubTables = db.subscribeToTableChanges(() => scheduleRefresh());
+
+    // Admin thêm / sửa món, đổi giá, đổi ảnh -> tự tải lại thực đơn (không cần khởi động lại app)
+    const reloadMenu = createCoalescedRefresher(async () => {
+      const [categoriesData, productsData, recipesData] = await Promise.all([
+        db.getCategories(),
+        db.getProducts(),
+        db.getRecipes()
+      ]);
+      setCategories(categoriesData);
+      setProducts(productsData);
+      if (recipesData) setRecipes(recipesData);
+      try {
+        localStorage.setItem('ava_pos_cache_categories', JSON.stringify(categoriesData));
+        localStorage.setItem('ava_pos_cache_products', JSON.stringify(productsData));
+      } catch (_) {}
+    }, 800, 3000);
+    const unsubMenu = onRealtimeEvent('menu_update', () => reloadMenu());
+    // Dự phòng: tự làm mới thực đơn mỗi 10 phút
+    const menuTimer = setInterval(() => reloadMenu(), 10 * 60 * 1000);
     const unsubPrints = onRealtimeEvent('order_update', async (rawPayload: any) => {
-      refreshData();
+      scheduleRefresh();
       const payload = rawPayload?.payload || rawPayload;
       if (payload?.action === 'PRINT_TEST') {
         try {
@@ -895,11 +979,23 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       openCustomerDisplayWindow().catch(() => {});
     }, 1200);
 
+    // Dự phòng khi kết nối realtime bị rớt (Wi-Fi chập chờn): tự đồng bộ lại mỗi 45 giây
+    // và ngay khi có mạng trở lại, để sơ đồ bàn / đơn pha chế không bao giờ bị "đứng hình".
+    const pollTimer = setInterval(() => scheduleRefresh(), 45000);
+    const handleOnline = () => scheduleRefresh();
+    window.addEventListener('online', handleOnline);
+
     return () => {
       clearTimeout(timerCust);
+      clearInterval(pollTimer);
+      window.removeEventListener('online', handleOnline);
+      scheduleRefreshRef.current?.cancel();
+      scheduleRefreshRef.current = null;
       unsubTables();
-      unsubOrders();
       unsubPrints();
+      unsubMenu();
+      reloadMenu.cancel();
+      clearInterval(menuTimer);
     };
   }, []);
 
@@ -1003,6 +1099,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     const defaultCupId = getDefaultCupId(product.id, product.name, recipes);
     const defaultNotes = defaultCupId ? `[Ly: ${defaultCupId}]` : '';
 
+    cartTouchedRef.current = true;
     setCart(prev => {
       const idx = prev.findIndex(item => item.product_id === product.id);
       if (idx !== -1) {
@@ -1038,6 +1135,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   // Cập nhật số lượng món
   const handleUpdateQuantity = (index: number, newQty: number) => {
     if (index < 0 || index >= cart.length) return;
+    cartTouchedRef.current = true;
     setCart(prev => {
       if (newQty <= 0) {
         const next = prev.filter((_, i) => i !== index);
@@ -1056,6 +1154,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
   // Xóa toàn bộ giỏ hàng
   const handleClearCart = () => {
+    cartTouchedRef.current = true;
     setCart([]);
     setSelectedCartIndex(-1);
     setDiscountValue(0);
@@ -1115,6 +1214,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     }
     const val = parseFloat(numpadBuffer);
     if (!isNaN(val) && val >= 0) {
+      cartTouchedRef.current = true;
       setCart(prev => {
         const updated = [...prev];
         const item = updated[selectedCartIndex];
@@ -1153,69 +1253,100 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   };
 
   // CHỌN BÀN TỪ SƠ ĐỒ BÀN
+  // 1. Hiện ngay món đã lưu trong bộ nhớ (0ms)
+  // 2. Đối chiếu lại với server để chắc chắn đủ 100% món, không sót / không nhân đôi
   const handleSelectTable = async (table: any) => {
-    setSelectedTable(table);
-    setViewMode('menu'); // Chuyển thẳng sang giao diện chọn món
-    setSelectedCartIndex(-1);
+    const hasUnsavedCart = cartTouchedRef.current && cart.length > 0;
 
-    const isTakeaway = table.table_name === 'Khách mang về' || table.id === 'tb_mangve';
-    let orderObj: any = unpaidOrders.find(o => o.table_id === table.id);
-    let itemsList: any[] = [];
-
-    if (!isTakeaway) {
-      // 1. Nếu trong memory đã có sẵn order_items -> Đổ ngay 0ms
-      if (orderObj?.order_items && Array.isArray(orderObj.order_items) && orderObj.order_items.length > 0) {
-        itemsList = orderObj.order_items;
-      }
-
-      // 2. Tải thêm/kiểm tra chính xác từ DB để đảm bảo không sót món
-      try {
-        if (orderObj?.id) {
-          const freshItems = await db.getOrderItems(orderObj.id);
-          if (freshItems && freshItems.length > 0) {
-            itemsList = freshItems;
-          }
-        } else {
-          // Dự phòng an toàn tuyệt đối: nếu unpaidOrders trong state chưa có, kiểm tra trực tiếp từ DB
-          const res = await db.getUnpaidOrderByTableId(table.id);
-          if (res?.order) {
-            orderObj = res.order;
-            itemsList = res.items || [];
-          }
-        }
-      } catch (e) {
-        console.error('Lỗi tải đơn cũ của bàn:', e);
+    // Quay lại đúng bàn đang chọn dở (ví dụ ra sơ đồ bàn xem rồi bấm lại bàn đó):
+    // GIỮ NGUYÊN các món vừa chọn, không tải lại làm mất món
+    if (hasUnsavedCart && selectedTable?.id === table.id) {
+      setViewMode('menu');
+      return;
+    }
+    // Chuyển sang bàn khác khi bàn hiện tại còn món chưa lưu -> hỏi lại, không âm thầm xóa món
+    if (hasUnsavedCart && selectedTable && selectedTable.id !== table.id) {
+      const ok = window.confirm(
+        `${selectedTable.table_name} còn ${cart.reduce((s, i) => s + i.quantity, 0)} món CHƯA LƯU.\n\n` +
+        `Bấm "Hủy" để quay lại lưu đơn ${selectedTable.table_name}.\n` +
+        `Bấm "OK" để bỏ các món đó và mở ${table.table_name}.`
+      );
+      if (!ok) {
+        setViewMode('menu');
+        return;
       }
     }
 
-    if (orderObj && !isTakeaway) {
-      setExistingOrder(orderObj);
-      setExistingOrderItems(itemsList);
+    const requestId = ++selectTableRequestRef.current;
+    cartTouchedRef.current = false;
+    setSelectedTable(table);
+    setViewMode('menu'); // Chuyển thẳng sang giao diện chọn món
+    setSelectedCartIndex(-1);
+    setNumpadBuffer('');
 
-      // ĐỔ TOÀN BỘ MÓN CŨ VÀO GIỎ HÀNG ĐỂ THU NGÂN CÓ THỂ ORDER THÊM / XÓA BỚT / THANH TOÁN
-      const initialCart: CartItem[] = itemsList.map((item: any) => {
-        const unitPrice = Number(item.unit_price || item.don_gia || item.price || 0);
-        const qty = Number(item.quantity || item.so_luong || 1);
-        const subtotal = Number(item.subtotal || item.thanh_tien || (qty * unitPrice));
-        return {
-          product_id: item.product_id || item.idsp || item.id,
-          name: item.products?.name || item.ten_san_pham || item.name || 'Món',
-          price: unitPrice,
-          quantity: qty,
-          subtotal: subtotal,
-          notes: item.ghi_chu || item.notes || ''
-        };
-      });
+    const applyOrder = (orderObj: any | null, itemsList: any[]) => {
+      if (orderObj) {
+        setExistingOrder(orderObj);
+        setExistingOrderItems(itemsList);
+        // ĐỔ TOÀN BỘ MÓN CŨ VÀO GIỎ HÀNG ĐỂ THU NGÂN CÓ THỂ ORDER THÊM / XÓA BỚT / THANH TOÁN
+        setCart(itemsList.map((item: any) => toCartItem(item, recipes)));
+        setDiscountType('amount');
+        setDiscountValue(Number(orderObj.discount || orderObj.giam_gia || 0));
+        setOrderNotes(orderObj.notes || '');
+      } else {
+        setExistingOrder(null);
+        setExistingOrderItems([]);
+        setCart([]);
+        setDiscountType('amount');
+        setDiscountValue(0);
+        setOrderNotes('');
+      }
+    };
 
-      setCart(initialCart);
-      setDiscountValue(Number(orderObj?.discount || orderObj?.giam_gia || 0));
-      setOrderNotes(orderObj?.notes || '');
-    } else {
-      setExistingOrder(null);
-      setExistingOrderItems([]);
-      setCart([]);
-      setDiscountValue(0);
-      setOrderNotes('');
+    const isTakeaway = table.table_name === 'Khách mang về' || table.id === 'tb_mangve';
+    if (isTakeaway) {
+      applyOrder(null, []);
+      return;
+    }
+
+    // 1. Nếu trong memory đã có sẵn đơn của bàn -> Đổ ngay 0ms
+    const cachedOrder = unpaidOrders.find(o => o.table_id === table.id) || null;
+    applyOrder(cachedOrder, cachedOrder?.order_items || []);
+
+    // 2. Tải lại chính xác từ DB để đảm bảo không sót món (kể cả đơn vừa gọi từ điện thoại)
+    try {
+      const res = await db.getUnpaidOrderByTableId(table.id);
+      if (selectTableRequestRef.current !== requestId) return; // Thu ngân đã chọn bàn khác
+
+      const freshOrder = res?.order || null;
+      const freshItems = res?.items || [];
+      const sigOf = (o: any, items: any[]) =>
+        o ? `${o.id}|${Number(o.total_amount || 0)}|${cartSignature(items.map((i: any) => toCartItem(i, recipes)))}` : '';
+      const cachedSig = sigOf(cachedOrder, cachedOrder?.order_items || []);
+      const freshSig = sigOf(freshOrder, freshItems);
+
+      if (cachedSig === freshSig) {
+        if (freshOrder) {
+          setExistingOrder(freshOrder);
+          setExistingOrderItems(freshItems);
+        }
+        return;
+      }
+
+      applyOrder(freshOrder, freshItems);
+      if (cartTouchedRef.current) {
+        toast.info(`Đơn của ${table.table_name} vừa được cập nhật từ máy khác. Vui lòng kiểm tra lại các món!`);
+      }
+      cartTouchedRef.current = false;
+      if (freshOrder) {
+        setUnpaidOrders(prev => [freshOrder, ...prev.filter(o => o.id !== freshOrder.id)]);
+      } else if (cachedOrder) {
+        // Đơn đã được thanh toán / hủy ở máy khác
+        setUnpaidOrders(prev => prev.filter(o => o.id !== cachedOrder.id));
+      }
+    } catch (e) {
+      // Mất mạng: giữ nguyên dữ liệu đang có trong bộ nhớ
+      console.error('Lỗi tải đơn cũ của bàn:', e);
     }
   };
 
@@ -1223,7 +1354,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   // LỰA CHỌN 1: LƯU ĐƠN (THANH TOÁN SAU) -> GỬI BẾP PHA CHẾ
   // ─────────────────────────────────────────────────────────────
   const handleSaveOrderLater = async () => {
-    if (savingOrder || isSavingRef.current) return;
+    if (savingOrder || isSavingRef.current || isPayingRef.current) return;
     if (!selectedTable || cart.length === 0) {
       toast.info('Vui lòng chọn ít nhất 1 món để lưu đơn');
       return;
@@ -1231,160 +1362,131 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
     isSavingRef.current = true;
     setSavingOrder(true);
 
+    const table = selectedTable;
+    const cartSnapshot = [...cart];
+    const total = finalTotalAmount;
+    const disc = discountAmount;
+    const notesTrim = orderNotes.trim();
+    const isTakeawayTable = table.table_name === 'Khách mang về' || table.id === 'tb_mangve';
+    const printItems = cartSnapshot.map(i => ({
+      name: i.name,
+      quantity: i.quantity,
+      price: i.price,
+      subtotal: i.subtotal,
+      notes: i.notes
+    }));
+
     try {
-      let currentOrderId = existingOrder?.id;
       if (existingOrder?.id) {
         // Cập nhật đơn hàng đang phục vụ đã có sẵn
-        await db.syncUnpaidOrder(existingOrder.id, {
-          total_amount: finalTotalAmount,
-          discount: discountAmount,
-          notes: orderNotes.trim(),
-          items: cart
-        });
+        const orderId = existingOrder.id;
+        const previousItems = existingOrderItems.map((i: any) => toCartItem(i, recipes));
+        const hasNewItems = hasAddedItems(cartSnapshot, previousItems);
+        const changed = hasNewItems ||
+          cartSignature(cartSnapshot) !== cartSignature(previousItems) ||
+          total !== Number(existingOrder.total_amount || 0) ||
+          disc !== Number(existingOrder.discount || 0) ||
+          notesTrim !== (existingOrder.notes || '');
+
+        if (changed) {
+          await db.syncUnpaidOrder(orderId, {
+            total_amount: total,
+            discount: disc,
+            notes: notesTrim,
+            items: cartSnapshot,
+            kitchen_done: isOrderKitchenDone(existingOrder) && !hasNewItems
+          });
+        }
 
         // Cập nhật ngay lập tức bộ nhớ để phản hồi 0ms
-        const updatedItems = cart.map(item => ({
-          id: generateShortId('item_'),
-          order_id: existingOrder.id,
-          product_id: item.product_id,
-          name: item.name,
-          ten_san_pham: item.name,
-          quantity: item.quantity,
-          so_luong: item.quantity,
-          price: item.price,
-          unit_price: item.price,
-          don_gia: item.price,
-          subtotal: item.subtotal,
-          thanh_tien: item.subtotal,
-          notes: item.notes,
-          ghi_chu: item.notes
-        }));
-
-        setUnpaidOrders(prev => prev.map(o => o.id === existingOrder.id ? {
+        const updatedItems = cartSnapshot.map(item => toOrderItemRecord(item, orderId));
+        setUnpaidOrders(prev => prev.map(o => o.id === orderId ? {
           ...o,
-          total_amount: finalTotalAmount,
-          discount: discountAmount,
-          notes: orderNotes.trim(),
+          total_amount: total,
+          discount: disc,
+          notes: notesTrim,
+          kitchen_done: o.kitchen_done && !hasNewItems,
           order_items: updatedItems
         } : o));
-
-        toast.success(`Đã cập nhật đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
+        if (hasNewItems) {
+          // Món gọi thêm -> hiện lại ở quầy pha chế
+          setCompletedKitchenOrderIds(prev => prev.filter(id => id !== orderId));
+          setRecentOrders(prev => prev.map(o => o.id === orderId ? { ...o, kitchen_done: false, order_items: updatedItems, total_amount: total } : o));
+        }
 
         // NGUYÊN TẮC: Nếu bàn này có gọi thêm món mới -> In bill bao gồm ĐẦY ĐỦ các món có trong bàn!
         // Nếu không có món mới -> Tuyệt đối không in trùng!
-        const oldTotalQty = existingOrderItems.reduce((sum: number, i: any) => sum + Number(i.quantity || i.so_luong || 1), 0);
-        const newTotalQty = cart.reduce((sum: number, i: any) => sum + Number(i.quantity || 1), 0);
-        const hasNewItems = newTotalQty > oldTotalQty || cart.length > existingOrderItems.length;
-
         if (hasNewItems) {
-          try {
-            await printOrderDirect({
-              tableName: selectedTable?.table_name || 'Khách mang về',
-              staffName: currentUser?.full_name || 'Admin',
-              orderId: existingOrder.id,
-              items: cart.map(i => ({
-                name: i.name,
-                quantity: i.quantity,
-                price: i.price,
-                subtotal: i.subtotal,
-                notes: i.notes
-              })),
-              totalAmount: finalTotalAmount,
-              discount: discountAmount,
-              notes: orderNotes.trim() ? `${orderNotes.trim()} (GỌI THÊM MÓN)` : '(GỌI THÊM MÓN)'
-            }, undefined, undefined, { isManualUserReprint: true });
-
-            markOrderAsPrinted(existingOrder.id, {
-              itemCount: cart.length,
-              totalAmount: finalTotalAmount,
-              isPaid: false
-            });
-          } catch (printErr) {
-            console.warn('Lỗi in khi gọi thêm món:', printErr);
-          }
+          printInBackground(orderId, {
+            tableName: table.table_name || 'Khách mang về',
+            staffName: currentUser?.full_name || 'Admin',
+            items: printItems,
+            totalAmount: total,
+            discount: disc,
+            notes: notesTrim ? `${notesTrim} (GỌI THÊM MÓN)` : '(GỌI THÊM MÓN)'
+          }, false);
         }
+
+        toast.success(changed
+          ? `Đã cập nhật đơn cho ${table.table_name}! Đã gửi bếp pha chế.`
+          : `Đơn của ${table.table_name} không có thay đổi.`);
       } else {
         // TẠO ĐƠN MỚI LƯU BÀN
-        const newOrderId = generateShortId('ord_');
-        currentOrderId = newOrderId;
+        const newOrderId = getStableOrderId(`save|${table.id}|${cartSignature(cartSnapshot)}|${total}`);
+        reservePrintForNewOrder(newOrderId, cartSnapshot.length, total, false);
 
-        // IN NGAY LẬP TỨC TẠI QUẦY (0ms lag, không cần đợi Supabase round-trip)
-        try {
-          // 1. Đánh dấu trước trong bộ nhớ để GlobalPrintListener tuyệt đối không in lặp
-          markOrderAsPrinted(newOrderId, {
-            itemCount: cart.length,
-            totalAmount: finalTotalAmount,
-            isPaid: false
-          });
-
-          // 2. In ngay phiếu bếp / lưu đơn
-          await printOrderDirect({
-            tableName: selectedTable?.table_name || 'Khách mang về',
-            staffName: currentUser?.full_name || 'Admin',
-            orderId: newOrderId,
-            items: cart.map(i => ({
-              name: i.name,
-              quantity: i.quantity,
-              price: i.price,
-              subtotal: i.subtotal,
-              notes: i.notes
-            })),
-            totalAmount: finalTotalAmount,
-            discount: discountAmount,
-            notes: orderNotes.trim() ? `${orderNotes.trim()} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
-          }, undefined, undefined, { isManualUserReprint: true });
-        } catch (printErr) {
-          console.warn('Lỗi in khi lưu đơn:', printErr);
-        }
-
-        // 3. Lưu vào Database Supabase với id đã định danh
+        // 1. Lưu vào Database Supabase với id đã định danh (lưu xong mới in để bill luôn khớp với đơn trên hệ thống)
         const savedOrder = await db.createOrder({
           id: newOrderId,
-          table_id: selectedTable.id || 'tb_mangve',
+          table_id: table.id || 'tb_mangve',
           staff_id: currentUser?.id || 'admin',
-          total_amount: finalTotalAmount,
-          discount: discountAmount,
-          notes: orderNotes.trim(),
-          items: cart
+          total_amount: total,
+          discount: disc,
+          notes: notesTrim,
+          items: cartSnapshot
         });
+        pendingOrderRef.current = null;
+        const savedOrderId = savedOrder?.id || newOrderId;
 
-        const activeOrderData = savedOrder || {
-          id: newOrderId,
-          table_id: selectedTable.id || 'tb_mangve',
+        // 2. In ngay phiếu bếp / lưu đơn (chạy nền, không bắt thu ngân chờ máy in)
+        if (!locallyPrintedIdsRef.current.has(newOrderId)) {
+          printInBackground(savedOrderId, {
+            tableName: table.table_name || 'Khách mang về',
+            staffName: currentUser?.full_name || 'Admin',
+            items: printItems,
+            totalAmount: total,
+            discount: disc,
+            notes: notesTrim ? `${notesTrim} (LƯU ĐƠN)` : '(LƯU ĐƠN)'
+          }, false);
+        }
+
+        const activeOrderData = {
+          ...(savedOrder || {}),
+          id: savedOrderId,
+          table_id: table.id || 'tb_mangve',
           staff_id: currentUser?.id || 'admin',
-          total_amount: finalTotalAmount,
-          discount: discountAmount,
+          total_amount: savedOrder?.total_amount ?? total,
+          discount: savedOrder?.discount ?? disc,
           payment_status: 'Chưa thanh toán',
-          notes: orderNotes.trim(),
-          tables: { table_name: selectedTable.table_name },
+          notes: notesTrim,
+          kitchen_done: false,
+          tables: { table_name: table.table_name },
           users: { full_name: currentUser?.full_name || 'Admin' },
-          created_at: new Date().toISOString(),
-          order_items: cart.map(item => ({
-            id: generateShortId('item_'),
-            order_id: newOrderId,
-            product_id: item.product_id,
-            name: item.name,
-            ten_san_pham: item.name,
-            quantity: item.quantity,
-            so_luong: item.quantity,
-            price: item.price,
-            unit_price: item.price,
-            don_gia: item.price,
-            subtotal: item.subtotal,
-            thanh_tien: item.subtotal,
-            notes: item.notes,
-            ghi_chu: item.notes
-          }))
+          created_at: savedOrder?.created_at || new Date().toISOString(),
+          order_items: (savedOrder?.order_items && savedOrder.order_items.length > 0)
+            ? savedOrder.order_items
+            : cartSnapshot.map(item => toOrderItemRecord(item, savedOrderId))
         };
 
         setRecentOrders(prev => [activeOrderData, ...prev.filter(o => o.id !== activeOrderData.id)]);
 
-        if (selectedTable.table_name !== 'Khách mang về') {
+        if (!isTakeawayTable) {
+          // QUY TẮC BÀN BẬN: Lưu đơn xong bàn lập tức chuyển sang "Đang phục vụ"
           setUnpaidOrders(prev => [activeOrderData, ...prev.filter(o => o.id !== activeOrderData.id)]);
-          setTables(prev => prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Đang phục vụ' } : t));
+          setTables(prev => prev.map(t => t.id === table.id ? { ...t, status: 'Đang phục vụ' } : t));
         }
 
-        toast.success(`Đã lưu đơn cho ${selectedTable.table_name}! Đã gửi bếp pha chế.`);
+        toast.success(`Đã lưu đơn cho ${table.table_name}! Đã gửi bếp pha chế.`);
       }
 
       handleClearCart();
@@ -1392,10 +1494,10 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       setExistingOrderItems([]);
       setSelectedTable(null);
       setViewMode('tables'); // Quay về màn hình chọn bàn
-      await refreshData();
+      scheduleRefresh();
     } catch (err) {
       console.error('Lỗi lưu đơn:', err);
-      toast.error('Gặp lỗi khi lưu đơn hàng');
+      toast.error(`Chưa lưu được đơn (${errorMessage(err)}). Món vẫn còn trong giỏ, vui lòng bấm lưu lại.`);
     } finally {
       isSavingRef.current = false;
       setSavingOrder(false);
@@ -1405,228 +1507,160 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
   // ─────────────────────────────────────────────────────────────
   // LỰA CHỌN 2: THANH TOÁN LUÔN (TIỀN MẶT / CHUYỂN KHOẢN VIETQR / MOMO)
   // ─────────────────────────────────────────────────────────────
-  const handleProcessPayment = async () => {
-    if (submittingPayment) return;
+  const handleProcessPayment = async (methodOverride?: 'Tiền mặt' | 'Chuyển khoản') => {
+    if (submittingPayment || isPayingRef.current || isSavingRef.current) return;
+    isPayingRef.current = true;
     setSubmittingPayment(true);
 
+    const method = methodOverride || paymentMethod;
+    const table = selectedTable;
+    const tableName = table?.table_name || existingOrder?.tables?.table_name || 'Khách mang về';
+    const sourceOrder = existingOrder;
+    const previousItems = existingOrderItems.map((i: any) => toCartItem(i, recipes));
+    const itemsToPay: CartItem[] = cart.length > 0 ? [...cart] : previousItems;
+    const total = finalTotalAmount;
+    const disc = discountAmount;
+    const notesTrim = orderNotes.trim();
+
     try {
-      let orderIdToPay = existingOrder?.id;
-      const isPreSavedOrder = !!existingOrder;
-
-      if (orderIdToPay) {
-        // Đồng bộ danh sách món mới nhất trước khi thanh toán
-        const itemsToSync = cart.length > 0 ? cart : existingOrderItems.map((i: any) => ({
-          product_id: i.product_id || i.idsp,
-          name: i.products?.name || i.name || i.ten_san_pham || 'Món',
-          price: Number(i.unit_price || i.don_gia || i.price || 0),
-          quantity: Number(i.quantity || i.so_luong || 1),
-          subtotal: Number(i.subtotal || i.thanh_tien || (Number(i.quantity || 1) * Number(i.unit_price || i.don_gia || i.price || 0))),
-          notes: i.ghi_chu || i.notes || '',
-          cup_id: i.cup_id || (i.notes && i.notes.match(/\[Ly:\s*(ing_ly[a-z]+)\]/)?.[1]) || getDefaultCupId(i.product_id || i.idsp, i.name || i.ten_san_pham, recipes) || null
-        }));
-
-        await db.syncUnpaidOrder(orderIdToPay, {
-          total_amount: finalTotalAmount || existingOrder?.total_amount || 0,
-          discount: discountAmount || existingOrder?.discount || 0,
-          notes: orderNotes.trim() || existingOrder?.notes || '',
-          items: itemsToSync
-        });
-      } else if (cart.length > 0) {
-        // ĐƠN GỌI MÓN VÀ THANH TOÁN NGAY TẠI QUẦY
-        const newOrderId = generateShortId('ord_');
-        orderIdToPay = newOrderId;
-
-        const printItems = cart.map(i => ({
-          name: i.name,
-          quantity: i.quantity,
-          price: i.price,
-          subtotal: i.subtotal,
-          notes: i.notes
-        }));
-
-        // 1. Đánh dấu ngay lập tức trong bộ nhớ để chặn đứng mọi race condition
-        markOrderAsPrinted(newOrderId, {
-          itemCount: printItems.length,
-          itemIds: printItems.map((i: any) => i.product_id),
-          totalAmount: finalTotalAmount,
-          isPaid: true
-        });
-
-        // 2. In ngay lập tức hóa đơn K80 tại quầy (< 5ms)
-        try {
-          await printOrderDirect({
-            tableName: selectedTable?.table_name || 'Khách mang về',
-            staffName: currentUser?.full_name || 'Admin',
-            orderId: newOrderId,
-            items: printItems,
-            totalAmount: finalTotalAmount,
-            discount: discountAmount,
-            notes: orderNotes.trim() ? `${orderNotes.trim()} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
-          }, undefined, undefined, { isManualUserReprint: true });
-        } catch (printErr) {
-          console.warn('In bill thanh toán ngay:', printErr);
-        }
-
-        // 3. Lưu vào Database
-        await db.createOrder({
-          id: newOrderId,
-          table_id: selectedTable?.id || 'tb_mangve',
-          staff_id: currentUser?.id || 'admin',
-          total_amount: finalTotalAmount,
-          discount: discountAmount,
-          notes: orderNotes.trim(),
-          items: cart
-        });
-
-        // TẠO NGAY ĐỐI TƯỢNG HÓA ĐƠN CHO BẾP / BARISTA VỚI ĐỦ MÓN ĂN & THÔNG TIN BÀN
-        const paidOrderForKitchen = {
-          id: newOrderId,
-          table_id: selectedTable?.id || 'tb_mangve',
-          staff_id: currentUser?.id || 'admin',
-          total_amount: finalTotalAmount,
-          discount: discountAmount,
-          payment_status: 'Đã thanh toán',
-          payment_method: paymentMethod,
-          notes: orderNotes.trim(),
-          tables: { table_name: selectedTable?.table_name || 'Khách mang về' },
-          users: { full_name: currentUser?.full_name || 'Admin' },
-          created_at: new Date().toISOString(),
-          paid_at: new Date().toISOString(),
-          kitchen_done: false,
-          order_items: cart.map(item => ({
-            id: generateShortId('item_'),
-            order_id: newOrderId,
-            product_id: item.product_id,
-            name: item.name,
-            ten_san_pham: item.name,
-            quantity: item.quantity,
-            so_luong: item.quantity,
-            price: item.price,
-            unit_price: item.price,
-            don_gia: item.price,
-            subtotal: item.subtotal,
-            thanh_tien: item.subtotal,
-            notes: item.notes,
-            ghi_chu: item.notes
-          }))
-        };
-
-        setRecentOrders(prev => [paidOrderForKitchen, ...prev.filter(o => o.id !== newOrderId)]);
-      }
-
-      if (!orderIdToPay) {
+      if (itemsToPay.length === 0 && !sourceOrder?.id) {
         toast.error('Chưa có món ăn nào để thanh toán!');
-        setSubmittingPayment(false);
         return;
       }
 
-      // 2. Xác nhận thanh toán trong Database
-      await db.payOrder(orderIdToPay, paymentMethod);
+      let orderIdToPay: string;
+      let printJob: (() => void) | null = null;
 
-      // Cập nhật trạng thái đơn trong danh sách gần đây
-      setRecentOrders(prev => prev.map(o => {
-        if (o.id === orderIdToPay) {
-          const updatedItems = (o.order_items && o.order_items.length > 0)
-            ? o.order_items
-            : (cart.length > 0 ? cart : existingOrderItems).map((i: any) => ({
-                id: i.id || generateShortId('item_'),
-                order_id: orderIdToPay,
-                product_id: i.product_id || i.idsp,
-                name: i.name || i.ten_san_pham || i.products?.name || 'Món',
-                ten_san_pham: i.name || i.ten_san_pham || i.products?.name || 'Món',
-                quantity: Number(i.quantity || i.so_luong || 1),
-                so_luong: Number(i.quantity || i.so_luong || 1),
-                price: Number(i.price || i.unit_price || i.don_gia || 0),
-                unit_price: Number(i.price || i.unit_price || i.don_gia || 0),
-                don_gia: Number(i.price || i.unit_price || i.don_gia || 0),
-                subtotal: Number(i.subtotal || i.thanh_tien || 0),
-                thanh_tien: Number(i.subtotal || i.thanh_tien || 0),
-                notes: i.notes || i.ghi_chu || '',
-                ghi_chu: i.notes || i.ghi_chu || ''
-              }));
-          return {
-            ...o,
-            payment_status: 'Đã thanh toán',
-            payment_method: paymentMethod,
-            paid_at: new Date().toISOString(),
-            tables: o.tables || { table_name: selectedTable?.table_name || 'Khách mang về' },
-            order_items: updatedItems
-          };
+      if (sourceOrder?.id) {
+        orderIdToPay = sourceOrder.id;
+        const hasNewItems = cart.length > 0 && hasAddedItems(itemsToPay, previousItems);
+        const changed = cart.length > 0 && (
+          hasNewItems ||
+          cartSignature(itemsToPay) !== cartSignature(previousItems) ||
+          total !== Number(sourceOrder.total_amount || 0) ||
+          disc !== Number(sourceOrder.discount || 0) ||
+          notesTrim !== (sourceOrder.notes || '')
+        );
+
+        // Đồng bộ danh sách món mới nhất trước khi thanh toán (chỉ khi thực sự có thay đổi)
+        if (changed) {
+          await db.syncUnpaidOrder(orderIdToPay, {
+            total_amount: total,
+            discount: disc,
+            notes: notesTrim,
+            items: itemsToPay,
+            kitchen_done: isOrderKitchenDone(sourceOrder) && !hasNewItems
+          });
         }
-        return o;
-      }));
 
-      // 3. Nếu là đơn đã lưu trước đó: ĐÃ ĐƯỢC IN LÚC LƯU ĐƠN, TUYỆT ĐỐI KHÔNG IN LẠI KHI THANH TOÁN!
-      // Khách đã cầm bill từ trước lúc lưu đơn. Khi khách thanh toán, chỉ cần thu tiền & mở két tiền.
-      // Chỉ in nếu có món mới gọi thêm ngay lúc ấn thanh toán (hasNewItems)
-      if (isPreSavedOrder && cart.length > 0) {
-        const oldTotalQty = existingOrderItems.reduce((sum: number, i: any) => sum + Number(i.quantity || i.so_luong || 1), 0);
-        const newTotalQty = cart.reduce((sum: number, i: any) => sum + Number(i.quantity || 1), 0);
-        const hasNewItems = newTotalQty > oldTotalQty || cart.length > existingOrderItems.length;
-
+        // Đơn đã lưu trước đó: ĐÃ ĐƯỢC IN LÚC LƯU ĐƠN, TUYỆT ĐỐI KHÔNG IN LẠI KHI THANH TOÁN!
+        // Chỉ in nếu có món mới gọi thêm ngay lúc ấn thanh toán (hasNewItems)
         if (hasNewItems) {
-          try {
-            const printItems = cart.map((i: any) => ({
-              name: i.products?.name || i.name || i.ten_san_pham || 'Món',
-              quantity: Number(i.quantity || i.so_luong || 1),
-              price: Number(i.unit_price || i.don_gia || i.price || 0),
-              subtotal: Number(i.subtotal || i.thanh_tien || (Number(i.quantity || 1) * Number(i.unit_price || i.don_gia || i.price || 0))),
-              notes: i.ghi_chu || i.notes || ''
-            }));
+          printJob = () => printInBackground(orderIdToPay, {
+            tableName,
+            staffName: currentUser?.full_name || 'Admin',
+            items: itemsToPay.map(i => ({ name: i.name, quantity: i.quantity, price: i.price, subtotal: i.subtotal, notes: i.notes })),
+            totalAmount: total,
+            discount: disc,
+            notes: notesTrim ? `${notesTrim} (GỌI THÊM MÓN)` : '(GỌI THÊM MÓN)'
+          }, true);
+        }
+      } else {
+        // ĐƠN GỌI MÓN VÀ THANH TOÁN NGAY TẠI QUẦY
+        // Luôn là đơn riêng (force_new) để không bị gộp nhầm vào đơn khác đang mở của bàn
+        const newOrderId = getStableOrderId(`pay|${table?.id || ''}|${cartSignature(itemsToPay)}|${total}`);
+        reservePrintForNewOrder(newOrderId, itemsToPay.length, total, true);
+        await db.createOrder({
+          id: newOrderId,
+          table_id: table?.id || 'tb_mangve',
+          staff_id: currentUser?.id || 'admin',
+          total_amount: total,
+          discount: disc,
+          notes: notesTrim,
+          items: itemsToPay,
+          force_new: true
+        });
+        orderIdToPay = newOrderId;
 
-            if (printItems.length > 0) {
-              await printOrderDirect({
-                tableName: selectedTable?.table_name || existingOrder?.tables?.table_name || 'Khách mang về',
-                staffName: currentUser?.full_name || 'Admin',
-                orderId: orderIdToPay,
-                items: printItems,
-                totalAmount: finalTotalAmount || existingOrder?.total_amount || 0,
-                discount: discountAmount || existingOrder?.discount || 0,
-                notes: orderNotes.trim() ? `${orderNotes.trim()} (GỌI THÊM MÓN)` : '(GỌI THÊM MÓN)'
-              });
+        // QUY TẮC PHA CHẾ: Đơn "Thanh toán ngay" phải lập tức xuất hiện ở cột "Đang pha chế"
+        const kitchenTicket = {
+          id: newOrderId,
+          table_id: table?.id || 'tb_mangve',
+          staff_id: currentUser?.id || 'admin',
+          total_amount: total,
+          discount: disc,
+          // Nếu chốt tiền lỗi, lần làm mới kế tiếp sẽ lấy lại đúng trạng thái từ server
+          payment_status: 'Đã thanh toán',
+          payment_method: method,
+          notes: notesTrim,
+          tables: { table_name: tableName },
+          users: { full_name: currentUser?.full_name || 'Admin' },
+          created_at: new Date().toISOString(),
+          kitchen_done: false,
+          order_items: itemsToPay.map(item => toOrderItemRecord(item, newOrderId))
+        };
+        setRecentOrders(prev => [kitchenTicket, ...prev.filter(o => o.id !== newOrderId)]);
 
-              markOrderAsPrinted(orderIdToPay, {
-                itemCount: printItems.length,
-                itemIds: printItems.map((i: any) => i.product_id),
-                totalAmount: finalTotalAmount || existingOrder?.total_amount || 0,
-                isPaid: true
-              });
-            }
-          } catch (printErr) {
-            console.warn('Lỗi in khi gọi thêm món lúc thanh toán:', printErr);
-          }
+        if (!locallyPrintedIdsRef.current.has(newOrderId)) {
+          printJob = () => printInBackground(newOrderId, {
+            tableName,
+            staffName: currentUser?.full_name || 'Admin',
+            items: itemsToPay.map(i => ({ name: i.name, quantity: i.quantity, price: i.price, subtotal: i.subtotal, notes: i.notes })),
+            totalAmount: total,
+            discount: disc,
+            notes: notesTrim ? `${notesTrim} (ĐÃ THANH TOÁN)` : '(ĐÃ THANH TOÁN)'
+          }, true);
         }
       }
 
-      // Luôn kích hoạt mở két tiền tự động qua RJ11
-      try {
-        await kickCashDrawer();
-      } catch (_) {}
+      // In bill ngay (chạy nền) trong lúc chốt thanh toán trên server
+      printJob?.();
+
+      // Xác nhận thanh toán trong Database (báo lỗi thật nếu không lưu được)
+      await db.payOrder(orderIdToPay, method);
+      pendingOrderRef.current = null;
+
+      // Cập nhật trạng thái đơn trong danh sách gần đây (vẫn hiện ở cột pha chế cho tới khi bấm "Đã làm xong")
+      const paidAt = new Date().toISOString();
+      setRecentOrders(prev => prev.map(o => {
+        if (o.id !== orderIdToPay) return o;
+        return {
+          ...o,
+          payment_status: 'Đã thanh toán',
+          payment_method: method,
+          paid_at: paidAt,
+          tables: o.tables || { table_name: tableName },
+          order_items: (o.order_items && o.order_items.length > 0)
+            ? o.order_items
+            : itemsToPay.map(item => toOrderItemRecord(item, orderIdToPay))
+        };
+      }));
+
+      // Luôn kích hoạt mở két tiền tự động qua RJ11 (chạy nền, không chờ)
+      kickCashDrawer().catch(() => {});
 
       // Đồng bộ trạng thái đã thanh toán sang màn hình phụ
-      try {
-        await syncCustomerDisplay({
-          tableName: selectedTable?.table_name || 'Khách mang về',
-          staffName: currentUser?.full_name || '',
-          items: (cart.length > 0 ? cart : existingOrderItems).map((i: any) => ({
-            name: i.name || i.products?.name || i.ten_san_pham || 'Món',
-            quantity: i.quantity || 1,
-            price: i.price || i.unit_price || 0,
-            subtotal: i.subtotal || 0
-          })),
-          discount: discountAmount || existingOrder?.discount || 0,
-          totalAmount: finalTotalAmount || existingOrder?.total_amount || 0,
-          paymentMethod: paymentMethod,
-          orderStatus: 'paid'
-        });
-        setTimeout(() => {
-          syncCustomerDisplay({
-            items: [],
-            totalAmount: 0,
-            orderStatus: 'idle'
-          });
-        }, 4000);
-      } catch (_) {}
+      syncCustomerDisplay({
+        tableName,
+        staffName: currentUser?.full_name || '',
+        items: itemsToPay.map(i => ({
+          name: i.name,
+          quantity: i.quantity,
+          price: i.price,
+          subtotal: i.subtotal
+        })),
+        discount: disc,
+        totalAmount: total,
+        paymentMethod: method,
+        orderStatus: 'paid'
+      }).catch(() => {});
+      setTimeout(() => {
+        syncCustomerDisplay({
+          items: [],
+          totalAmount: 0,
+          orderStatus: 'idle'
+        }).catch(() => {});
+      }, 4000);
 
       // Hiệu ứng pháo hoa chúc mừng
       confetti({
@@ -1635,14 +1669,14 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
         origin: { y: 0.6 }
       });
 
-      toast.success(`Thanh toán thành công ${selectedTable?.table_name || 'đơn hàng'}! Đã gửi bếp pha chế.`);
+      toast.success(`Thanh toán thành công ${tableName}! Đã gửi bếp pha chế.`);
       setIsPayModalOpen(false);
 
-      if (selectedTable?.id && selectedTable?.table_name !== 'Khách mang về') {
-        setTables(prev => prev.map(t => t.id === selectedTable.id ? { ...t, status: 'Trống' } : t));
-        setUnpaidOrders(prev => prev.filter(o => o.table_id !== selectedTable.id && o.id !== orderIdToPay));
-      } else {
-        setUnpaidOrders(prev => prev.filter(o => o.id !== orderIdToPay));
+      // Bàn chỉ trống khi không còn đơn chưa thanh toán nào khác
+      const remainingUnpaid = unpaidOrders.filter(o => o.id !== orderIdToPay);
+      setUnpaidOrders(prev => prev.filter(o => o.id !== orderIdToPay));
+      if (table?.id && table.table_name !== 'Khách mang về' && !remainingUnpaid.some(o => o.table_id === table.id)) {
+        setTables(prevTables => prevTables.map(t => t.id === table.id ? { ...t, status: 'Trống' } : t));
       }
 
       handleClearCart();
@@ -1650,11 +1684,13 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
       setExistingOrderItems([]);
       setSelectedTable(null);
       setViewMode('tables'); // Trả về giao diện chọn bàn
-      await refreshData();
+      scheduleRefresh();
     } catch (e) {
       console.error('Lỗi khi thanh toán:', e);
-      toast.error('Có lỗi xảy ra khi xử lý thanh toán');
+      toast.error(`Thanh toán CHƯA thành công (${errorMessage(e)}). Vui lòng bấm thanh toán lại.`);
+      scheduleRefresh();
     } finally {
+      isPayingRef.current = false;
       setSubmittingPayment(false);
     }
   };
@@ -1854,9 +1890,41 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
             iconClassName="w-3.5 h-3.5"
           />
 
-          {/* Avatar User Nâu Cà Phê */}
-          <div className="w-7 h-7 rounded-full bg-[#4A3525] text-white flex items-center justify-center font-bold text-xs shadow-xs">
-            {currentUser?.full_name ? currentUser.full_name.charAt(0).toUpperCase() : 'M'}
+          {/* Avatar User Nâu Cà Phê + Menu tài khoản (Đăng xuất ngay tại màn hình POS) */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsUserMenuOpen(prev => !prev)}
+              className="h-8 pl-1 pr-2.5 rounded-full bg-[#FAF6F0] hover:bg-[#F5EFE6] border border-[#4A3525]/20 flex items-center space-x-1.5 transition cursor-pointer"
+              title="Tài khoản / Đăng xuất"
+            >
+              <span className="w-6 h-6 rounded-full bg-[#4A3525] text-white flex items-center justify-center font-bold text-xs shadow-xs">
+                {currentUser?.full_name ? currentUser.full_name.charAt(0).toUpperCase() : 'M'}
+              </span>
+              <span className="hidden md:inline text-[11px] font-bold text-[#4A3525] max-w-[110px] truncate">
+                {currentUser?.full_name || 'Tài khoản'}
+              </span>
+            </button>
+
+            {isUserMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setIsUserMenuOpen(false)} />
+                <div className="absolute right-0 mt-2 w-56 bg-white rounded-xl shadow-lg border border-gray-200 py-1.5 z-50">
+                  <div className="px-4 py-2 border-b border-gray-100">
+                    <p className="text-xs font-bold text-gray-900 truncate">{currentUser?.full_name || 'Nhân viên'}</p>
+                    <p className="text-[10px] text-gray-500 truncate">{currentUser?.role || ''}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="w-full text-left px-4 py-3 text-xs text-red-600 font-bold hover:bg-red-50 transition flex items-center space-x-2 cursor-pointer"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>Đăng xuất</span>
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -2161,7 +2229,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                   const isSelected = idx === selectedCartIndex;
                   return (
                     <div
-                      key={item.product_id}
+                      key={`${item.product_id}-${idx}`}
                       onClick={() => setSelectedCartIndex(idx)}
                       className={`flex items-center justify-between px-3 py-2.5 text-xs transition cursor-pointer select-none ${
                         isSelected 
@@ -2178,6 +2246,8 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                         <div className="truncate flex-1">
                           <p className="truncate font-bold leading-tight">{item.name}</p>
                           <div className="flex items-center gap-1.5 mt-0.5">
+                            {/* Chỉ món có ly trong công thức định lượng mới hiện nút chọn ly */}
+                            {item.cup_id && (
                             <button
                               type="button"
                               onClick={(e) => {
@@ -2201,6 +2271,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                                   : '🥤 Ly Trắng'}
                               </span>
                             </button>
+                            )}
                             {(() => {
                               const cleanDisplayNote = (item.notes || '').replace(/\[Ly:\s*ing_ly[a-z]+\]/g, '').trim();
                               return cleanDisplayNote ? (
@@ -2814,13 +2885,13 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
             {/* Danh sách món trên bàn để chọn số lượng tách riêng */}
             <div className="flex-1 overflow-y-auto p-4 space-y-2.5 max-h-[45vh] custom-scrollbar bg-gray-50/50">
-              {cart.map((item) => {
-                const splitItem = splitCart.find(s => s.product_id === item.product_id);
-                const splitQty = splitItem ? splitItem.quantity : 0;
+              {cart.map((item, idx) => {
+                const splitQty = Math.min(item.quantity, splitQtys[idx] || 0);
                 const remainQty = item.quantity - splitQty;
+                const cleanNote = stripCupTag(item.notes);
                 return (
                   <div
-                    key={item.product_id}
+                    key={`${item.product_id}-${idx}`}
                     className={`p-3 rounded-2xl border transition flex items-center justify-between ${
                       splitQty > 0
                         ? 'bg-sky-50/80 border-sky-300 shadow-2xs'
@@ -2829,6 +2900,9 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                   >
                     <div className="flex-1 min-w-0 pr-3">
                       <p className="font-extrabold text-xs text-gray-900 truncate">{item.name}</p>
+                      {cleanNote && (
+                        <p className="text-[10px] text-amber-700 italic truncate">📝 {cleanNote}</p>
+                      )}
                       <p className="text-[11px] text-gray-500 font-medium">
                         {item.price.toLocaleString('vi-VN')} đ/ly • Tổng bàn có: <span className="font-bold text-gray-800">{item.quantity} ly</span>
                       </p>
@@ -2840,7 +2914,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                         <button
                           type="button"
                           disabled={splitQty <= 0}
-                          onClick={() => handleSetSplitItemQty(item.product_id, splitQty - 1)}
+                          onClick={() => handleSetSplitItemQty(idx, splitQty - 1)}
                           className="w-8 h-8 flex items-center justify-center text-gray-700 hover:bg-gray-100 disabled:opacity-25 transition font-black text-sm cursor-pointer"
                         >
                           -
@@ -2851,7 +2925,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
                         <button
                           type="button"
                           disabled={remainQty <= 0}
-                          onClick={() => handleSetSplitItemQty(item.product_id, splitQty + 1)}
+                          onClick={() => handleSetSplitItemQty(idx, splitQty + 1)}
                           className="w-8 h-8 flex items-center justify-center text-gray-700 hover:bg-gray-100 disabled:opacity-25 transition font-black text-sm cursor-pointer"
                         >
                           +
@@ -2860,7 +2934,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
 
                       <button
                         type="button"
-                        onClick={() => handleSetSplitItemQty(item.product_id, splitQty === item.quantity ? 0 : item.quantity)}
+                        onClick={() => handleSetSplitItemQty(idx, splitQty === item.quantity ? 0 : item.quantity)}
                         className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition border cursor-pointer ${
                           splitQty === item.quantity
                             ? 'bg-sky-600 text-white border-sky-600 shadow-2xs'
@@ -3090,7 +3164,7 @@ export default function DesktopPosView({ onSwitchToMobile }: { onSwitchToMobile?
               <button
                 type="button"
                 disabled={submittingPayment}
-                onClick={handleProcessPayment}
+                onClick={() => handleProcessPayment()}
                 className="px-6 py-2.5 bg-[#4A3525] hover:bg-[#382513] text-white font-black text-xs rounded-xl shadow-md transition disabled:opacity-50 flex items-center space-x-2 cursor-pointer"
               >
                 {submittingPayment ? (

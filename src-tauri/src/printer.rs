@@ -192,13 +192,21 @@ mod win32_spooler {
             return Err("Không thể khởi tạo tiến trình in Spooler.".to_string());
         }
 
-        unsafe {
+        let mut written = 0u32;
+        let write_ok = unsafe {
             StartPagePrinter(h_printer);
-            let mut written = 0u32;
-            WritePrinter(h_printer, data.as_ptr(), data.len() as u32, &mut written);
+            let ok = WritePrinter(h_printer, data.as_ptr(), data.len() as u32, &mut written);
             EndPagePrinter(h_printer);
             EndDocPrinter(h_printer);
             ClosePrinter(h_printer);
+            ok
+        };
+
+        if write_ok == 0 || (written as usize) < data.len() {
+            return Err(format!(
+                "Máy in '{}' không nhận đủ dữ liệu ({} / {} bytes).",
+                printer_name, written, data.len()
+            ));
         }
 
         Ok(())
@@ -243,38 +251,91 @@ pub fn print_tcp(ip: &str, port: u16, data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-// Bộ nhớ đệm chống in trùng lặp nhị phân tuyệt đối (< 10 giây)
-static LAST_PRINT_RAW_HASH: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+// SỔ LƯU VẾT IN DUY NHẤT CỦA MÁY POS (chống in lặp 1 đơn 2-3 lần)
+// Mọi lệnh in trên máy POS (in tại quầy, lệnh từ điện thoại qua cổng 3333, lệnh dự phòng qua realtime)
+// đều đi qua đây. Khóa chống trùng = "mã đơn # danh sách món":
+// - Cùng 1 đơn, cùng danh sách món -> chỉ in đúng 1 lần (trong 12 giờ), dù lệnh đến từ nhiều ngả.
+// - Hai đơn KHÁC NHAU dù giống hệt món (2 khách cùng gọi 1 cà phê đá) -> luôn in đủ 2 bill.
+// - Nhân viên chủ động bấm "In bill" (allow_reprint) -> luôn in lại.
+const PRINT_DEDUP_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 
-fn simple_hash(bytes: &[u8]) -> u64 {
-    let mut h = 14695981039346656037u64;
-    for &b in bytes {
-        h = (h ^ (b as u64)).wrapping_mul(1099511628211u64);
+fn printed_registry() -> &'static Mutex<HashMap<String, Instant>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Giữ chỗ in cho khóa `key`. Trả về false nếu đơn này (cùng danh sách món) đã được in rồi.
+fn reserve_print_key(key: &str) -> bool {
+    let mut registry = lock_safe(printed_registry());
+    let now = Instant::now();
+    registry.retain(|_, at| now.duration_since(*at) < PRINT_DEDUP_TTL);
+    if registry.contains_key(key) {
+        return false;
     }
-    h
+    registry.insert(key.to_string(), now);
+    true
+}
+
+fn release_print_key(key: &str) {
+    lock_safe(printed_registry()).remove(key);
+}
+
+/// In hóa đơn có chống in lặp theo mã đơn (dùng cho mọi lệnh in bill).
+/// Trả về Ok(true) nếu đã in, Ok(false) nếu bỏ qua vì đơn này đã in trước đó.
+pub fn print_receipt(
+    data: &[u8],
+    target_printer: Option<String>,
+    dedup_key: Option<String>,
+    allow_reprint: bool,
+) -> Result<bool, String> {
+    let key = dedup_key.filter(|k| !k.trim().is_empty());
+    if let Some(ref k) = key {
+        if allow_reprint {
+            // In lại thủ công: vẫn ghi nhận vào sổ để các lệnh tự động sau đó không in thêm
+            lock_safe(printed_registry()).insert(k.clone(), Instant::now());
+        } else if !reserve_print_key(k) {
+            println!("[Print] Bỏ qua: đơn {} đã được in trước đó (chống in lặp)", k);
+            return Ok(false);
+        }
+    }
+
+    match print_escpos_raw(data, target_printer) {
+        Ok(()) => Ok(true),
+        Err(err) => {
+            // In lỗi -> trả lại chỗ để lần in sau (sau khi sửa máy in) vẫn in được
+            if let (Some(k), false) = (&key, allow_reprint) {
+                release_print_key(k);
+            }
+            Err(err)
+        }
+    }
+}
+
+// Khóa tuần tự lệnh in: lệnh in từ quầy, lệnh in từ điện thoại (cổng 3333) và lệnh mở két
+// không bao giờ ghi chồng lên nhau vào máy in cùng lúc.
+static PRINT_JOB_LOCK: Mutex<()> = Mutex::new(());
+
+// Ghi nhớ tên máy in K80 đã dò được, tránh phải quét lại toàn bộ máy in Windows mỗi lần in
+// (quét máy in mạng có thể mất vài giây).
+static RESOLVED_PRINTER_NAME: Mutex<Option<String>> = Mutex::new(None);
+
+// Lấy khóa an toàn: kể cả khi một lần in trước đó bị lỗi giữa chừng, khóa vẫn dùng tiếp được
+// (không làm sập toàn bộ chức năng in cho tới khi khởi động lại máy).
+fn lock_safe<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// In ngầm trực tiếp hóa đơn nhị phân ESC/POS (Hỗ trợ cả Wi-Fi LAN TCP 9100 và USB Win32 Spooler)
+/// LƯU Ý: Đã bỏ cơ chế chặn "2 bill giống hệt nội dung trong 10 giây" vì làm mất bill của 2 khách
+/// gọi món giống nhau. Việc chống in lặp nay do print_receipt() đảm nhiệm theo mã đơn.
 pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(), String> {
-    // 0. Chống in trùng lặp tuyệt đối ở tầng nhị phân ESC/POS (< 10 giây)
-    // Chỉ áp dụng cho hóa đơn có dữ liệu dài (> 30 bytes), không chặn lệnh kick két tiền
-    if data.len() > 30 {
-        let hash = simple_hash(data);
-        let now = Instant::now();
-        {
-            let mut last_hash_lock = LAST_PRINT_RAW_HASH.lock().unwrap();
-            if let Some((prev_hash, prev_time)) = *last_hash_lock {
-                if prev_hash == hash && now.duration_since(prev_time) < Duration::from_secs(10) {
-                    println!("[Print Raw] Bỏ qua lệnh in trùng lặp tuyệt đối (vừa in cách đây < 10s)");
-                    return Ok(());
-                }
-            }
-            *last_hash_lock = Some((hash, now));
-        }
-    }
+    // Chỉ 1 lệnh in được gửi tới máy in tại một thời điểm
+    let _print_guard = lock_safe(&PRINT_JOB_LOCK);
 
     // 1. Nếu target_printer là địa chỉ IP mạng (ví dụ "192.168.1.167" hoặc "192.168.1.167:9100")
     if let Some(ref target) = target_printer {
@@ -292,17 +353,25 @@ pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(
     // Tốc độ phản hồi cực nhanh ~5ms, không bị delay timeout 2 giây
     #[cfg(windows)]
     {
+        let is_auto_detected = !matches!(&target_printer, Some(name) if !name.trim().is_empty());
         let printer_to_use = match target_printer {
             Some(name) if !name.trim().is_empty() => Some(name),
             _ => {
-                let available = win32_spooler::list_printers().unwrap_or_default();
-                if let Some(pos_p) = available.iter().find(|p| {
-                    let low = p.to_lowercase();
-                    low.contains("pos") || low.contains("80") || low.contains("zy") || low.contains("receipt") || low.contains("thermal") || low.contains("xprinter")
-                }) {
-                    Some(pos_p.clone())
+                let cached = lock_safe(&RESOLVED_PRINTER_NAME).clone();
+                if cached.is_some() {
+                    cached
                 } else {
-                    win32_spooler::get_default_printer().ok()
+                    let available = win32_spooler::list_printers().unwrap_or_default();
+                    let detected = if let Some(pos_p) = available.iter().find(|p| {
+                        let low = p.to_lowercase();
+                        low.contains("pos") || low.contains("80") || low.contains("zy") || low.contains("receipt") || low.contains("thermal") || low.contains("xprinter")
+                    }) {
+                        Some(pos_p.clone())
+                    } else {
+                        win32_spooler::get_default_printer().ok()
+                    };
+                    *lock_safe(&RESOLVED_PRINTER_NAME) = detected.clone();
+                    detected
                 }
             }
         };
@@ -314,6 +383,10 @@ pub fn print_escpos_raw(data: &[u8], target_printer: Option<String>) -> Result<(
                     return Ok(());
                 }
                 Err(err) => {
+                    // Máy in lỗi / đổi cổng USB -> lần sau dò lại máy in từ đầu
+                    if is_auto_detected {
+                        *lock_safe(&RESOLVED_PRINTER_NAME) = None;
+                    }
                     println!("[Print] Không thể in qua máy in Windows '{}': {}. Thử fallback Wi-Fi...", printer, err);
                 }
             }

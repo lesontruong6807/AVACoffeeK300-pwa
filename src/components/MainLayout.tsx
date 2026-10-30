@@ -20,7 +20,7 @@ import {
   Loader2,
   BarChart3
 } from 'lucide-react';
-import { getCurrentUser, setCurrentUser, isSupabaseConfigured, mockDb, db } from '@/lib/database';
+import { getCurrentUser, setCurrentUser, logoutCurrentUser, AUTH_CHANGE_EVENT, isSupabaseConfigured, mockDb, db } from '@/lib/database';
 import TauriFullscreenButton from '@/components/TauriFullscreenButton';
 
 interface MainLayoutProps {
@@ -60,7 +60,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
           setCurrentUser(null);
           setUser(null);
           window.location.reload();
-        } else if (res.user && (res.user.id !== loggedUser.id || res.user.full_name !== loggedUser.full_name)) {
+        } else if (res.user && (
+          res.user.id !== loggedUser.id ||
+          res.user.full_name !== loggedUser.full_name ||
+          // Mật khẩu vừa được tự động mã hóa -> cập nhật phiên đăng nhập trên máy theo bản mã hóa
+          res.user.password !== loggedUser.password
+        )) {
           // Tự động sửa lại đúng thông tin (ví dụ từ Nguyễn Văn Minh sang Lê Phước Long)
           setCurrentUser(res.user);
           setUser(res.user);
@@ -76,9 +81,18 @@ export default function MainLayout({ children }: MainLayoutProps) {
     };
     window.addEventListener('show-toast', handleShowToast);
 
+    // Đăng xuất từ bất kỳ màn hình nào (kể cả màn hình POS của app .exe) -> hiện ngay màn hình đăng nhập
+    const handleAuthChange = () => {
+      setUser(getCurrentUser());
+      setIsUserDropdownOpen(false);
+      setIsMobileMenuOpen(false);
+    };
+    window.addEventListener(AUTH_CHANGE_EVENT, handleAuthChange);
 
-
-    return () => window.removeEventListener('show-toast', handleShowToast);
+    return () => {
+      window.removeEventListener('show-toast', handleShowToast);
+      window.removeEventListener(AUTH_CHANGE_EVENT, handleAuthChange);
+    };
   }, []);
 
   // Tự động ẩn toast sau 3 giây
@@ -96,9 +110,10 @@ export default function MainLayout({ children }: MainLayoutProps) {
     try {
       const user = await db.login(loginUsername, loginPassword);
       if (user) {
+        // Không reload trang: các màn hình con được dựng lại từ đầu sau khi đăng nhập nên tự đọc đúng tài khoản mới
         setCurrentUser(user);
         setUser(user);
-        window.location.reload();
+        setLoginPassword('');
       } else {
         setLoginError('Mã đăng nhập hoặc mật khẩu không chính xác!');
       }
@@ -110,9 +125,13 @@ export default function MainLayout({ children }: MainLayoutProps) {
   };
 
   const handleLogout = () => {
-    setCurrentUser(null);
+    // Không dùng window.location.reload(): trên app POS .exe, reload ở đường dẫn client-side
+    // có thể không nạp lại được trang -> bấm Đăng xuất như không có tác dụng.
+    logoutCurrentUser();
     setUser(null);
-    window.location.reload();
+    setLoginUsername('');
+    setLoginPassword('');
+    setLoginError('');
   };
 
   if (!mounted) {
@@ -207,22 +226,9 @@ export default function MainLayout({ children }: MainLayoutProps) {
             </button>
           </form>
 
-          {/* Hộp thông tin tài khoản demo */}
+          {/* Đã gỡ hộp "Tài khoản thử nghiệm" (hiện công khai mã đăng nhập & mật khẩu Admin thật của quán) */}
           <div className="mt-8 pt-6 border-t border-coffee-light text-center text-xs text-coffee-medium">
-            <p className="font-semibold mb-1.5">Tài khoản thử nghiệm hệ thống:</p>
-            <div className="grid grid-cols-2 gap-2 text-left bg-[#FAF6F0] p-3 rounded-xl border border-coffee-accent/10">
-              <div>
-                <p className="font-bold text-coffee-dark">Quyền Admin:</p>
-                <p className="font-mono text-[10px]">ID: <span className="font-bold">admin</span></p>
-                <p className="font-mono text-[10px]">Pass: <span className="font-bold">123456</span></p>
-              </div>
-              <div>
-                <p className="font-bold text-coffee-dark">Quyền Nhân viên:</p>
-                <p className="font-mono text-[10px]">ID: <span className="font-bold">nv001</span></p>
-                <p className="font-mono text-[10px]">Pass: <span className="font-bold">123456</span></p>
-              </div>
-            </div>
-            <div className="mt-3 text-[10px]">
+            <div className="text-[10px]">
               Chế độ kết nối: {isSupabaseConfigured ? (
                 <span className="text-green-600 font-bold">Supabase Online</span>
               ) : (

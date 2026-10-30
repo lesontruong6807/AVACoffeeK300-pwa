@@ -175,6 +175,11 @@ export function buildReceiptBytes(orderData: OrderData, settings?: Partial<Store
     .line(formatRow(`BAN: ${orderData.tableName.toUpperCase()}`, timeFormatted, RECEIPT_WIDTH))
     .bold(false);
 
+  // Mã hóa đơn: giúp đối soát từng bill với hệ thống (2 khách gọi món giống nhau vẫn có 2 mã khác nhau)
+  if (orderData.orderId && !orderData.orderId.startsWith('OD-')) {
+    builder.line(`Ma HD: ${orderData.orderId.replace(/^ord_/, '').toUpperCase()}`);
+  }
+
   if (orderData.notes && orderData.notes.trim()) {
     builder.line(`Ghi chu: ${removeDiacritics(orderData.notes.trim())}`);
   }
@@ -333,8 +338,9 @@ export function isOrderAlreadyPrinted(
     }
   }
 
-  // 2. Kiểm tra Cooldown 20 giây theo vân tay nội dung bill
-  if (orderData) {
+  // 2. Kiểm tra Cooldown theo vân tay nội dung bill: CHỈ khi không có mã đơn
+  // (có mã đơn thì 2 đơn khác nhau dù giống hệt món vẫn phải in đủ 2 bill)
+  if (orderData && !orderId) {
     const fp = getOrderFingerprint(orderData);
     let lastFpTime = recentPrintTimestamps.get(`fp:${fp}`);
     if (!lastFpTime && typeof localStorage !== 'undefined') {
@@ -442,59 +448,145 @@ export function tryAcquirePrintLock(orderId: string, action: 'create' | 'pay' | 
   return !isOrderAlreadyPrinted(orderId);
 }
 
+// =========================================================================
+// GHI NHỚ ĐỊA CHỈ MÁY POS IN QUA WI-FI (cổng 3333)
+// Thử trước địa chỉ vừa in thành công, tạm bỏ qua địa chỉ vừa lỗi trong 60 giây
+// -> điện thoại không phải chờ timeout lần lượt nhiều địa chỉ mỗi lần in.
+// =========================================================================
+const BRIDGE_FAIL_SKIP_MS = 60000;
+const bridgeHostFailures = new Map<string, number>();
+
+function rememberBridgeHost(host: string, ok: boolean) {
+  if (ok) {
+    bridgeHostFailures.delete(host);
+    try {
+      localStorage.setItem('ava_last_good_bridge_host', host);
+    } catch (_) {}
+  } else {
+    bridgeHostFailures.set(host, Date.now());
+  }
+}
+
+function orderBridgeHosts(candidates: string[]): string[] {
+  let lastGood: string | null = null;
+  try {
+    lastGood = localStorage.getItem('ava_last_good_bridge_host');
+  } catch (_) {}
+  const unique = Array.from(new Set([...(lastGood ? [lastGood] : []), ...candidates]));
+  const now = Date.now();
+  const healthy = unique.filter(h => now - (bridgeHostFailures.get(h) || 0) > BRIDGE_FAIL_SKIP_MS);
+  // Nếu tất cả đều vừa lỗi thì vẫn thử lại toàn bộ (có thể máy POS vừa bật lại)
+  return healthy.length > 0 ? healthy : unique;
+}
+
+// =========================================================================
+// CHỐNG IN LẶP THEO MÃ ĐƠN (NGUYÊN TẮC: MỖI ĐƠN CHỈ IN 1 LẦN)
+// Khóa = "mã đơn # danh sách món (tên:số lượng)".
+// - Cùng đơn, cùng món -> chỉ in 1 lần (dù lệnh đến từ quầy, điện thoại hay realtime).
+// - Đơn gọi thêm món -> danh sách món khác -> được in bill mới đầy đủ.
+// - 2 đơn khác nhau dù giống hệt món (2 khách cùng gọi 1 cà phê đá) -> luôn in đủ 2 bill.
+// - Nhân viên chủ động bấm "In bill" (allowReprint) -> luôn in lại.
+// =========================================================================
+const PRINTED_KEYS_STORAGE = 'ava_printed_keys_v2';
+const PRINTED_KEY_TTL_MS = 12 * 60 * 60 * 1000;
+const printedKeys = new Map<string, number>();
+
+if (typeof window !== 'undefined') {
+  try {
+    const raw = localStorage.getItem(PRINTED_KEYS_STORAGE);
+    if (raw) {
+      const now = Date.now();
+      for (const [k, t] of Object.entries(JSON.parse(raw) as Record<string, number>)) {
+        if (now - Number(t) < PRINTED_KEY_TTL_MS) printedKeys.set(k, Number(t));
+      }
+    }
+    // Dọn các khóa in cũ mỗi lần in tạo ra 1 khóa riêng trong localStorage (không bao giờ được xóa,
+    // tích tụ lâu ngày làm đầy bộ nhớ trình duyệt khiến cache dữ liệu POS bị lỗi)
+    const staleKeys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith('ava_last_print_fp_') || key.startsWith('ava_last_print_id_'))) {
+        const t = Number(localStorage.getItem(key) || 0);
+        if (Date.now() - t > 24 * 60 * 60 * 1000) staleKeys.push(key);
+      }
+    }
+    staleKeys.forEach(k => localStorage.removeItem(k));
+  } catch (_) {}
+}
+
+export function buildPrintDedupKey(orderId: string, items: Array<{ name?: string; quantity?: number }>): string {
+  const itemsSig = (items || [])
+    .map(i => `${removeDiacritics(i.name || '').trim().toLowerCase()}:${Number(i.quantity || 0)}`)
+    .sort()
+    .join('|');
+  return `${orderId}#${itemsSig}`;
+}
+
+function wasPrintKeyUsed(key: string): boolean {
+  const t = printedKeys.get(key);
+  return !!t && Date.now() - t < PRINTED_KEY_TTL_MS;
+}
+
+function rememberPrintKey(key: string) {
+  const now = Date.now();
+  printedKeys.set(key, now);
+  for (const [k, t] of printedKeys) {
+    if (now - t >= PRINTED_KEY_TTL_MS) printedKeys.delete(k);
+  }
+  // Giữ tối đa 400 khóa gần nhất
+  while (printedKeys.size > 400) {
+    const oldest = printedKeys.keys().next().value;
+    if (oldest === undefined) break;
+    printedKeys.delete(oldest);
+  }
+  try {
+    localStorage.setItem(PRINTED_KEYS_STORAGE, JSON.stringify(Object.fromEntries(printedKeys)));
+  } catch (_) {}
+}
+
 // In hóa đơn trực tiếp (Tự động chuyển đổi giữa POS Desktop USB và Mobile Wi-Fi Print)
 export async function printOrderDirect(
   orderData: OrderData,
   printerIP?: string,
   port?: number,
-  options?: { force?: boolean; isManualUserReprint?: boolean }
+  options?: {
+    force?: boolean;
+    // (giữ để tương thích, không còn tác dụng bỏ qua chống in lặp)
+    isManualUserReprint?: boolean;
+    // Nhân viên chủ động bấm "In bill" / "In lại hóa đơn" -> luôn in lại
+    allowReprint?: boolean;
+  }
 ): Promise<void> {
   const orderId = orderData.orderId;
   const itemCount = orderData.items?.length || 0;
   const fingerprint = getOrderFingerprint(orderData);
   const now = Date.now();
-  const isExplicitManual = options?.isManualUserReprint === true;
+  const allowReprint = options?.allowReprint === true || options?.force === true;
+  const dedupKey = orderId ? buildPrintDedupKey(orderId, orderData.items || []) : undefined;
 
-  const orderLockKey = orderId ? `id:${orderId}` : `fp:${fingerprint}`;
-  const fpLockKey = `fp:${fingerprint}`;
+  const orderLockKey = dedupKey || `fp:${fingerprint}`;
 
-  // NGUYÊN TẮC: Chống in trùng lặp tuyệt đối trừ khi người dùng chủ động bấm 'In lại hóa đơn' thủ công
-  if (!isExplicitManual) {
-    // 1. Kiểm tra In-Flight Mutex (Đang có lệnh in đang thực thi dở)
-    if (inFlightPrintKeys.has(orderLockKey) || inFlightPrintKeys.has(fpLockKey)) {
-      console.log(`[printOrderDirect] BỎ QUA: Đơn ${orderId || fingerprint} đang trong tiến trình in. Không in đè!`);
+  // NGUYÊN TẮC: Mỗi đơn chỉ in 1 lần, trừ khi nhân viên chủ động bấm "In bill"
+  if (!allowReprint) {
+    // 1. Đơn này đang được in dở hoặc đã in rồi (theo mã đơn + danh sách món)
+    if (inFlightPrintKeys.has(orderLockKey) || (dedupKey && wasPrintKeyUsed(dedupKey))) {
+      console.log(`[printOrderDirect] BỎ QUA: Đơn ${orderId || fingerprint} đã / đang được in. Không in lặp!`);
       return;
     }
 
-    // 2. Kiểm tra Cooldown 20 giây theo mã đơn
-    if (orderId && isOrderAlreadyPrinted(orderId, itemCount, orderData)) {
-      console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Đơn ${orderId} vừa được in cách đây không lâu.`);
-      return;
-    }
-
-    // 3. Kiểm tra Cooldown 20 giây theo nội dung vân tay bill
-    if (recentPrintTimestamps.has(fpLockKey)) {
-      const elapsed = now - recentPrintTimestamps.get(fpLockKey)!;
+    // 2. Lệnh in KHÔNG có mã đơn: chỉ còn cách chống trùng theo nội dung bill trong 15 giây
+    if (!orderId && recentPrintTimestamps.has(orderLockKey)) {
+      const elapsed = now - recentPrintTimestamps.get(orderLockKey)!;
       if (elapsed < RECENT_PRINT_COOLDOWN_MS) {
-        console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Nội dung bill (${orderData.tableName}) vừa được in cách đây ${elapsed}ms (< 20s).`);
+        console.log(`[printOrderDirect] BỎ QUA IN TRÙNG: Bill không mã đơn (${orderData.tableName}) vừa được in cách đây ${elapsed}ms.`);
         return;
       }
     }
   }
 
-  // Khóa In-Flight và cập nhật Cooldown ngay tức thì
+  // Khóa In-Flight ngay tức thì
   inFlightPrintKeys.add(orderLockKey);
-  inFlightPrintKeys.add(fpLockKey);
   recentPrintTimestamps.set(orderLockKey, now);
-  recentPrintTimestamps.set(fpLockKey, now);
-
-  if (typeof localStorage !== 'undefined') {
-    try {
-      if (orderId) localStorage.setItem(`ava_last_print_id_${orderId}`, String(now));
-      localStorage.setItem(`ava_last_print_fp_${fingerprint}`, String(now));
-      localStorage.setItem(`ava_global_last_print_time`, String(now));
-    } catch (_) {}
-  }
 
   // Đánh dấu ngay lập tức trước khi in để chặn đứng mọi race-condition từ Supabase Realtime / Postgres Changes
   if (orderId) {
@@ -512,22 +604,23 @@ export async function printOrderDirect(
     const targetPort = port || storeSettings.printer_port || 9100;
     const receiptBytes = buildReceiptBytes(orderData, storeSettings);
 
-    // 1. Kiểm tra môi trường Desktop Tauri (Windows POS cắm dây máy in USB / Spooler)
-    try {
-      const { isTauriEnvironment, silentPrintEscPos } = await import('@/lib/tauriPOS');
-      if (isTauriEnvironment()) {
-        console.log('[Tauri Desktop Mode] Initiating Silent ESC/POS printing...');
-        const res = await silentPrintEscPos(receiptBytes, (storeSettings as any).printer_name);
-        if (!res.success) {
-          throw new Error(res.message || 'Lỗi in ngầm máy in Windows POS');
-        }
-        console.log('[Tauri Desktop Mode] Print sent successfully.');
-        return;
+    // 1. Môi trường Desktop Tauri (Windows POS cắm dây máy in USB / Spooler):
+    // luôn in trực tiếp, KHÔNG rơi sang nhánh web bên dưới (tránh 1 đơn in 2 lần)
+    const { isTauriEnvironment, silentPrintEscPos } = await import('@/lib/tauriPOS');
+    if (isTauriEnvironment()) {
+      console.log('[Tauri Desktop Mode] Initiating Silent ESC/POS printing...');
+      const res = await silentPrintEscPos(receiptBytes, (storeSettings as any).printer_name, {
+        dedupKey,
+        allowReprint
+      });
+      if (!res.success) {
+        throw new Error(res.message || 'Lỗi in ngầm máy in Windows POS');
       }
-    } catch (tauriErr) {
-      if ((tauriErr as any)?.message?.includes('Lỗi in ngầm')) {
-        throw tauriErr;
-      }
+      if (dedupKey) rememberPrintKey(dedupKey);
+      console.log(res.skipped
+        ? '[Tauri Desktop Mode] Đơn đã được in trước đó, bỏ qua in lặp.'
+        : '[Tauri Desktop Mode] Print sent successfully.');
+      return;
     }
 
     // 2. Môi trường Web App / Điện thoại nhân viên kết nối chung Wi-Fi với máy POS:
@@ -542,7 +635,7 @@ export async function printOrderDirect(
         '127.0.0.1'
       ].filter(Boolean) as string[];
 
-      const uniqueHosts = Array.from(new Set(hostCandidates));
+      const uniqueHosts = orderBridgeHosts(hostCandidates);
       for (const host of uniqueHosts) {
         try {
           const controller = new AbortController();
@@ -554,13 +647,17 @@ export async function printOrderDirect(
               data: Array.from(receiptBytes),
               printerName: (storeSettings as any).printer_name || null,
               orderId: orderData.orderId,
-              fingerprint: fingerprint
+              fingerprint: fingerprint,
+              dedupKey: dedupKey || null,
+              allowReprint
             }),
             signal: controller.signal
           });
           clearTimeout(timeoutId);
           if (resp.ok) {
             console.log(`[Web Wi-Fi Print] Đã in bill thành công qua máy POS ${host}:3333`);
+            rememberBridgeHost(host, true);
+            if (dedupKey) rememberPrintKey(dedupKey);
             isPrintedViaBridge = true;
             // Phát sóng cho tất cả thiết bị khác biết đơn này đã được in xong (chặn mọi listener in lặp)
             try {
@@ -576,61 +673,62 @@ export async function printOrderDirect(
             } catch (_) {}
             return; // ĐÃ IN THÀNH CÔNG QUA MẠNG NỘI BỘ -> KẾT THÚC
           }
+          rememberBridgeHost(host, false);
         } catch (_) {
           // Tiếp tục thử host tiếp theo
+          rememberBridgeHost(host, false);
         }
       }
     }
 
-    // 3. NẾU VÀ CHỈ NẾU HTTP Bridge không thể kết nối (ví dụ dùng 4G ngoài vùng Wi-Fi quán):
-    // Fallback phát sóng lệnh in qua Supabase Realtime Broadcast để máy POS tại quầy nhận diện và in
-    if (!isPrintedViaBridge) {
+    // 3. Ứng dụng di động Capacitor native: in thẳng tới máy in IP mạng (cổng 9100)
+    if (Capacitor.isNativePlatform()) {
+      console.log(`[Native Mode] Initiating TCP printing to ${targetIP}:${targetPort}`);
+      let connection: any = null;
       try {
-        console.log('[Web Fallback] HTTP Wi-Fi không phản hồi, gửi lệnh in qua Supabase Cloud Realtime...');
-        const { broadcastRealtimeEvent } = await import('@/lib/database');
-        broadcastRealtimeEvent('order_update', {
-          action: 'PRINT_RECEIPT',
-          orderData,
-          timestamp: Date.now()
+        const { TCPClient } = await import('@devioarts/capacitor-tcpclient');
+        const connectionId = `printer-${Date.now()}`;
+        connection = TCPClient.createConnection({
+          connectionId,
+          host: targetIP,
+          port: targetPort
         });
-      } catch (bcErr) {
-        console.warn('Lỗi broadcast lệnh in:', bcErr);
+
+        await connection.connect();
+        await connection.write({ data: receiptBytes });
+        if (dedupKey) rememberPrintKey(dedupKey);
+        return; // ĐÃ IN TRỰC TIẾP -> KHÔNG gửi thêm lệnh qua realtime (tránh in đôi)
+      } catch (error) {
+        console.error('[TCP Print Error] Failed to print order:', error);
+      } finally {
+        if (connection) {
+          try {
+            await connection.destroy();
+          } catch (_) {}
+        }
       }
     }
 
-    // 4. Nếu chạy trong ứng dụng di động Capacitor native kết nối máy in IP mạng
-    if (!Capacitor.isNativePlatform()) {
-      return;
-    }
-
-    console.log(`[Native Mode] Initiating TCP printing to ${targetIP}:${targetPort}`);
-    
-    let connection: any = null;
+    // 4. NẾU VÀ CHỈ NẾU không in trực tiếp được (ví dụ dùng 4G ngoài vùng Wi-Fi quán):
+    // Fallback phát sóng lệnh in qua Supabase Realtime Broadcast để máy POS tại quầy nhận diện và in
+    // (máy POS chống in lặp theo mã đơn nên đơn này vẫn chỉ in 1 lần)
     try {
-      const { TCPClient } = await import('@devioarts/capacitor-tcpclient');
-      const connectionId = `printer-${Date.now()}`;
-      connection = TCPClient.createConnection({
-        connectionId,
-        host: targetIP,
-        port: targetPort
+      console.log('[Web Fallback] HTTP Wi-Fi không phản hồi, gửi lệnh in qua Supabase Cloud Realtime...');
+      const { broadcastRealtimeEvent } = await import('@/lib/database');
+      broadcastRealtimeEvent('order_update', {
+        action: 'PRINT_RECEIPT',
+        orderData,
+        isManualReprint: allowReprint,
+        timestamp: Date.now()
       });
-
-      await connection.connect();
-      await connection.write({ data: receiptBytes });
-    } catch (error) {
-      console.error('[TCP Print Error] Failed to print order:', error);
-      throw error;
-    } finally {
-      if (connection) {
-        try {
-          await connection.destroy();
-        } catch (_) {}
-      }
+      if (dedupKey) rememberPrintKey(dedupKey);
+    } catch (bcErr) {
+      console.warn('Lỗi broadcast lệnh in:', bcErr);
+      throw new Error('Không gửi được lệnh in tới máy POS');
     }
   } finally {
     // Luôn giải phóng in-flight lock
     inFlightPrintKeys.delete(orderLockKey);
-    inFlightPrintKeys.delete(fpLockKey);
   }
 }
 

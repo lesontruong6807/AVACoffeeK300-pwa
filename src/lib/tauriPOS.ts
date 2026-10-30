@@ -20,6 +20,26 @@ export interface CustomerDisplayPayload {
   orderStatus?: 'ordering' | 'paid' | 'idle';
 }
 
+// Thời gian chờ tối đa cho 1 lệnh in / mở két. Quá thời gian này giao diện thôi chờ
+// (lệnh vẫn chạy nền), tránh để màn hình bán hàng bị treo theo máy in.
+const PRINTER_COMMAND_TIMEOUT_MS = 12000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      err => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 /**
  * Kiểm tra xem ứng dụng có đang chạy bên trong môi trường Desktop Tauri v2 hay không
  */
@@ -37,7 +57,7 @@ export async function getWindowsPrinters(): Promise<string[]> {
   }
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<string[]>('get_printers');
+    return await withTimeout(invoke<string[]>('get_printers'), PRINTER_COMMAND_TIMEOUT_MS, 'Quét máy in quá lâu');
   } catch (error) {
     console.error('[TauriPOS] Lỗi khi lấy danh sách máy in Windows:', error);
     return [];
@@ -49,8 +69,14 @@ export async function getWindowsPrinters(): Promise<string[]> {
  */
 export async function silentPrintEscPos(
   escPosBytes: Uint8Array | number[],
-  printerName?: string
-): Promise<{ success: boolean; message?: string }> {
+  printerName?: string,
+  options?: {
+    // "mã đơn # danh sách món": cùng 1 đơn chỉ in 1 lần (sổ lưu vết nằm trong app POS)
+    dedupKey?: string;
+    // Nhân viên chủ động bấm "In bill" -> luôn in lại
+    allowReprint?: boolean;
+  }
+): Promise<{ success: boolean; skipped?: boolean; message?: string }> {
   if (!isTauriEnvironment()) {
     return { success: false, message: 'Chỉ hỗ trợ in ngầm trên ứng dụng Desktop Windows' };
   }
@@ -58,11 +84,18 @@ export async function silentPrintEscPos(
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     const bytesArray = Array.from(escPosBytes);
-    await invoke('silent_print_escpos', {
-      data: bytesArray,
-      printerName: printerName || null
-    });
-    return { success: true };
+    const printed = await withTimeout(
+      invoke<boolean>('silent_print_escpos', {
+        data: bytesArray,
+        printerName: printerName || null,
+        dedupKey: options?.dedupKey || null,
+        allowReprint: options?.allowReprint === true
+      }),
+      PRINTER_COMMAND_TIMEOUT_MS,
+      'Máy in phản hồi quá lâu, vui lòng kiểm tra giấy / cáp USB máy in'
+    );
+    // App POS bản cũ (chưa cập nhật) trả về null -> coi như đã in
+    return { success: true, skipped: printed === false };
   } catch (error: any) {
     console.error('[TauriPOS] Lỗi in ngầm ESC/POS:', error);
     return { success: false, message: error?.toString() || 'Lỗi gửi lệnh in' };
@@ -81,9 +114,13 @@ export async function kickCashDrawer(
 
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('kick_cash_drawer', {
-      printerName: printerName || null
-    });
+    await withTimeout(
+      invoke('kick_cash_drawer', {
+        printerName: printerName || null
+      }),
+      PRINTER_COMMAND_TIMEOUT_MS,
+      'Két tiền / máy in phản hồi quá lâu'
+    );
     return { success: true };
   } catch (error: any) {
     console.error('[TauriPOS] Lỗi kích mở két tiền:', error);

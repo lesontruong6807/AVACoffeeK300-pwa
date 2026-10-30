@@ -2,19 +2,39 @@ mod printer;
 mod customer_screen;
 mod http_server;
 
+// LƯU Ý QUAN TRỌNG: Các lệnh làm việc với máy in BẮT BUỘC là `async` + chạy trong luồng nền (spawn_blocking).
+// Lệnh Tauri dạng đồng bộ (fn thường) chạy trên LUỒNG GIAO DIỆN CHÍNH: khi máy in USB kẹt giấy / rút cáp /
+// spooler chậm hoặc phải thử in Wi-Fi (chờ timeout vài giây), toàn bộ cửa sổ POS bị đơ, bấm gì cũng không ăn,
+// nhân viên phải khởi động lại máy. Chạy nền thì giao diện luôn mượt dù máy in có trục trặc.
+
 #[tauri::command]
-fn get_printers() -> Result<Vec<String>, String> {
-    printer::get_printers()
+async fn get_printers() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(printer::get_printers)
+        .await
+        .map_err(|e| format!("Lỗi luồng quét máy in: {}", e))?
+}
+
+// dedup_key = "mã đơn # danh sách món": cùng 1 đơn chỉ in 1 lần; allow_reprint = nhân viên chủ động bấm "In bill"
+// Trả về true nếu đã in, false nếu bỏ qua vì đơn đã được in trước đó
+#[tauri::command]
+async fn silent_print_escpos(
+    data: Vec<u8>,
+    printer_name: Option<String>,
+    dedup_key: Option<String>,
+    allow_reprint: Option<bool>,
+) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        printer::print_receipt(&data, printer_name, dedup_key, allow_reprint.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| format!("Lỗi luồng in: {}", e))?
 }
 
 #[tauri::command]
-fn silent_print_escpos(data: Vec<u8>, printer_name: Option<String>) -> Result<(), String> {
-    printer::print_escpos_raw(&data, printer_name)
-}
-
-#[tauri::command]
-fn kick_cash_drawer(printer_name: Option<String>) -> Result<(), String> {
-    printer::kick_cash_drawer(printer_name)
+async fn kick_cash_drawer(printer_name: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || printer::kick_cash_drawer(printer_name))
+        .await
+        .map_err(|e| format!("Lỗi luồng mở két: {}", e))?
 }
 
 #[tauri::command]

@@ -13,14 +13,8 @@ import { toast } from '@/lib/toast';
 export default function GlobalPrintListener() {
   const isListeningRef = useRef(false);
 
-  // TUYỆT ĐỐI KHÔNG CHẠY BỘ IN TRÊN MÀN HÌNH PHỤ KHÁCH HÀNG (CUSTOMER DISPLAY)
-  if (typeof window !== 'undefined') {
-    const path = window.location.pathname.toLowerCase();
-    if (path.includes('customer-display') || (window as any).__IS_CUSTOMER_DISPLAY__) {
-      return null;
-    }
-  }
-
+  // TUYỆT ĐỐI KHÔNG CHẠY BỘ IN TRÊN MÀN HÌNH PHỤ KHÁCH HÀNG (CUSTOMER DISPLAY) - kiểm tra ngay đầu useEffect
+  // (không return sớm trước hook để đúng quy tắc React Hooks; component luôn render null)
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const path = window.location.pathname.toLowerCase();
@@ -35,7 +29,15 @@ export default function GlobalPrintListener() {
 
     // Kiểm tra xem có đang chạy trong môi trường Desktop (Tauri) hay không
     const isDesktop = typeof window !== 'undefined' && (!!(window as any).__TAURI__ || !!(window as any).__TAURI_INTERNALS__);
-    console.log(`[GlobalPrintListener] Khởi động bộ lắng nghe in toàn cục (Môi trường Desktop: ${isDesktop})`);
+
+    // CHỈ MÁY POS TẠI QUẦY (app .exe) MỚI TỰ ĐỘNG IN.
+    // Trước đây bộ lắng nghe chạy trên MỌI điện thoại / máy tính đang mở app: 1 đơn mới -> mỗi thiết bị
+    // đều gửi thêm 1 lệnh in tới máy POS -> 1 đơn bị in lặp 2-3 lần.
+    if (!isDesktop) {
+      isListeningRef.current = false;
+      return;
+    }
+    console.log('[GlobalPrintListener] Khởi động bộ lắng nghe in toàn cục trên máy POS');
 
     // 0. LẮNG NGHE SỰ KIỆN IN TỪ TAURI NATIVE HTTP BRIDGE (Nội bộ máy POS)
     let unlistenTauriPrint: (() => void) | null = null;
@@ -92,7 +94,7 @@ export default function GlobalPrintListener() {
             isPaid: orderData.notes?.includes('ĐÃ THANH TOÁN')
           });
         }
-        await printOrderDirect(orderData, undefined, undefined, { isManualUserReprint: true });
+        await printOrderDirect(orderData, undefined, undefined, { allowReprint: isManual });
         toast.success(`🖨️ Đã in hoá đơn (${orderData.tableName || 'Đơn hàng'}) từ điện thoại!`);
       } catch (err: any) {
         console.error('[GlobalPrintListener] Lỗi in tự động Realtime:', err);
@@ -124,8 +126,9 @@ export default function GlobalPrintListener() {
           return;
         }
 
-        // Chờ ngắn 350ms để đảm bảo lệnh in trực tiếp từ quầy POS ghi nhận xong
-        await new Promise(r => setTimeout(r, 350));
+        // Chờ 5 giây: điện thoại tự gửi lệnh in sau khi lưu / thanh toán xong (bill ghi đúng "ĐÃ THANH TOÁN" / "LƯU ĐƠN").
+        // Chỉ khi điện thoại không in được (đóng app giữa chừng, mất mạng) máy POS mới in dự phòng.
+        await new Promise(r => setTimeout(r, 5000));
         if (orderId && isOrderAlreadyPrinted(orderId)) return;
 
         try {
@@ -158,7 +161,7 @@ export default function GlobalPrintListener() {
                 subtotal: Number(i.thanh_tien || i.subtotal || 0),
                 notes: i.ghi_chu || ''
               }))
-            }, undefined, undefined, { isManualUserReprint: true });
+            });
 
             toast.success(`🖨️ Đã in phiếu order (${matchedTable?.table_name || 'Khách mang về'}) từ điện thoại!`);
           }
@@ -167,50 +170,11 @@ export default function GlobalPrintListener() {
         }
       }
 
-      // TRƯỜNG HỢP 2: UPDATE (KIỂM TRA CÓ MÓN MỚI BỔ SUNG KHÔNG)
-      else if (eventType === 'UPDATE' && newOrder.trang_thai_thanh_toan === 'Chưa thanh toán') {
-        const tracked = getPrintedOrderInfo(orderId);
-        if (tracked) {
-          try {
-            const currentItems = await db.getOrderItems(orderId);
-            if (currentItems && currentItems.length > tracked.itemCount) {
-              if (isOrderAlreadyPrinted(orderId, currentItems.length)) return;
-
-              const currentTables = await db.getTables();
-              const matchedTable = currentTables.find((t: any) => t.id === newOrder.id_ban);
-
-              markOrderAsPrinted(orderId, {
-                itemCount: currentItems.length,
-                itemIds: currentItems.map((i: any) => i.id || i.product_id),
-                totalAmount: Number(newOrder.tong_tien || 0),
-                isPaid: false
-              });
-
-              await printOrderDirect({
-                orderId: newOrder.id,
-                tableName: matchedTable?.table_name || 'Khách mang về',
-                staffName: 'Nhân viên (Điện thoại)',
-                totalAmount: Number(newOrder.tong_tien || 0),
-                discount: 0,
-                notes: '(GỌI THÊM MÓN)',
-                items: currentItems.map((i: any) => ({
-                  name: i.products?.name || i.name || i.ten_san_pham || 'Món',
-                  quantity: Number(i.so_luong || i.quantity || 1),
-                  price: Number(i.unit_price || i.don_gia || i.price || 0),
-                  subtotal: Number(i.thanh_tien || i.subtotal || 0),
-                  notes: i.ghi_chu || ''
-                }))
-              }, undefined, undefined, { isManualUserReprint: true });
-
-              toast.success(`🖨️ Đã in món gọi thêm (${matchedTable?.table_name || 'Bàn'})!`);
-            }
-          } catch (e) {
-            console.warn('[GlobalPrintListener] Lỗi in món gọi thêm:', e);
-          }
-        }
-      }
+      // TRƯỜNG HỢP 2: UPDATE (gọi thêm món) -> KHÔNG tự in lại.
+      // Thiết bị gọi thêm món đã tự gửi lệnh in; tự in thêm ở đây chính là nguyên nhân 1 đơn bị in 2-3 lần.
+      // Cần in lại thì nhân viên vào "Đơn chưa thanh toán" bấm "In hoá đơn".
       // TRƯỜNG HỢP 3: UPDATE SANG 'Đã thanh toán' -> Tuân thủ quy tắc không in lặp
-      else if (eventType === 'UPDATE' && newOrder.trang_thai_thanh_toan === 'Đã thanh toán') {
+      if (eventType === 'UPDATE' && newOrder.trang_thai_thanh_toan === 'Đã thanh toán') {
         console.log(`[GlobalPrintListener] Đơn ${orderId} đã thanh toán - tuân thủ quy tắc không in lặp.`);
       }
     });

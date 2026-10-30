@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { Capacitor } from '@capacitor/core';
-import { db } from '@/lib/database';
+import { db, createCoalescedRefresher } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { 
   CreditCard, 
@@ -121,10 +121,13 @@ export default function PaymentPage() {
 
     loadOrders();
 
-    // 1. Realtime listener cho hóa đơn & chi tiết hóa đơn
-    const unsubscribe = db.subscribeToOrderChanges(() => {
-      loadOrders(true);
-    });
+    // 1. Realtime listener cho hóa đơn & chi tiết hóa đơn (gom sự kiện dồn dập thành 1 lần tải)
+    const scheduleReload = createCoalescedRefresher(() => loadOrders(true), 400, 2000);
+    const unsubscribeOrders = db.subscribeToOrderChanges(scheduleReload);
+    const unsubscribe = () => {
+      scheduleReload.cancel();
+      unsubscribeOrders();
+    };
 
     // 2. Tự động kiểm tra & đồng bộ khi mở sáng màn hình / kết nối mạng lại (có throttle chống spam)
     let lastWakeup = 0;
@@ -351,7 +354,7 @@ export default function PaymentPage() {
         totalAmount: selectedOrder.total_amount,
         orderId: selectedOrder.id,
         notes: selectedOrder.notes || ''
-      });
+      }, undefined, undefined, { allowReprint: true }); // Nhân viên chủ động bấm in lại
       toast.success('Đã gửi lệnh in tới máy in!');
     } catch (e) {
       console.error('Lỗi khi in hóa đơn:', e);

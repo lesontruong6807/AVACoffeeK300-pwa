@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { db, getCurrentUser, formatIngredientStock, formatIngredientRefill, getIngredientPackageInfo } from '@/lib/database';
+import { db, getCurrentUser, formatIngredientStock, formatIngredientRefill, getIngredientPackageInfo, createCoalescedRefresher } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { 
   Package, 
@@ -114,14 +114,15 @@ export default function InventoryPage() {
       syncOfflineStocktakes();
     }
 
-    const unsubscribe = db.subscribeToInventoryChanges(() => {
-      loadData();
-    });
-    
+    // Mỗi lần thanh toán sinh nhiều sự kiện kho liên tiếp -> gom lại thành 1 lần tải
+    const scheduleReload = createCoalescedRefresher(() => loadData(), 1000, 4000);
+    const unsubscribe = db.subscribeToInventoryChanges(scheduleReload);
+
     return () => {
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', syncOfflineStocktakes);
       }
+      scheduleReload.cancel();
       unsubscribe();
     };
   }, []);

@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { db, getCurrentUser, formatIngredientStock, formatIngredientRefill, getDefaultCupId } from '@/lib/database';
+import { db, getCurrentUser, formatIngredientStock, formatIngredientRefill, resolveItemCupId, createCoalescedRefresher } from '@/lib/database';
 import { toast } from '@/lib/toast';
 import { 
   ShieldCheck, 
@@ -55,7 +55,7 @@ import {
   exportFullDatabaseToExcel
 } from '@/lib/exportUtils';
 import { printTestTicket } from '@/lib/printerService';
-import { compressProductImage, estimateBase64SizeKB } from '@/lib/imageUtils';
+import { compressProductImage, estimateBase64SizeKB, recompressImageSource } from '@/lib/imageUtils';
 
 const generateShortId = (prefix: string = '') => {
   return `${prefix}${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
@@ -258,19 +258,20 @@ export default function AdminPage() {
     }
   };
 
-  const loadAllData = async () => {
-    setLoading(true);
+  const loadAllData = async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     try {
       const results = await Promise.allSettled([
         db.getTimeLogs(),
         db.getLeaveRequests(),
-        db.getOrders(),
+        // Chỉ tải hóa đơn trong khoảng ngày đang xem ở Báo cáo doanh thu (+ mọi đơn chờ duyệt hủy)
+        db.getOrdersForRange(repRangeRef.current.start, repRangeRef.current.end),
         db.getProducts(),
         db.getCategories(),
         db.getUsers(),
         db.getInventoryLogs(),
         db.getIngredients(),
-        db.getAllOrderItems(),
+        Promise.resolve(null), // (danh sách món đã đi kèm hóa đơn ở trên)
         db.getExpenses(),
         db.getRecipes(),
         db.getTables(true),
@@ -282,13 +283,17 @@ export default function AdminPage() {
 
       setTimeLogs(val(0));
       setLeaveRequests(val(1));
-      setOrders(val(2));
+      // Lỗi mạng khi tải hóa đơn -> giữ nguyên số liệu đang hiển thị, không xóa trắng báo cáo
+      if (results[2].status === 'fulfilled') {
+        const rangeData = (results[2] as PromiseFulfilledResult<any>).value;
+        setOrders(rangeData.orders);
+        setAllOrderItems(rangeData.items);
+      }
       setProducts(val(3));
       setCategories(val(4));
       setUsers(val(5));
       setInventoryLogs(val(6));
       setIngredients(val(7));
-      setAllOrderItems(val(8));
       setExpenses(val(9));
       setRecipes(val(10));
       setTables(val(11));
@@ -320,23 +325,19 @@ export default function AdminPage() {
       setLoading(false);
     }
 
-    const unsubInv = db.subscribeToInventoryChanges(() => {
-      loadAllData();
-    });
-    const unsubReport = db.subscribeToReportChanges(() => {
-      loadAllData();
-    });
-    const unsubTables = db.subscribeToTableChanges(() => {
-      loadAllData();
-    });
-    const unsubAtt = db.subscribeToAttendanceChanges(() => {
-      loadAllData();
-    });
-    const unsubOrders = db.subscribeToOrderChanges(() => {
-      loadAllData();
-    });
+    // Gom tất cả sự kiện realtime dồn dập (1 lần thanh toán sinh ra hàng chục sự kiện) thành 1 lần tải lại ngầm
+    const scheduleReload = createCoalescedRefresher(() => {
+      if (getCurrentUser()?.role === 'Admin') return loadAllData(true);
+    }, 1500, 5000);
+
+    const unsubInv = db.subscribeToInventoryChanges(scheduleReload);
+    const unsubReport = db.subscribeToReportChanges(scheduleReload);
+    const unsubTables = db.subscribeToTableChanges(scheduleReload);
+    const unsubAtt = db.subscribeToAttendanceChanges(scheduleReload);
+    const unsubOrders = db.subscribeToOrderChanges(scheduleReload);
 
     return () => {
+      scheduleReload.cancel();
       unsubInv();
       unsubReport();
       unsubTables();
@@ -351,6 +352,36 @@ export default function AdminPage() {
     return new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('en-CA');
   });
   const [repEndDate, setRepEndDate] = useState(() => new Date().toLocaleDateString('en-CA'));
+
+  // Khoảng ngày đang xem (dùng trong các lần tải lại ngầm từ realtime)
+  const repRangeRef = useRef({ start: repStartDate, end: repEndDate });
+  const isFirstRangeLoadRef = useRef(true);
+  useEffect(() => {
+    repRangeRef.current = { start: repStartDate, end: repEndDate };
+    // Lần đầu đã được loadAllData tải; các lần đổi ngày sau chỉ tải lại hóa đơn của khoảng ngày mới
+    if (isFirstRangeLoadRef.current) {
+      isFirstRangeLoadRef.current = false;
+      return;
+    }
+    if (!repStartDate || !repEndDate || repStartDate > repEndDate) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const rangeData = await db.getOrdersForRange(repStartDate, repEndDate);
+        if (!cancelled) {
+          setOrders(rangeData.orders);
+          setAllOrderItems(rangeData.items);
+        }
+      } catch (e) {
+        console.error('Lỗi tải hóa đơn theo khoảng ngày:', e);
+        if (!cancelled) toast.error('Không tải được hóa đơn của khoảng ngày này, vui lòng thử lại.');
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [repStartDate, repEndDate]);
 
   // Phân trang & xem chi tiết hóa đơn trong Báo cáo Doanh thu (Feature 2)
   const [repCurrentPage, setRepCurrentPage] = useState<number>(1);
@@ -433,6 +464,8 @@ export default function AdminPage() {
   const [invStartDate, setInvStartDate] = useState(() => new Date().toLocaleDateString('en-CA'));
   const [invEndDate, setInvEndDate] = useState(() => new Date().toLocaleDateString('en-CA'));
   const [invSearchQuery, setInvSearchQuery] = useState('');
+  // Đang nén lại toàn bộ ảnh món cũ (nút "Tối ưu ảnh cũ")
+  const [isOptimizingImages, setIsOptimizingImages] = useState(false);
 
   // Kiểm tra quyền Admin
   if (!loading && currentUser?.role !== 'Admin') {
@@ -643,16 +676,56 @@ export default function AdminPage() {
 
     setIsCompressingImage(true);
     try {
-      // Tự động scale tối đa 400x400 và nén WebP chất lượng 0.82 (dung lượng chỉ ~15-30KB)
+      // Tự động scale tối đa 400x400 và nén WebP (tự hạ chất lượng tới khi dưới ~40KB)
       const result = await compressProductImage(file, 400, 0.82);
-      setProdImageUrl(result.dataUrl);
+      // Tải ảnh đã nén lên kho ảnh Supabase Storage -> bảng món chỉ lưu đường link, mọi máy tải ảnh nhanh
+      const uploadedUrl = await db.uploadProductImage(result.dataUrl);
+      setProdImageUrl(uploadedUrl || result.dataUrl);
       setProdImageSizeKB(result.sizeKB);
-      toast.success(`Đã nén tối ưu & tải ảnh lên thành công (~${result.sizeKB} KB)!`);
+      toast.success(uploadedUrl
+        ? `Đã nén (~${result.sizeKB} KB) & tải ảnh lên kho ảnh! Nhớ bấm Lưu để áp dụng.`
+        : `Đã nén tối ưu ảnh (~${result.sizeKB} KB)! Nhớ bấm Lưu để áp dụng.`);
     } catch (err: any) {
       console.error(err);
       toast.error(err.message || 'Không thể xử lý hình ảnh này!');
     } finally {
       setIsCompressingImage(false);
+    }
+  };
+
+  // Nén lại toàn bộ ảnh món cũ (ảnh lưu thẳng dạng base64 chưa nén, có ảnh nặng tới hơn 1MB)
+  // và chuyển sang kho ảnh Supabase Storage -> POS & điện thoại tải thực đơn nhanh, ảnh luôn hiển thị
+  const handleOptimizeAllImages = async () => {
+    const targets = products.filter(p => typeof p.image_url === 'string' && p.image_url.startsWith('data:image/'));
+    if (targets.length === 0) {
+      toast.info('Tất cả ảnh món đã được tối ưu!');
+      return;
+    }
+    if (!confirm(`Tối ưu lại ${targets.length} ảnh món đang lưu dạng nặng? (Ảnh chỉ được nén nhẹ hơn, hình món giữ nguyên)`)) return;
+
+    setIsOptimizingImages(true);
+    let done = 0;
+    let failed = 0;
+    try {
+      for (const prod of targets) {
+        try {
+          const original = prod.image_url as string;
+          const result = await recompressImageSource(original, 400);
+          const uploadedUrl = await db.uploadProductImage(result.dataUrl);
+          const newUrl = uploadedUrl || (result.dataUrl.length < original.length ? result.dataUrl : null);
+          if (newUrl) {
+            await db.updateProduct(prod.id, { image_url: newUrl });
+          }
+          done++;
+        } catch (err) {
+          console.error('Lỗi tối ưu ảnh món', prod.id, err);
+          failed++;
+        }
+      }
+      toast.success(`Đã tối ưu ${done} ảnh món${failed ? `, ${failed} ảnh lỗi (giữ nguyên ảnh cũ)` : ''}!`);
+      await loadAllData();
+    } finally {
+      setIsOptimizingImages(false);
     }
   };
 
@@ -1257,8 +1330,8 @@ export default function AdminPage() {
       }
       setIsStaffModalOpen(false);
       loadAllData();
-    } catch (err) {
-      toast.error('Lỗi lưu nhân viên.');
+    } catch (err: any) {
+      toast.error(`Lỗi lưu nhân viên: ${err?.message || 'không xác định'}`);
     }
   };
 
@@ -1530,43 +1603,14 @@ export default function AdminPage() {
   let lyHoaVan = 0;
 
   rangeOrderItems.forEach((item: any) => {
-    const prodId = item.product_id;
     const qty = Number(item.quantity || 0);
 
-    // Kiểm tra xem món có chỉ định đổi ly riêng không
-    let customCup = (item as any).cup_id;
-    if (!customCup && item.notes) {
-      const m = item.notes.match(/\[Ly:\s*(ing_ly[a-z]+)\]/);
-      if (m) customCup = m[1];
-    }
-
-    if (customCup) {
-      if (customCup === 'ing_lyden') lyDen += qty;
-      else if (customCup === 'ing_lyhoavan') lyHoaVan += qty;
-      else lyTrang += qty;
-    } else {
-      const prodRecipes = recipes.filter(r => r.product_id === prodId);
-      let foundCupInRecipe = false;
-      prodRecipes.forEach(r => {
-        if (r.ingredient_id === 'ing_lyden') {
-          lyDen += Number(r.quantity_needed || 0) * qty;
-          foundCupInRecipe = true;
-        } else if (r.ingredient_id === 'ing_lytrang' || r.ingredient_id === 'ing_lytratac') {
-          lyTrang += Number(r.quantity_needed || 0) * qty;
-          foundCupInRecipe = true;
-        } else if (r.ingredient_id === 'ing_lyhoavan') {
-          lyHoaVan += Number(r.quantity_needed || 0) * qty;
-          foundCupInRecipe = true;
-        }
-      });
-
-      if (!foundCupInRecipe) {
-        const fallbackCup = getDefaultCupId(prodId, item.name || item.ten_san_pham, recipes);
-        if (fallbackCup === 'ing_lyden') lyDen += qty;
-        else if (fallbackCup === 'ing_lyhoavan') lyHoaVan += qty;
-        else if (fallbackCup === 'ing_lytrang') lyTrang += qty;
-      }
-    }
+    // Đếm ly đúng quy tắc trừ kho: chỉ món có ly trong công thức định lượng mới tính ly
+    // (ly nhân viên đổi riêng được ưu tiên; món không có ly như Bò húc / Nước suối không tính)
+    const cup = resolveItemCupId(item.product_id, item.name || item.ten_san_pham, item.notes || item.ghi_chu, item.cup_id, recipes);
+    if (cup === 'ing_lyden') lyDen += qty;
+    else if (cup === 'ing_lyhoavan') lyHoaVan += qty;
+    else if (cup === 'ing_lytrang') lyTrang += qty;
   });
 
   const totalLy = lyDen + lyTrang + lyHoaVan;
@@ -3798,13 +3842,24 @@ export default function AdminPage() {
                 <h3 className="font-extrabold text-lg text-coffee-dark">Danh Sách Đồ Uống</h3>
                 <p className="text-xs text-coffee-medium">Cập nhật giá mang đi, giá tại quán, trạng thái còn hàng/hết hàng và thêm đồ uống mới.</p>
               </div>
-              <button
-                onClick={openAddProduct}
-                className="px-4 py-2.5 bg-coffee-primary hover:bg-coffee-dark text-white font-bold text-xs rounded-2xl transition flex items-center space-x-1.5 shadow w-fit"
-              >
-                <Plus className="w-4 h-4 text-coffee-accent" />
-                <span>Thêm đồ uống</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleOptimizeAllImages}
+                  disabled={isOptimizingImages}
+                  className="px-4 py-2.5 bg-white hover:bg-coffee-light border border-coffee-light text-coffee-primary font-bold text-xs rounded-2xl transition flex items-center space-x-1.5 shadow-sm w-fit disabled:opacity-60"
+                  title="Nén lại các ảnh món cũ đang nặng để app tải nhanh hơn"
+                >
+                  {isOptimizingImages ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-600" />}
+                  <span>{isOptimizingImages ? 'Đang tối ưu ảnh...' : 'Tối ưu ảnh cũ'}</span>
+                </button>
+                <button
+                  onClick={openAddProduct}
+                  className="px-4 py-2.5 bg-coffee-primary hover:bg-coffee-dark text-white font-bold text-xs rounded-2xl transition flex items-center space-x-1.5 shadow w-fit"
+                >
+                  <Plus className="w-4 h-4 text-coffee-accent" />
+                  <span>Thêm đồ uống</span>
+                </button>
+              </div>
             </div>
 
             {/* Thanh Tìm Kiếm & Bộ Lọc Phân Loại Danh Mục (Cà phê, Trà, Nước ép, v.v.) */}
