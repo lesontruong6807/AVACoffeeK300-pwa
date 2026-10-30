@@ -5073,7 +5073,8 @@ export const db = {
         from += step;
       }
 
-      if (allLogs.length > 0) {
+      // Đang tải theo mốc ngày mà không có dòng nào -> trả về rỗng (không lấy dữ liệu tạm cũ trên máy)
+      if (allLogs.length > 0 || sinceIso) {
         return allLogs.map(log => ({
           id: log.id,
           ingredient_id: log.id_nguyen_lieu,
