@@ -2,7 +2,7 @@
 // Sao lưu toàn bộ dữ liệu Supabase ra file JSON. CHỈ ĐỌC, không sửa gì trên Supabase.
 const fs = require('fs');
 const path = require('path');
-const root = process.argv[2];
+const root = path.resolve(process.argv[2] || ".");
 const outDir = process.argv[3];
 const { createClient } = require(path.join(root, 'node_modules', '@supabase', 'supabase-js'));
 
