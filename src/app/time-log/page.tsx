@@ -30,7 +30,7 @@ export default function TimeLogPage() {
   const activeLog = logs.find(log => log.id === selectedActiveLogId) || activeLogs[0] || null;
 
   // Trạng thái Form chấm công
-  const [shift, setShift] = useState('Ca sáng (06:30 - 12:00)');
+  const [shift, setShift] = useState('Ca sáng (06:00 - 12:00)');
   const [timeInput, setTimeInput] = useState('');
   const [noteInput, setNoteInput] = useState('');
   const [gettingLocation, setGettingLocation] = useState(false);
@@ -39,20 +39,20 @@ export default function TimeLogPage() {
   const [submitting, setSubmitting] = useState(false);
 
   // Tính toán giờ mặc định khi chấm công:
-  // Ca sáng bắt buộc không được sớm hơn 06:30 -> nếu sớm hơn thì để sẵn 06:30
-  // Ca chiều bắt buộc không được sớm hơn 12:30 -> nếu sớm hơn thì để sẵn 12:30
+  // Ca sáng bắt buộc không được sớm hơn 06:00 -> nếu sớm hơn thì để sẵn 06:00
+  // Ca chiều bắt buộc không được sớm hơn 12:00 -> nếu sớm hơn thì để sẵn 12:00
   const getDefaultTimeInput = (targetShift: string, type: 'in' | 'out') => {
     const now = new Date();
     const curMinutes = now.getHours() * 60 + now.getMinutes();
 
     if (type === 'in') {
       if (targetShift.startsWith('Ca sáng')) {
-        if (curMinutes < 6 * 60 + 30) {
-          return '06:30';
+        if (curMinutes < 6 * 60) {
+          return '06:00';
         }
       } else if (targetShift.startsWith('Ca chiều')) {
-        if (curMinutes < 12 * 60 + 30) {
-          return '12:30';
+        if (curMinutes < 12 * 60) {
+          return '12:00';
         }
       }
     }
@@ -101,12 +101,12 @@ export default function TimeLogPage() {
 
     const [inH, inM] = editCheckInTime.split(':');
     const inMins = parseInt(inH, 10) * 60 + parseInt(inM, 10);
-    if (editingLog.shift?.startsWith('Ca sáng') && inMins < 6 * 60 + 30) {
-      toast.error('Giờ vào Ca sáng bắt buộc không được sớm hơn 06:30!');
+    if (editingLog.shift?.startsWith('Ca sáng') && inMins < 6 * 60) {
+      toast.error('Giờ vào Ca sáng bắt buộc không được sớm hơn 06:00!');
       return;
     }
-    if (editingLog.shift?.startsWith('Ca chiều') && inMins < 12 * 60 + 30) {
-      toast.error('Giờ vào Ca chiều bắt buộc không được sớm hơn 12:30!');
+    if (editingLog.shift?.startsWith('Ca chiều') && inMins < 12 * 60) {
+      toast.error('Giờ vào Ca chiều bắt buộc không được sớm hơn 12:00!');
       return;
     }
 
@@ -302,10 +302,10 @@ export default function TimeLogPage() {
     // 2. Kiểm tra giới hạn giờ khai báo theo ca
     if (logType === 'in') {
       if (currentShift.startsWith('Ca sáng')) {
-        // Ca sáng: Bắt buộc không được sớm hơn 06:30
-        if (totalMinutes < 6 * 60 + 30) {
-          toast.error('Chấm công đầu Ca sáng bắt buộc không được sớm hơn 06:30!');
-          setTimeInput('06:30');
+        // Ca sáng: Bắt buộc không được sớm hơn 06:00
+        if (totalMinutes < 6 * 60) {
+          toast.error('Chấm công đầu Ca sáng bắt buộc không được sớm hơn 06:00!');
+          setTimeInput('06:00');
           return;
         }
         if (totalMinutes > 13 * 60 + 30) {
@@ -313,10 +313,10 @@ export default function TimeLogPage() {
           return;
         }
       } else if (currentShift.startsWith('Ca chiều')) {
-        // Ca chiều: Bắt buộc không được sớm hơn 12:30
-        if (totalMinutes < 12 * 60 + 30) {
-          toast.error('Chấm công đầu Ca chiều bắt buộc không được sớm hơn 12:30!');
-          setTimeInput('12:30');
+        // Ca chiều: Bắt buộc không được sớm hơn 12:00
+        if (totalMinutes < 12 * 60) {
+          toast.error('Chấm công đầu Ca chiều bắt buộc không được sớm hơn 12:00!');
+          setTimeInput('12:00');
           return;
         }
         if (totalMinutes > 18 * 60 + 30) {
@@ -327,13 +327,13 @@ export default function TimeLogPage() {
     } else {
       // Giờ ra ca
       if (currentShift.startsWith('Ca sáng')) {
-        if (totalMinutes < 6 * 60 + 30 || totalMinutes > 14 * 60) {
-          toast.error('Giờ ra Ca sáng phải trong khoảng từ 06:30 đến 14:00!');
+        if (totalMinutes < 6 * 60 || totalMinutes > 14 * 60) {
+          toast.error('Giờ ra Ca sáng phải trong khoảng từ 06:00 đến 14:00!');
           return;
         }
       } else if (currentShift.startsWith('Ca chiều')) {
-        if (totalMinutes < 12 * 60 + 30 || totalMinutes > 19 * 60) {
-          toast.error('Giờ ra Ca chiều phải trong khoảng từ 12:30 đến 19:00!');
+        if (totalMinutes < 12 * 60 || totalMinutes > 19 * 60) {
+          toast.error('Giờ ra Ca chiều phải trong khoảng từ 12:00 đến 19:00!');
           return;
         }
       }
@@ -515,8 +515,8 @@ export default function TimeLogPage() {
                       }}
                       className="w-full h-11 bg-[#FAF6F0] px-4 py-0 rounded-2xl text-xs border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark block"
                     >
-                      <option value="Ca sáng (06:30 - 12:00)">Ca sáng (06:30 - 12:00)</option>
-                      <option value="Ca chiều (12:00 - 17:30)">Ca chiều (12:30 - 17:30)</option>
+                      <option value="Ca sáng (06:00 - 12:00)">Ca sáng (06:00 - 12:00)</option>
+                      <option value="Ca chiều (12:00 - 17:30)">Ca chiều (12:00 - 17:30)</option>
                     </select>
                   </div>
                 ) : (
@@ -536,14 +536,14 @@ export default function TimeLogPage() {
                   <input
                     type="time"
                     value={timeInput}
-                    min={logType === 'in' ? (shift.startsWith('Ca sáng') ? '06:30' : '12:30') : undefined}
+                    min={logType === 'in' ? (shift.startsWith('Ca sáng') ? '06:00' : '12:00') : undefined}
                     onChange={(e) => setTimeInput(e.target.value)}
                     className="w-full h-11 bg-[#FAF6F0] px-4 py-0 rounded-2xl text-xs border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark block min-w-0"
                     required
                   />
                   {logType === 'in' && (
                     <p className="text-[10px] text-coffee-medium italic mt-1">
-                      * Giờ vào tối thiểu: {shift.startsWith('Ca sáng') ? '06:30' : '12:30'} (nếu đến sớm hơn sẽ tự động lấy giờ đầu ca)
+                      * Giờ vào tối thiểu: {shift.startsWith('Ca sáng') ? '06:00' : '12:00'} (nếu đến sớm hơn sẽ tự động lấy giờ đầu ca)
                     </p>
                   )}
                 </div>

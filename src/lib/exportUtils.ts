@@ -211,7 +211,7 @@ export function exportRevenueToExcel(
   if (data.shifts) {
     wsData.push([]);
     wsData.push(['PHÂN BỔ THEO CA LÀM VIỆC (DÒNG TIỀN)']);
-    wsData.push(['CA SÁNG (06:30 - 12:00)']);
+    wsData.push(['CA SÁNG (06:00 - 12:00)']);
     wsData.push(['Số lượng đơn hàng ca sáng', `${data.shifts.morning.ordersCount} đơn`]);
     wsData.push(['Doanh thu thực thu ca sáng', fmtVND(data.shifts.morning.actualRevenue)]);
     if (data.shifts.morning.discount !== undefined) {
@@ -388,7 +388,7 @@ export function exportRevenueToPDF(
 
     autoTable(doc, {
       startY: shiftStartY + 4,
-      head: [['Chỉ tiêu', '☀️ Ca Sáng (06:30 - 12:00)', '🌙 Ca Chiều (12:00 - 17:30)']],
+      head: [['Chỉ tiêu', '☀️ Ca Sáng (06:00 - 12:00)', '🌙 Ca Chiều (12:00 - 17:30)']],
       body: [
         ['Số lượng đơn hàng', `${data.shifts.morning.ordersCount} đơn`, `${data.shifts.afternoon.ordersCount} đơn`],
         ['Doanh thu thực thu', fmtVND(data.shifts.morning.actualRevenue), fmtVND(data.shifts.afternoon.actualRevenue)],

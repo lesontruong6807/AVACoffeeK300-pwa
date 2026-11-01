@@ -4422,7 +4422,7 @@ export const db = {
     location_address: string;
     ghi_chu_vao?: string;
   }) {
-    // Quy định: Ca sáng bắt buộc không được sớm hơn 06:30, Ca chiều bắt buộc không được sớm hơn 12:30
+    // Quy định: Ca sáng bắt buộc không được sớm hơn 06:00, Ca chiều bắt buộc không được sớm hơn 12:00
     let safeCheckInTime = log.check_in_time;
     try {
       const inDate = new Date(log.check_in_time);
@@ -4432,11 +4432,11 @@ export const db = {
       const inM = inVN.getUTCMinutes();
       const inMinutes = inH * 60 + inM;
 
-      if (log.shift.startsWith('Ca sáng') && inMinutes < 6 * 60 + 30) {
-        inVN.setUTCHours(6, 30, 0, 0);
+      if (log.shift.startsWith('Ca sáng') && inMinutes < 6 * 60) {
+        inVN.setUTCHours(6, 0, 0, 0);
         safeCheckInTime = new Date(inVN.getTime() - (7 * 60 * 60 * 1000)).toISOString();
-      } else if (log.shift.startsWith('Ca chiều') && inMinutes < 12 * 60 + 30) {
-        inVN.setUTCHours(12, 30, 0, 0);
+      } else if (log.shift.startsWith('Ca chiều') && inMinutes < 12 * 60) {
+        inVN.setUTCHours(12, 0, 0, 0);
         safeCheckInTime = new Date(inVN.getTime() - (7 * 60 * 60 * 1000)).toISOString();
       }
     } catch (_) {}
