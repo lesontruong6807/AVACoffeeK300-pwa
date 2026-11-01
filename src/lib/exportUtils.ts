@@ -222,7 +222,7 @@ export function exportRevenueToExcel(
     wsData.push(['Chi phí nhập kho trong ca sáng', `-${fmtVND(data.shifts.morning.restockCost)}`]);
     wsData.push(['Tiền mặt thực thu trong két (Ca sáng)', fmtVND(data.shifts.morning.netCash)]);
     wsData.push([]);
-    wsData.push(['CA CHIỀU (12:00 - 17:30)']);
+    wsData.push(['CA CHIỀU (12:00 - 18:00)']);
     wsData.push(['Số lượng đơn hàng ca chiều', `${data.shifts.afternoon.ordersCount} đơn`]);
     wsData.push(['Doanh thu thực thu ca chiều', fmtVND(data.shifts.afternoon.actualRevenue)]);
     if (data.shifts.afternoon.discount !== undefined) {
@@ -388,7 +388,7 @@ export function exportRevenueToPDF(
 
     autoTable(doc, {
       startY: shiftStartY + 4,
-      head: [['Chỉ tiêu', '☀️ Ca Sáng (06:00 - 12:00)', '🌙 Ca Chiều (12:00 - 17:30)']],
+      head: [['Chỉ tiêu', '☀️ Ca Sáng (06:00 - 12:00)', '🌙 Ca Chiều (12:00 - 18:00)']],
       body: [
         ['Số lượng đơn hàng', `${data.shifts.morning.ordersCount} đơn`, `${data.shifts.afternoon.ordersCount} đơn`],
         ['Doanh thu thực thu', fmtVND(data.shifts.morning.actualRevenue), fmtVND(data.shifts.afternoon.actualRevenue)],

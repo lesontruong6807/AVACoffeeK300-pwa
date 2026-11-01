@@ -968,7 +968,7 @@ export default function AdminPage() {
     setOtStaffId(log.user_id);
     const dStr = new Date(log.check_in_time).toLocaleDateString('en-CA');
     if (log.shift?.includes('tối') || log.shift?.includes('chiều') || log.shift?.includes('12:00') || log.shift?.includes('17:30') || log.shift?.includes('16:00') || log.shift?.includes('18:00')) {
-      setOtShift('Ca chiều (12:00 - 17:30)');
+      setOtShift('Ca chiều (12:00 - 18:00)');
     } else {
       setOtShift('Ca sáng (06:00 - 12:00)');
     }
@@ -1476,7 +1476,7 @@ export default function AdminPage() {
   const netMonthRevenue = grossRevenue - totalRestockExpenses;
   const totalRevenue = grossRevenue;
 
-  // --- LÓGIC PHÂN ĐỊNH CA LÀM VIỆC (Ca Sáng: 06:00 - 12:00, Ca Chiều: 12:00 - 17:30) ---
+  // --- LÓGIC PHÂN ĐỊNH CA LÀM VIỆC (Ca Sáng: 06:00 - 12:00, Ca Chiều: 12:00 - 18:00) ---
   const isMorningOrder = (created_at: string) => {
     const d = new Date(created_at);
     const mins = d.getHours() * 60 + d.getMinutes();
@@ -2508,7 +2508,7 @@ export default function AdminPage() {
                     : 'text-indigo-800 hover:bg-indigo-100/60'
                 }`}
               >
-                <span>🌙 Ca Chiều (12:00-17:30)</span>
+                <span>🌙 Ca Chiều (12:00-18:00)</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
                   repShiftFilter === 'afternoon' ? 'bg-white/20 text-white' : 'bg-indigo-200/70 text-indigo-900'
                 }`}>
@@ -2670,7 +2670,7 @@ export default function AdminPage() {
                 <span>⏱️ Đối Soát Doanh Thu & Dòng Tiền Theo Ca</span>
               </h4>
               <span className="text-xs text-coffee-medium">
-                Ca sáng: <strong>06:00 - 12:00</strong> • Ca chiều: <strong>12:00 - 17:30</strong>
+                Ca sáng: <strong>06:00 - 12:00</strong> • Ca chiều: <strong>12:00 - 18:00</strong>
               </span>
             </div>
 
@@ -2786,7 +2786,7 @@ export default function AdminPage() {
                     </div>
                     <div>
                       <h4 className="font-black text-base text-indigo-950">CA CHIỀU</h4>
-                      <span className="text-[11px] font-bold text-indigo-700/80">Khung giờ: 12:00 - 17:30</span>
+                      <span className="text-[11px] font-bold text-indigo-700/80">Khung giờ: 12:00 - 18:00</span>
                     </div>
                   </div>
                   <div className="text-right">
@@ -2907,7 +2907,7 @@ export default function AdminPage() {
                         ☀️ CA SÁNG (06:00-12:00)
                       </th>
                       <th className="py-2.5 px-3 text-center bg-indigo-50/70 text-indigo-900 border-l border-indigo-200/50" colSpan={3}>
-                        🌙 CA CHIỀU (12:00-17:30)
+                        🌙 CA CHIỀU (12:00-18:00)
                       </th>
                       <th className="py-2.5 px-3 text-right border-l border-coffee-light rounded-r-xl bg-green-50/50 text-green-900" colSpan={3}>
                         TỔNG NGÀY
@@ -4864,13 +4864,13 @@ export default function AdminPage() {
                         setOtEndTime('12:00');
                       } else {
                         setOtStartTime('12:00');
-                        setOtEndTime('17:30');
+                        setOtEndTime('18:00');
                       }
                     }}
                     className="w-full bg-[#FAF6F0] px-3.5 py-2.5 rounded-2xl border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark font-medium"
                   >
                     <option value="Ca sáng (06:00 - 12:00)">Ca sáng (06:00 - 12:00) [6:30am - 12:00pm]</option>
-                    <option value="Ca chiều (12:00 - 17:30)">Ca chiều (12:00 - 17:30) [12:00pm - 5:30pm]</option>
+                    <option value="Ca chiều (12:00 - 18:00)">Ca chiều (12:00 - 18:00) [12:00pm - 6:00pm]</option>
                   </select>
                 </div>
 

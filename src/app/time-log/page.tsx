@@ -516,7 +516,7 @@ export default function TimeLogPage() {
                       className="w-full h-11 bg-[#FAF6F0] px-4 py-0 rounded-2xl text-xs border-none focus:ring-2 focus:ring-coffee-accent text-coffee-dark block"
                     >
                       <option value="Ca sáng (06:00 - 12:00)">Ca sáng (06:00 - 12:00)</option>
-                      <option value="Ca chiều (12:00 - 17:30)">Ca chiều (12:00 - 17:30)</option>
+                      <option value="Ca chiều (12:00 - 18:00)">Ca chiều (12:00 - 18:00)</option>
                     </select>
                   </div>
                 ) : (
